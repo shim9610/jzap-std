@@ -76,18 +76,28 @@ proof fn ordered_child_ranges(
     ensures left_min <= left_max < right_min <= right_max,
 {}
 
-// Above the selected child, the frame stores the next sibling slot.
-// A slot equal to width means that the parent has no unvisited child.
-proof fn range_save_sibling(depth: usize, height: usize, cap: usize, index: usize, width: usize)
-    requires depth < height <= cap, index < width,
-    ensures depth < cap, depth as int + 1 <= height, index as int + 1 <= width,
-{}
+// At each level, the validated tree has disjoint, equal-width child subtrees.
+proof fn range_append_digit(prefix: int, parents: int, slot: int, fanout: int)
+    requires 0 <= prefix < parents, 0 <= slot < fanout,
+    ensures 0 <= prefix * fanout + slot < parents * fanout,
+{
+    assert(0 <= prefix * fanout + slot < parents * fanout) by (nonlinear_arith)
+        requires 0 <= prefix < parents, 0 <= slot < fanout;
+}
 
-proof fn range_resume_height(depth: usize, height: usize)
-    requires 0 < depth <= height,
-    ensures 0 <= (height as int - depth as int), (height as int - depth as int) < (height as int),
-            (height as int) - (depth as int - 1) == (height as int) - (depth as int) + 1,
-{}
+proof fn range_decode_digit(rank: int, child_width: int, fanout: int)
+    requires child_width > 0, fanout > 0, 0 <= rank < fanout * child_width,
+    ensures
+        0 <= rank / child_width < fanout,
+        0 <= rank % child_width < child_width,
+        rank == child_width * (rank / child_width) + rank % child_width,
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(rank, child_width);
+    assert(0 <= rank / child_width < fanout) by (nonlinear_arith)
+        requires child_width > 0, fanout > 0, 0 <= rank < fanout * child_width,
+            0 <= rank % child_width < child_width,
+            rank == child_width * (rank / child_width) + rank % child_width;
+}
 
 proof fn range_advance_leaf_slot(index: usize, width: usize)
     requires index < width,

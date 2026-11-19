@@ -464,11 +464,11 @@ fn scan_snapshot() -> Result<(), Error> {
 ```
 
 Either endpoint can be `Unbounded`. Reversed endpoints and equal endpoints
-that both exclude the key return `Error::Bounds`. The cursor descends to the
-first possible leaf and walks siblings in separator order. It uses a private
-stack of two machine words per level, reserved inline in the cursor.
-Width-one trees have no siblings and do not use stack entries. Neither
-opening the range nor advancing it allocates.
+that both exclude the key return `Error::Bounds`. The cursor descends to the first possible leaf and tracks its logical rank in
+separator order. It caches the leaf and its siblings. At a parent boundary it
+decodes the next leaf rank from the root. It checks the upper endpoint when
+opening a leaf and advances using its admitted slot limit. Opening and
+advancing the cursor allocate no heap memory.
 
 The benchmark uses Rust 1.95.0 and `brie-tree` 0.1.2 in one release binary
 on the same pinned Linux x86-64 CPU. It matches the sorted keys, values, seed,

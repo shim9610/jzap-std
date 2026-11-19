@@ -1293,6 +1293,31 @@ fn fixed_bplus_range_matches_std_across_scrambled_leaf_ids() {
             assert_eq!(memory.calls, 0);
         }
     }
+
+    // A mixed-radix rank also crosses parent boundaries at non-power-of-two widths.
+    let leaves: Vec<_> = (0..9)
+        .rev()
+        .map(|leaf| {
+            let keys = std::array::from_fn(|slot| 2 * (leaf * 3 + slot) as i32);
+            (keys, keys.map(|key| key * 10))
+        })
+        .collect::<Vec<([i32; 3], [i32; 3])>>();
+    let branches = [
+        ([0, 6, 12], [8, 7, 6]),
+        ([18, 24, 30], [5, 4, 3]),
+        ([36, 42, 48], [2, 1, 0]),
+        ([0, 18, 36], [9, 10, 11]),
+    ];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    let mut cursor = tree.range(Excluded(&16), Included(&48)).unwrap();
+    for key in (18..=48).step_by(2) {
+        assert_eq!(
+            cursor.try_next().unwrap().map(|(&k, &v)| (k, v)),
+            Some((key, key * 10))
+        );
+    }
+    assert_eq!(cursor.try_next(), Ok(None));
+    assert_eq!(cursor.try_next(), Ok(None));
 }
 
 #[test]

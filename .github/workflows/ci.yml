@@ -75,6 +75,7 @@ jobs:
       - name: Install Verus
         if: matrix.check == 'Verus'
         run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src
           python3 scripts/setup_verus.py --directory "$RUNNER_TEMP/verus"
           echo "JZAP_VERUS=$RUNNER_TEMP/verus/verus-x86-linux/verus" >> "$GITHUB_ENV"
       - name: Install Kani and Z3
@@ -101,12 +102,16 @@ jobs:
         run: bash scripts/verify.sh --check verus --timeout 1200 --output target/verification/replay/ci
       - name: Run Kani proofs
         if: matrix.check == 'Kani'
-        run: bash scripts/verify.sh --check kani --keep-going --timeout 1200 --output target/verification/replay/ci
+        run: |
+          for area in foundation arithmetic vec budget; do
+            bash scripts/verify.sh --area "$area" --check kani --keep-going \
+              --timeout 600 --output "target/verification/replay/ci/$area"
+          done
       - name: Show verification diagnostics
         if: failure()
         run: |
           for directory in target/verification/replay/ci target/verification/budget-native; do
             if [ -d "$directory" ]; then
-              find "$directory" -maxdepth 1 -name '*.log' -exec tail -n 100 {} +
+              find "$directory" -maxdepth 2 -name '*.log' -exec tail -n 100 {} +
             fi
           done

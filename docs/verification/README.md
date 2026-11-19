@@ -367,8 +367,8 @@ pass**. Select **GitHub Actions** as the source.
 | `Rust (windows-2025)` | Native build and tests |
 | `Miri` | `unsafe_paths`, `vec`, `shared`, and `scratch_slice` with strict provenance on x86-64 and i686, plus Tree Borrows on x86-64 |
 | `Verus` | The direct product-source proof suite and its negative controls |
-| `Kani` | The default-feature library harnesses and the separate local-budget proof with its negative control |
+| `Kani` | The foundation, arithmetic, Vec, and budget harness groups, including the local-budget proof and its negative control |
 
-The three verification checks run on Ubuntu. Broader memory checks, sanitizers,
-fuzzing, and the combined certificate are available through the local commands
-above. [Workflow configuration](../../.github/workflows/ci.yml)
+The three verification checks run on Ubuntu. Broader Miri and Kani runs,
+sanitizers, fuzzing, and the combined certificate are available through the
+local commands above. [Workflow configuration](../../.github/workflows/ci.yml)

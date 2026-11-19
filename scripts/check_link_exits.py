@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 import subprocess
 
+from link_call_graph import bind_pair_window_edges
+
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = {
     "release": (True, {}),
@@ -38,7 +40,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     source_files = sorted((ROOT / "src").rglob("*.rs")) + sorted(
         p for p in (ROOT / "tools/link-audit").rglob("*")
-        if p.is_file() and p.suffix in (".rs", ".c", ".toml", ".lock") and "target" not in p.parts) + [Path(__file__)]
+        if p.is_file() and p.suffix in (".rs", ".c", ".toml", ".lock") and "target" not in p.parts) + [Path(__file__), ROOT / "scripts/link_call_graph.py"]
     source_sha256 = hashlib.sha256(b"".join(
         str(p.relative_to(ROOT)).encode() + b"\0" + p.read_bytes() for p in source_files
     )).hexdigest()
@@ -130,6 +132,7 @@ def main():
                                 calls.append(dict(function=function, location=location,
                                     source_context=list(source_context), target=target,
                                     instruction=line.strip()))
+                        bind_pair_window_edges(calls, asm, relocations)
                         (work / "retained-panic-calls.json").write_text(json.dumps(calls, indent=2))
                         row["retained_panic_call_sites"] = len(calls)
                         diagnostic_runs = []

@@ -3,9 +3,12 @@
 import hashlib
 import os
 from pathlib import Path
+import re
 import subprocess
+import tempfile
 
 PINNED_SLICE = "decea260b5d73957cd573e827257d8c00d6614fb1cb10f8001d54e3c264de08d"
+PINNED_INDEX = "a0bfeaa6feb406ea78de3bbaa78f78f5ad63020b4ace4c6d85bfe570885c9f67"
 PINNED_ITER = "c309e04ca3da2fc4220ee3f93b4466c578ea7f3f2ef52cca6a3fdf8ac28e53d3"
 PROOF = Path(__file__).resolve().with_name("bplus_core_guards.rs")
 
@@ -43,6 +46,8 @@ def main():
     iterator = source.with_name("iter.rs").read_bytes()
     if hashlib.sha256(iterator).hexdigest() != PINNED_ITER:
         raise SystemExit("core slice iterator differs from verified Rust 1.95.0")
+    if hashlib.sha256(source.with_name("index.rs").read_bytes()).hexdigest() != PINNED_INDEX:
+        raise SystemExit("core slice index differs from verified Rust 1.95.0")
     for fragment in (
         "self.array_windows().all(|[a, b]| compare(a, b))",
         "pub const fn first_chunk<const N: usize>(&self) -> Option<&[T; N]> {\n        if self.len() < N",
@@ -52,9 +57,23 @@ def main():
     if "let ret = self.v.first_chunk();\n        if ret.is_some() {\n            self.v = &self.v[1..];" not in iterator.decode():
         raise SystemExit("unbound pair window advance")
 
-    subprocess.run(
-        [os.environ.get("JZAP_VERUS", "verus"), str(PROOF), "--no-cheating"], check=True
-    )
+    verus = os.environ.get("JZAP_VERUS", "verus")
+    subprocess.run([verus, str(PROOF), "--no-cheating"], check=True)
+
+    # Publishing a new depth without initializing its slot must fail the solver.
+    updated = "ensures initialized_ancestors(path.update(depth as int, true),"
+    proof = PROOF.read_text()
+    if proof.count(updated) != 1:
+        raise SystemExit("B+ ancestor write proof changed")
+    with tempfile.TemporaryDirectory(prefix="jzap-bplus-path-") as directory:
+        mutant = Path(directory) / "missing_ancestor_write.rs"
+        mutant.write_text(proof.replace(updated, "ensures initialized_ancestors(path,"))
+        result = subprocess.run([verus, str(mutant), "--no-cheating"], capture_output=True, text=True)
+        if result.returncode == 0 or not re.search(
+            r"verification results:: \d+ verified, [1-9]\d* errors", result.stdout + result.stderr
+        ):
+            raise SystemExit("B+ missing-ancestor-write control did not reach a solver error")
+    print("Uninitialized ancestor publication rejected by Verus", flush=True)
 
 
 if __name__ == "__main__":

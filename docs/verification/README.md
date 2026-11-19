@@ -287,6 +287,7 @@ cargo fetch --locked
 # Additional verification workspaces, when selected:
 cargo fetch --locked --manifest-path tools/panic-audit/Cargo.toml
 cargo fetch --locked --manifest-path tools/shared-loom/Cargo.toml
+cargo fetch --locked --manifest-path tools/consumer-audit/Cargo.toml
 cargo fetch --locked --manifest-path fuzz/Cargo.toml
 ```
 
@@ -380,9 +381,9 @@ and fuzzing are available through the local commands above.
 
 The **Source certificate** workflow runs the certificate stages in parallel on
 pull requests targeting `main` and pushes to `main`. The B+ stage checks the
-reviewed debug panic callers and allocation refusals, the two checked release
-link profiles, five Kani harnesses, and the `FixedTree` integration test under
-Miri on x86-64 and i686.
+initialized prefix of the borrowed lookup's ancestor stack, reviewed debug
+panic callers, allocation refusals, two checked release link profiles, five
+Kani harnesses, and four B+ integration tests under Miri on x86-64 and i686.
 
 The `Full certificate` job checks each stage's evidence against the checked-out
 commit, input fingerprint, and Actions run attempt before matching retained

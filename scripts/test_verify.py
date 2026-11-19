@@ -422,4 +422,44 @@ class DistributedCampaignTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'unlisted artifact files'):
             self.collect()
 
+class LinkCampaignTests(unittest.TestCase):
+    def test_bplus_route_rejects_changed_ancestor_publication(self):
+        from bplus_bindings import LOOKUP, SOURCES, check
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for name in SOURCES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((ROOT / name).read_bytes())
+            check(root)
+            lookup = root / LOOKUP
+            original = lookup.read_text()
+            self.assertIn('slot.write(id);', original)
+            lookup.write_text(original.replace('slot.write(id);', ''))
+            with self.assertRaisesRegex(AssertionError, r'unbound B\+ source'):
+                check(root)
+
+    def test_retained_bplus_guard_requires_reviewed_callers(self):
+        from link_call_graph import PAIR_WINDOW_NEXT, PAIR_WINDOW_PATH, SLICE_INDEX_FAIL, bind_pair_window_edges
+        from source_certificate import classify
+
+        edge = dict(function=f'10 <{PAIR_WINDOW_NEXT}>:',
+                    target=SLICE_INDEX_FAIL, location='/rust/core/src/slice/index.rs:569')
+        assembly = [
+            edge['function'],
+            f'20 <{PAIR_WINDOW_PATH[0]}>:',
+            f'   20: call 10 <{PAIR_WINDOW_NEXT}>',
+            f'30 <{PAIR_WINDOW_PATH[1]}>:',
+            f'   30: call 20 <{PAIR_WINDOW_PATH[0]}>',
+            f'40 <{PAIR_WINDOW_PATH[2]}>:',
+            f'   40: call 30 <{PAIR_WINDOW_PATH[1]}>',
+        ]
+        with self.assertRaisesRegex(AssertionError, r'unbound B\+ pair-window caller'):
+            classify(edge)
+        bind_pair_window_edges([edge], '\n'.join(assembly), '')
+        self.assertEqual(classify(edge), ('bplus-pair-window-advance', ['pair_window_advance']))
+        with self.assertRaisesRegex(ValueError, 'unexpected callers'):
+            bind_pair_window_edges([edge], '\n'.join([*assembly, '50 <unexpected>:', *assembly[-1:]]), '')
+
 if __name__=='__main__':unittest.main()

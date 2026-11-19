@@ -27,6 +27,7 @@ from check_unsafe_inventory import group
 from verify_string import is_string
 from shared_bindings import is_shared,separate
 from btree_bindings import is_btree
+from bplus_bindings import check as check_bplus, is_bplus
 from hash_map_bindings import is_hash_map
 from verify_binary_heap import is_binary_heap
 from verify_deque import is_deque
@@ -52,9 +53,10 @@ def main():
     files+=sorted((ROOT/'tools/direct-verus').glob('*.rs'))+[ROOT/'scripts/verus_composition.py']
     files+=sorted((ROOT/'tools/panic-audit/src').rglob('*.rs'))
     files+=[ROOT/'scripts/verify_string.py',ROOT/'scripts/shared_bindings.py',ROOT/'scripts/btree_bindings.py',ROOT/'scripts/hash_map_bindings.py',ROOT/'scripts/verify_hash_set.py',ROOT/'scripts/verify_binary_heap.py',ROOT/'scripts/verify_deque.py',ROOT/'scripts/verify_scratch_slice.py']
-    files+=[ROOT/'scripts'/name for name in ['init_bindings.py','verify_owner_protocol.py','owner_state_projection.py','closure_projection.py','credit_bindings.py','callsite_projection.py','caller_bindings.py','check_unsafe_inventory.py','verify_edit_loops.py','verify_wrapping_memory.py','verify_panic_state.py','verify_state_types.py','verify_pointer_checks.py','verify_source.py','arithmetic_projection.py']]
+    files+=[ROOT/'scripts'/name for name in ['init_bindings.py','verify_owner_protocol.py','owner_state_projection.py','closure_projection.py','credit_bindings.py','callsite_projection.py','caller_bindings.py','bplus_bindings.py','check_unsafe_inventory.py','verify_edit_loops.py','verify_wrapping_memory.py','verify_panic_state.py','verify_state_types.py','verify_pointer_checks.py','verify_source.py','arithmetic_projection.py']]
     fingerprint=lambda:hashlib.sha256(b''.join(str(p.relative_to(ROOT)).encode()+b'\0'+p.read_bytes() for p in files)).hexdigest()
     before=fingerprint()
+    check_bplus(ROOT)
     with (OUT/'unsafe-operations-build.log').open('w') as log:
         subprocess.run(['cargo','build','--locked','--offline','--manifest-path','tools/panic-audit/Cargo.toml','--bin','unsafe_operations','--target-dir','target/panic-inventory'],cwd=ROOT,stdout=log,stderr=log,check=True)
     if not args.reuse_generated:
@@ -85,7 +87,7 @@ def main():
         credit_expressions=credit_bindings(source_root)
         credit='include!('+json.dumps(str(ROOT/'tools/direct-verus/budget-ledger.rs'),ensure_ascii=False)+');\n'
         credit+=(ROOT/'tools/memory-proof/owner-credit.verus.rs').read_text()
-        source_files=sorted(str(p.relative_to(source_root)) for p in (source_root/'src').rglob('*.rs') if not p.name.endswith('proofs.rs') and not is_string(str(p.relative_to(source_root))) and not is_shared(str(p.relative_to(source_root))) and not is_btree(str(p.relative_to(source_root))) and not is_hash_map(str(p.relative_to(source_root))) and not is_binary_heap(str(p.relative_to(source_root))) and not is_deque(str(p.relative_to(source_root))) and not is_scratch_slice(str(p.relative_to(source_root))))
+        source_files=sorted(str(p.relative_to(source_root)) for p in (source_root/'src').rglob('*.rs') if not p.name.endswith('proofs.rs') and not is_string(str(p.relative_to(source_root))) and not is_shared(str(p.relative_to(source_root))) and not is_btree(str(p.relative_to(source_root))) and not is_bplus(str(p.relative_to(source_root))) and not is_hash_map(str(p.relative_to(source_root))) and not is_binary_heap(str(p.relative_to(source_root))) and not is_deque(str(p.relative_to(source_root))) and not is_scratch_slice(str(p.relative_to(source_root))))
         unsafe_rows=json.loads(subprocess.check_output([str(scanner('unsafe_sites')),*source_files],cwd=source_root,text=True))
         for site in unsafe_rows:site['group']=group(site)
         operation_audit=audit_operations(unsafe_rows,OUT/'operations')
@@ -227,7 +229,7 @@ def main():
                 mutated_unsafe=json.loads(subprocess.check_output([str(scanner('unsafe_sites')),*source_files],cwd=source,text=True))
                 for site in mutated_unsafe:site['group']=group(site)
                 try:
-                    audit_operations([r for r in mutated_unsafe if not separate(r) and not is_btree(r['file']) and not is_hash_map(r['file']) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])],OUT/('mutation-'+name))
+                    audit_operations([r for r in mutated_unsafe if not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])],OUT/('mutation-'+name))
                     if name.startswith('buffer_'):closure(source)
                     bind_callers(source,text,mutated_states,mutated_unsafe,memory_report['kani_harnesses']+memory_report['direct_cursor_harnesses']+stage_harnesses)
                 except AssertionError as error:

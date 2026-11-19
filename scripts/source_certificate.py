@@ -10,6 +10,7 @@ import argparse,fcntl,hashlib,json,os,py_compile,re,subprocess,time
 from pathlib import Path
 
 from certificate_artifacts import collect, digest, identity, publish
+from link_call_graph import PAIR_WINDOW_PATH, is_pair_window_edge
 
 ROOT=Path(__file__).resolve().parents[1]
 PROFILES='release,release-lto,release-checked,debug'
@@ -26,7 +27,7 @@ STAGES={
     'btree-set': ('verus kani panic-audit', ('btree-set',)),
     'hash-map': ('verus kani panic-audit', ('hash-map',)),
     'hash-set': ('verus kani panic-audit', ('hash-set',)),
-    'binary-heap': ('verus kani panic-audit', ('binary-heap',)),
+    'binary-heap': ('verus kani miri panic-audit', ('binary-heap',)),
     'deque': ('verus kani panic-audit', ('deque',)),
     'scratch-slice': ('verus kani panic-audit', ('scratch-slice',)),
     'owner-protocol': ('verus kani panic-audit', ('owner-protocol',)),
@@ -59,6 +60,9 @@ def inputs():
 
 def classify(branch):
     name=branch['function']
+    if is_pair_window_edge(branch):
+        assert branch.get('caller_paths')==[list(PAIR_WINDOW_PATH)],('unbound B+ pair-window caller',branch)
+        return 'bplus-pair-window-advance',['pair_window_advance']
     if 'core::slice::index::slice_index_fail' in name:
         return 'forwarding',[]
     if 'core::slice::index::into_slice_range' in name:
@@ -230,9 +234,9 @@ def commands(out,profiles):
         'bplus-kani': (['cargo','kani','--lib','--harness',BPLUS+'proofs::'],{}),
         'fixed-bplus-kani': (['cargo','kani','--lib','--harness',BPLUS+'fixed::proofs::'],{}),
         'fixed-bplus-miri': ([*miri,'--target','x86_64-unknown-linux-gnu',
-                             '--test','btree','fixed_bplus'],miri_env),
+                             '--test','btree','bplus'],miri_env),
         'fixed-bplus-miri-32': ([*miri,'--target','i686-unknown-linux-gnu',
-                                '--test','btree','fixed_bplus'],miri_env),
+                                '--test','btree','bplus'],miri_env),
         'bplus-release': (['python3','scripts/check_consumer_link.py',
                            '--source','tools/consumer-audit/cases/bplus_pool.rs',
                            '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
@@ -414,6 +418,22 @@ def main():
         assert run('utf8-native')==0
         assert 'Complete - 1 successfully verified harnesses, 0 failures, 1 total.' in evidence(out/'utf8-native.log').read_text()
     assert run('arithmetic-policy')==0
+    assert run('bplus-debug')==0
+    verified.add('pair_window_advance')
+    bplus=None
+    if collected is not None:
+        for name in STAGES['bplus'][1][1:]:
+            assert run(name)==0
+        for name,count in (('bplus-kani',2),('fixed-bplus-kani',3)):
+            assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
+        for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
+            assert re.search(r'test result: ok\. 4 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+        bplus=json.loads(evidence(out/'bplus-release/summary.json').read_text())
+        for profile in ('release-checked','release-lto-checked'):
+            outcomes={r['name']:r['status'] for r in bplus['results'] if r['profile']==profile}
+            assert outcomes=={'positive':'pass','consumer':'pass','overflow-control':'control-detected',
+                              'bounds-control':'control-detected','abort-control':'control-detected'}
+        assert len(bplus['results'])==10
     link_code=run('link')
     assert link_code in (0,1)
     link=json.loads(evidence(out/'link/summary.json').read_text());branches=[];forward=[]
@@ -446,20 +466,6 @@ def main():
                       disposition='guard-unreachable-under-verified-source-contracts')
             if family=='forwarding':forward.append(item)
             else:branches.append(item)
-    bplus=None
-    if collected is not None:
-        for name in STAGES['bplus'][1]:
-            assert run(name)==0
-        for name,count in (('bplus-kani',2),('fixed-bplus-kani',3)):
-            assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
-        for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
-            assert re.search(r'test result: ok\. 1 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
-        bplus=json.loads(evidence(out/'bplus-release/summary.json').read_text())
-        for profile in ('release-checked','release-lto-checked'):
-            outcomes={r['name']:r['status'] for r in bplus['results'] if r['profile']==profile}
-            assert outcomes=={'positive':'pass','consumer':'pass','overflow-control':'control-detected',
-                              'bounds-control':'control-detected','abort-control':'control-detected'}
-        assert len(bplus['results'])==10
     # Forwarders are closed only after every originating guard is bound. The
     # callback contract excludes user panic/abort, rather than proving their code.
     for row in forward:row['disposition']='no-unproved-library-originating-edge'
@@ -480,6 +486,11 @@ def main():
     source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in deque['bindings']]
     assert all(b['contract'] in verified for b in scratch['bindings'])
     source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in scratch['bindings']]
+    source_obligations.append(dict(
+        site=dict(file='src/collections/btree_map/view/bplus.rs',function='descend',
+                  expression='ancestor.assume_init_ref()'),
+        contract='lookup_path_read',role='initialized-ancestor-prefix',
+        disposition='solver-and-source-connected'))
     open_source=sum(b['disposition']=='unproved' for b in source_obligations)
     unproved_edges=sum(b['disposition'] not in ('guard-unreachable-under-verified-source-contracts','no-unproved-library-originating-edge') for b in branches+forward)
     full_profiles=set(args.profiles.split(','))=={'release','release-lto','release-checked','debug'}

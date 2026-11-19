@@ -1,10 +1,11 @@
 [package]
 name = "jzap-std"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Explicitly fallible owning containers and checked borrowed views"
+repository = "https://github.com/shim9610/jzap-std"
 [lib]
 name = "jzap"
 [features]

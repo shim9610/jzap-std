@@ -62,8 +62,9 @@ earlier process-wide atomic cache is retired.
 
 ## API and use
 
-Enable the `std` feature for the Linux default entropy provider. Constructors
-that can obtain entropy or allocate return `Result`; `with_hasher` is allocation-free.
+Enable `std` on a supported platform to obtain seeds from the operating system.
+Constructors that obtain entropy or allocate return `Result`. `with_hasher`
+creates an empty map without allocating.
 
 ```rust
 use jzap::{Error, collections::HashMap};

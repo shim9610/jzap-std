@@ -1,4 +1,6 @@
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 use common::{FaultAllocator, track};
 use jzap::{
     Error, TryClone, TryCloneIn,
@@ -420,7 +422,7 @@ fn dynamic_drop_unwind_always_releases_storage_and_charge() {
         .unwrap();
     let erased = jzap::box_unsize!(boxed => dyn Marker);
     let address = B::as_ptr(&erased).cast::<u8>().addr();
-    let (_, freed) = common::deallocations_during(address, || {
+    let (_, freed) = deallocations::deallocations_during(address, || {
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(erased))).is_err());
     });
     assert_eq!(freed, 1);

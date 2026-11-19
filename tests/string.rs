@@ -10,6 +10,8 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 #[global_allocator]
 static ALLOC: common::FaultAllocator = common::FaultAllocator;
 
@@ -356,7 +358,7 @@ fn leak_recovery_and_safe_borrows() {
     let ptr = std::ptr::NonNull::new(leaked.as_mut_ptr()).unwrap();
     let recovered = unsafe { S::from_raw_parts(ptr, len, cap, Unmetered, Unlimited) };
     assert_eq!(recovered.as_str(), "ABCé");
-    let (_, count) = common::deallocations_during(ptr.as_ptr().addr(), || drop(recovered));
+    let (_, count) = deallocations::deallocations_during(ptr.as_ptr().addr(), || drop(recovered));
     assert_eq!(count, 1);
 }
 

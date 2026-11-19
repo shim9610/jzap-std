@@ -1,6 +1,9 @@
 //! A valid moving allocator makes the old-plus-new admission cost observable.
 mod common;
-use common::{FaultAllocator, deallocations_during, track};
+#[path = "common/deallocations.rs"]
+mod deallocations;
+use common::{FaultAllocator, track};
+use deallocations::deallocations_during;
 use jzap::{Error, budget::AllocationPolicy, vec::Vec};
 use std::alloc::{GlobalAlloc, Layout};
 

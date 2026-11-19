@@ -1490,7 +1490,7 @@ fn destructor_of_the_discarded_half_does_not_leak_the_returned_half() {
             bset,
             |s| {
                 for k in keys().take(12) {
-                    drop(ok(s.try_insert(e(k))))
+                    let _ = ok(s.try_insert(e(k)));
                 }
             },
             check_bset,
@@ -1669,7 +1669,7 @@ fn destructor_of_the_discarded_half_does_not_leak_the_returned_half() {
             hset,
             |s| {
                 for k in keys().take(12) {
-                    drop(ok(s.try_insert(e(k))))
+                    let _ = ok(s.try_insert(e(k)));
                 }
             },
             check_hset,

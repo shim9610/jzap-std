@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 use common::{FaultAllocator, track};
 use jzap::{
     TryClone, TryCloneIn,
@@ -185,7 +187,7 @@ fn panicking_destructor_releases_storage_like_std() {
     let drops = Cell::new(0);
     let standard = Box::new(Panics(&drops));
     let address = (&*standard as *const Panics<'_>).addr();
-    let (result, count) = common::deallocations_during(address, || {
+    let (result, count) = deallocations::deallocations_during(address, || {
         catch_unwind(AssertUnwindSafe(|| drop(standard)))
     });
     assert!(result.is_err());
@@ -195,8 +197,9 @@ fn panicking_destructor_releases_storage_like_std() {
         .ok()
         .unwrap();
     let address = (&*value as *const Panics<'_>).addr();
-    let (result, count) =
-        common::deallocations_during(address, || catch_unwind(AssertUnwindSafe(|| drop(value))));
+    let (result, count) = deallocations::deallocations_during(address, || {
+        catch_unwind(AssertUnwindSafe(|| drop(value)))
+    });
     assert!(result.is_err());
     assert_eq!(drops.get(), 2);
     assert_eq!(count, 1);

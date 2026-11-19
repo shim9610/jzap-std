@@ -72,11 +72,14 @@ cargo check --locked --no-default-features
 cargo doc --locked --all-features --no-deps
 ```
 
+GitHub Actions runs the basic checks for pull requests targeting `main` and
+pushes to `main`. See [CI coverage](docs/verification/README.md#continuous-integration).
+
 For a single-commit export, see [snapshot preparation and regression checks](docs/verification/README.md#snapshot-regression-checks).
 The [verification index](docs/verification/README.md) describes Miri, sanitizers,
 Kani, Verus, fuzzing, mutation checks, and local scripts. Benchmark tooling has
 additional prerequisites, including a pinned reference checkout. It is separate
-from the runtime dependency graph. No automatic GitHub Actions workflow is enabled.
+from the runtime dependency graph.
 
 Choose either the [MIT License](LICENSE-MIT) or the
 [Apache License, Version 2.0](LICENSE-APACHE). Reference snapshots

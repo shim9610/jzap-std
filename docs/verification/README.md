@@ -348,4 +348,12 @@ after compilation and proof jobs finish; they are not part of the replay runner.
 `bash scripts/verify_extended.sh` records enhanced Kani outcomes and continues
 independent checks. Nonzero, unsupported, and timeout outcomes remain distinct
 from successful proofs. These scripts write to `target/verification/`.
-No automatic GitHub Actions workflow is enabled.
+
+## Continuous integration
+
+The GitHub Actions workflow uses Rust 1.95.0 on Linux, macOS, and Windows. Each
+runner checks the core-only build and runs tests with default and all features.
+The Linux runner also checks formatting, runs Clippy on the core-only and
+all-features library builds, and builds API documentation. Clippy and rustdoc
+warnings fail their checks. Miri, sanitizers, fuzzing, and formal verification
+run through the local commands above. [Workflow configuration](../../.github/workflows/ci.yml)

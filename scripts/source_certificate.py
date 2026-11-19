@@ -9,18 +9,51 @@ agreed compiler/Miri/unsafe-caller verification boundary.
 import argparse,fcntl,hashlib,json,os,py_compile,re,subprocess,time
 from pathlib import Path
 
+from certificate_artifacts import collect, digest, identity, publish
+
 ROOT=Path(__file__).resolve().parents[1]
+PROFILES='release,release-lto,release-checked,debug'
+
+# Owner prerequisites stay with verify_owner_protocol.py and run from scratch.
+STAGES={
+    'preflight': ('link-audit panic-audit', ('link-fixture-build','source-routing-build')),
+    'budget-native': ('kani', ('budget-native',)),
+    'direct-foundation': ('verus kani panic-audit', ('direct-foundation',)),
+    'direct-verus': ('verus', ('direct-verus',)),
+    'shared': ('verus kani panic-audit shared-loom', ('shared',)),
+    'string': ('verus kani panic-audit', ('string',)),
+    'btree': ('verus kani panic-audit', ('btree',)),
+    'btree-set': ('verus kani panic-audit', ('btree-set',)),
+    'hash-map': ('verus kani panic-audit', ('hash-map',)),
+    'hash-set': ('verus kani panic-audit', ('hash-set',)),
+    'binary-heap': ('verus kani panic-audit', ('binary-heap',)),
+    'deque': ('verus kani panic-audit', ('deque',)),
+    'scratch-slice': ('verus kani panic-audit', ('scratch-slice',)),
+    'owner-protocol': ('verus kani panic-audit', ('owner-protocol',)),
+    'native-policy': ('kani clippy', ('utf8-native','arithmetic-policy')),
+    'link': ('link-audit', ('link',)),
+    'bplus': ('verus kani miri consumer-audit', ('bplus-debug','bplus-kani',
+              'fixed-bplus-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release')),
+}
+BPLUS='collections::btree_map::view::bplus::'
+
 
 
 def inputs():
     files=sorted((ROOT/'src').rglob('*.rs'))
     files+=sorted((ROOT/'scripts').glob('*.py'))
+    files+=sorted((ROOT/'tests').rglob('*.rs'))
     files+=sorted((ROOT/'tools/memory-proof').glob('*.verus.rs'))
     files+=sorted((ROOT/'tools/panic-audit/src').rglob('*.rs'))
     files+=sorted(p for p in (ROOT/'tools/link-audit').rglob('*') if p.is_file() and 'target' not in p.relative_to(ROOT).parts)
     files+=sorted(p for p in (ROOT/'tools/shared-loom').rglob('*') if p.is_file() and 'target' not in p.relative_to(ROOT).parts)
     files+=sorted((ROOT/'tools/direct-verus').glob('*.rs'))
-    files+=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'clippy.toml']
+    files+=sorted(p for p in (ROOT/'tools/consumer-audit').rglob('*')
+                  if p.is_file() and p.suffix in ('.rs','.toml','.lock','.py','.c')
+                  and 'target' not in p.relative_to(ROOT).parts)
+    files+=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'clippy.toml',
+            ROOT/'tools/panic-audit/Cargo.toml',ROOT/'tools/panic-audit/Cargo.lock',
+            ROOT/'tools/throughput-analysis/src/bplus_pool.rs']
     return hashlib.sha256(b''.join(str(p.relative_to(ROOT)).encode()+b'\0'+p.read_bytes() for p in files)).hexdigest()
 
 
@@ -105,10 +138,6 @@ RECEIPTS={
 REPEATED=('link-fixture-build','source-routing-build')
 
 
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 class Campaign:
     """Run each certificate step once for one input fingerprint.
 
@@ -130,10 +159,13 @@ class Campaign:
     def save(self):
         temporary=self.path.with_suffix('.tmp')
         temporary.write_text(json.dumps(self.state,indent=2)+'\n');os.replace(temporary,self.path)
-    def receipts(self,name):
+    def receipt_paths(self,name):
         paths=[self.root/p for p in RECEIPTS.get(name,[])]
         if name=='link':paths+=self.link_receipts()
-        return {str(p):digest(p) for p in paths}
+        if name=='bplus-release':paths.append(self.out/'bplus-release/summary.json')
+        return paths
+    def receipts(self,name):
+        return {str(p):digest(p) for p in self.receipt_paths(name)}
     def run(self,name,command,extra=None):
         log_path=self.out/(name+'.log');old=self.state['steps'].get(name)
         if old is not None and name not in REPEATED:
@@ -152,106 +184,223 @@ class Campaign:
         # A step ended by a signal is not evidence and is run again on resume.
         if r.returncode>=0:
             row['log_sha256']=digest(log_path)
-            row['receipts']=self.receipts(name) if r.returncode in (0,1) else {}
+            row['receipts']=self.receipts(name) if r.returncode==0 or (name=='link' and r.returncode==1) else {}
             self.state['steps'][name]=row;self.save()
         return r.returncode
+
+
+FOUNDATION_GROUPS=(
+    'arithmetic slot clone state budget '
+    'vec-geometry vec-conversion layout vec-queries init-prefix '
+    'buffer owner-metadata vec-cursors vec-layout-growth vec-compaction '
+    'vec-compaction-values vec-extraction vec-extraction-values vec-splice-fill vec-staging '
+).split()
+
+
+def commands(out,profiles):
+    miri=['cargo','+nightly-2026-10-30','miri','test','--locked']
+    miri_env={'MIRIFLAGS':'-Zmiri-strict-provenance'}
+    return {
+        'link-fixture-build': (['cargo','check','--locked','--offline',
+        '--manifest-path','tools/link-audit/Cargo.toml'],{}),
+        'source-routing-build': (['cargo','build','--locked','--offline',
+        '--manifest-path','tools/panic-audit/Cargo.toml','--target-dir','target/panic-inventory',
+        '--bin','memory','--bin','unsafe_sites','--bin','unsafe_operations'],{}),
+        'budget-native': (['python3','scripts/verify_budget_native.py','--mutations'],{}),
+        'direct-foundation': (['python3','scripts/verify_source.py',
+            *[arg for group in FOUNDATION_GROUPS for arg in ('--group',group)],'--mutations'],{}),
+        'direct-verus': (['python3','scripts/verify_direct_verus.py','--mutations'],{}),
+        'shared': (['python3','scripts/verify_shared.py','--mutations','--kani','--loom'],{}),
+        'string': (['python3','scripts/verify_string.py','--mutations','--kani'],{}),
+        'btree': (['python3','scripts/verify_btree.py','--mutations','--kani'],{}),
+        'btree-set': (['python3','scripts/verify_btree_set.py','--mutations','--kani'],{}),
+        'hash-map': (['python3','scripts/verify_hash_map.py','--kani','--mutations'],{}),
+        'hash-set': (['python3','scripts/verify_hash_set.py','--kani','--mutations'],{}),
+        'binary-heap': (['python3','scripts/verify_binary_heap.py','--kani','--mutations'],{}),
+        'deque': (['python3','scripts/verify_deque.py','--kani','--mutations'],{}),
+        'scratch-slice': (['python3','scripts/verify_scratch_slice.py','--kani','--mutations'],{}),
+        'owner-protocol': (['python3','scripts/verify_owner_protocol.py','--mutations'],{}),
+        'utf8-native': (['cargo','kani','--lib','-Z','loop-contracts','--exact','--harness',
+            'boxed::text::panic_proofs::character_byte_cursor_preserves_every_valid_state'],
+            {'RUSTFLAGS':'--cfg jzap_loop_contracts'}),
+        'arithmetic-policy': (['python3','scripts/verify_arithmetic_policy.py'],{}),
+        'link': (['python3','scripts/check_link_exits.py','--profiles',profiles,'--output',str(out/'link')],{}),
+        'bplus-debug': (['python3','tools/consumer-audit/check_bplus_debug.py',
+                         '--output',str(out/'bplus-debug')],{}),
+        'bplus-kani': (['cargo','kani','--lib','--harness',BPLUS+'proofs::'],{}),
+        'fixed-bplus-kani': (['cargo','kani','--lib','--harness',BPLUS+'fixed::proofs::'],{}),
+        'fixed-bplus-miri': ([*miri,'--target','x86_64-unknown-linux-gnu',
+                             '--test','btree','fixed_bplus'],miri_env),
+        'fixed-bplus-miri-32': ([*miri,'--target','i686-unknown-linux-gnu',
+                                '--test','btree','fixed_bplus'],miri_env),
+        'bplus-release': (['python3','scripts/check_consumer_link.py',
+                           '--source','tools/consumer-audit/cases/bplus_pool.rs',
+                           '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
+                           '--require-success','--output',str(out/'bplus-release')],{}),
+    }
+
+
+def check_routes():
+    from verify_wrapping_memory import inventory,coverage
+    from verify_scratch_slice import bindings as scratch_bindings
+    coverage(inventory(ROOT))
+    scratch_bindings()
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,default=ROOT/'target/verification/panic-proof')
-    p.add_argument('--profiles',default='release,release-lto,release-checked,debug')
+    p.add_argument('--profiles',default=PROFILES)
     p.add_argument('--resume',action='store_true',help='Continue the campaign recorded in --output for identical inputs; each step still runs exactly once')
     p.add_argument('--reuse-models',action='store_true',help='Development only; never produces a complete certificate')
-    args=p.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
+    modes=p.add_mutually_exclusive_group()
+    modes.add_argument('--list-stages',action='store_true',help='Print the CI matrix as JSON')
+    modes.add_argument('--stage',choices=STAGES,help='Run one fresh CI stage and export its evidence')
+    modes.add_argument('--assemble',type=Path,help='Check and compose all stages from this Actions attempt')
+    args=p.parse_args()
     if not __debug__:
         raise RuntimeError('Verification requires Python assertions; remove -O/PYTHONOPTIMIZE')
-    # Source-content validation avoids stale same-size, same-second helper edits.
+    if args.list_stages:
+        print(json.dumps({'include':[dict(stage=name,tools=spec[0]) for name,spec in STAGES.items()]}))
+        return 0
+    distributed=args.stage or args.assemble
+    if distributed and (args.resume or args.reuse_models or args.profiles!=PROFILES):
+        p.error('CI stages and assembly require a fresh run with all four link profiles')
+    out=args.output.resolve()
+    out.mkdir(parents=True,exist_ok=True)
     for source in (ROOT/'scripts').glob('*.py'):
         py_compile.compile(str(source),doraise=True,
             invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)
-    lock=(ROOT/'target/verification/.source-certificate.lock').open('a')
+    lock_path=ROOT/'target/verification/.source-certificate.lock'
+    lock_path.parent.mkdir(parents=True,exist_ok=True)
+    lock=lock_path.open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     (out/'summary.json').unlink(missing_ok=True)
     before=inputs()
+
     def link_receipts():
         return [out/'link/summary.json']+sorted((out/'link').glob('*/product/retained-panic-calls.json'))
-    campaign=Campaign(out,before,args.resume,link_receipts=link_receipts)
-    started=campaign.state['started_ns'];steps=campaign.steps;run=campaign.run
+
+    specs=commands(out,args.profiles)
+    assert set(specs)=={name for _, names in STAGES.values() for name in names}
+    context=identity(ROOT,before) if distributed else None
+    collected=None
+    if args.assemble:
+        collected, files=collect(args.assemble,context,STAGES,RECEIPTS,
+                                 commands(Path('{output}'),PROFILES),PROFILES.split(','))
+        started=min(row['started_ns'] for row in collected.values())
+        steps=[]
+        invocations=[]
+    else:
+        campaign=Campaign(out,before,args.resume,link_receipts=link_receipts)
+        started=campaign.state['started_ns']
+        steps=campaign.steps
+        invocations=campaign.state['invocations']
+
+    def run(name):
+        if collected is not None:
+            steps.append(collected[name])
+            return collected[name]['exit_code']
+        command,env=specs[name]
+        return campaign.run(name,command,env)
+
+    if args.stage:
+        for name in STAGES[args.stage][1]:
+            # A fresh CI checkout must produce these outputs during this job.
+            stale=[path for path in campaign.receipt_paths(name) if path.exists()]
+            assert not stale,(name,'stage already has evidence',stale)
+            code=run(name)
+            if code not in ((0,1) if name=='link' else (0,)):
+                print((out/(name+'.log')).read_text()[-10000:],flush=True)
+                raise AssertionError((name,code))
+        if args.stage=='preflight':
+            check_routes()
+        assert inputs()==before,'certificate inputs changed during stage'
+        publish(out/'evidence'/args.stage,args.stage,context,steps,ROOT,out)
+        return 0
+
+    def evidence(path):
+        if collected is None:
+            return path
+        if path.is_relative_to(out):
+            key='output/'+path.relative_to(out).as_posix()
+        else:
+            key='checkout/'+path.relative_to(ROOT).as_posix()
+        return files[key]
+
     # Type-check all consumer roots before spending time on solver campaigns.
-    assert run('link-fixture-build',['cargo','check','--locked','--offline',
-        '--manifest-path','tools/link-audit/Cargo.toml'])==0
+    assert run('link-fixture-build')==0
     # Reject a missing domain route before running expensive solver campaigns.
-    assert run('source-routing-build',['cargo','build','--locked','--offline',
-        '--manifest-path','tools/panic-audit/Cargo.toml','--target-dir','target/panic-inventory',
-        '--bin','memory','--bin','unsafe_sites','--bin','unsafe_operations'])==0
-    from verify_wrapping_memory import inventory,coverage
-    from verify_scratch_slice import bindings as scratch_bindings
-    coverage(inventory(ROOT))
-    scratch_bindings()
-    assert run('budget-native',['python3','scripts/verify_budget_native.py','--mutations'])==0
-    assert run('direct-foundation',['python3','scripts/verify_source.py','--group','arithmetic','--group','slot','--group','clone','--group','state','--group','budget','--group','vec-geometry','--group','vec-conversion','--group','layout','--group','vec-queries','--group','init-prefix','--group','buffer','--group','owner-metadata','--group','vec-cursors','--group','vec-layout-growth','--group','vec-compaction','--group','vec-compaction-values','--group','vec-extraction','--group','vec-extraction-values','--group','vec-splice-fill','--group','vec-staging','--mutations'])==0
-    foundation=json.loads((ROOT/'target/verification/direct-source/summary.json').read_text())
+    assert run('source-routing-build')==0
+    if collected is None:
+        check_routes()
+    assert run('budget-native')==0
+    assert run('direct-foundation')==0
+    foundation=json.loads(evidence(ROOT/'target/verification/direct-source/summary.json').read_text())
     assert foundation['status']=='pass' and foundation['source_unchanged'] and foundation['mutations_run']
-    assert {row['group'] for row in foundation['groups']}=={'arithmetic','slot','clone','state','budget','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging'}
+    assert {row['group'] for row in foundation['groups']}==set(FOUNDATION_GROUPS)
     assert len(foundation['controls'])==55 and all(row['detected'] for row in foundation['controls'])
-    assert run('direct-verus',['python3','scripts/verify_direct_verus.py','--mutations'])==0
-    direct_verus=json.loads((ROOT/'target/verification/direct-verus/summary.json').read_text())
+    assert run('direct-verus')==0
+    direct_verus=json.loads(evidence(ROOT/'target/verification/direct-verus/summary.json').read_text())
     assert direct_verus['status']=='pass' and direct_verus['source_unchanged'] and direct_verus['mutations_run']
-    budget_native=json.loads((ROOT/'target/verification/budget-native/summary.json').read_text())
+    budget_native=json.loads(evidence(ROOT/'target/verification/budget-native/summary.json').read_text())
     assert budget_native['status']=='pass' and budget_native['source_unchanged'] and budget_native['mutations_run']
     assert len(budget_native['controls'])==1 and budget_native['controls'][0]['detected']
-    assert run('shared',['python3','scripts/verify_shared.py','--mutations','--kani','--loom'])==0
-    shared=json.loads((ROOT/'target/verification/shared/proofs/summary.json').read_text())
+    assert run('shared')==0
+    shared=json.loads(evidence(ROOT/'target/verification/shared/proofs/summary.json').read_text())
     assert shared['status']=='pass' and shared['source_unchanged'] and shared['kani_run'] and shared['loom_run']
     assert shared['direct_numeric']['status']=='pass' and shared['direct_numeric']['source_unchanged'] and shared['direct_numeric']['mutations_run']
-    assert run('string',['python3','scripts/verify_string.py','--mutations','--kani'])==0
-    string=json.loads((ROOT/'target/verification/string/proofs/summary.json').read_text())
+    assert run('string')==0
+    string=json.loads(evidence(ROOT/'target/verification/string/proofs/summary.json').read_text())
     assert string['status']=='pass' and string['source_unchanged'] and string['kani_run']
     assert string['direct_cursors']['status']=='pass' and string['direct_cursors']['source_unchanged'] and string['direct_cursors']['mutations_run']
-    assert run('btree',['python3','scripts/verify_btree.py','--mutations','--kani'])==0
-    btree=json.loads((ROOT/'target/verification/btree/proofs/summary.json').read_text())
+    assert run('btree')==0
+    btree=json.loads(evidence(ROOT/'target/verification/btree/proofs/summary.json').read_text())
     assert btree['direct_source']['status']=='pass' and btree['direct_source']['source_unchanged'] and btree['direct_source']['mutations_run']
     assert {r['group'] for r in btree['direct_source']['groups']}=={'btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans'}
     assert btree['status']=='pass' and btree['source_unchanged'] and btree['complete']
-    assert run('btree-set',['python3','scripts/verify_btree_set.py','--mutations','--kani'])==0
-    btree_set=json.loads((ROOT/'target/verification/btree-set/proofs/summary.json').read_text())
+    assert run('btree-set')==0
+    btree_set=json.loads(evidence(ROOT/'target/verification/btree-set/proofs/summary.json').read_text())
     assert btree_set['status']=='pass' and btree_set['source_unchanged'] and btree_set['complete']
-    assert run('hash-map',['python3','scripts/verify_hash_map.py','--kani','--mutations'])==0
-    hash_map=json.loads((ROOT/'target/verification/hash-map/proofs/summary.json').read_text())
+    assert run('hash-map')==0
+    hash_map=json.loads(evidence(ROOT/'target/verification/hash-map/proofs/summary.json').read_text())
     assert hash_map['complete'] and hash_map['source_unchanged']
-    assert run('hash-set',['python3','scripts/verify_hash_set.py','--kani','--mutations'])==0
-    hash_set=json.loads((ROOT/'target/verification/hash-set/proofs/summary.json').read_text())
+    assert run('hash-set')==0
+    hash_set=json.loads(evidence(ROOT/'target/verification/hash-set/proofs/summary.json').read_text())
     assert hash_set['complete'] and hash_set['source_unchanged']
-    assert run('binary-heap',['python3','scripts/verify_binary_heap.py','--kani','--mutations'])==0
-    binary_heap=json.loads((ROOT/'target/verification/binary-heap/proofs/summary.json').read_text())
+    assert run('binary-heap')==0
+    binary_heap=json.loads(evidence(ROOT/'target/verification/binary-heap/proofs/summary.json').read_text())
     assert binary_heap['complete'] and binary_heap['source_unchanged']
-    assert run('deque',['python3','scripts/verify_deque.py','--kani','--mutations'])==0
-    deque=json.loads((ROOT/'target/verification/vec-deque/proofs/summary.json').read_text())
+    assert run('deque')==0
+    deque=json.loads(evidence(ROOT/'target/verification/vec-deque/proofs/summary.json').read_text())
     assert deque['complete'] and deque['source_unchanged']
-    assert run('scratch-slice',['python3','scripts/verify_scratch_slice.py','--kani','--mutations'])==0
-    scratch=json.loads((ROOT/'target/verification/scratch-slice/proofs/summary.json').read_text())
+    assert run('scratch-slice')==0
+    scratch=json.loads(evidence(ROOT/'target/verification/scratch-slice/proofs/summary.json').read_text())
     assert scratch['complete'] and scratch['source_unchanged']
     if not args.reuse_models:
-        assert run('owner-protocol',['python3','scripts/verify_owner_protocol.py','--mutations'])==0
-    owner_path=ROOT/'target/verification/owner-protocol/summary.json'
+        assert run('owner-protocol')==0
+    owner_path=evidence(ROOT/'target/verification/owner-protocol/summary.json')
     owner=json.loads(owner_path.read_text())
     assert owner['status']=='pass' and owner['source_unchanged'] and owner['source_closure_complete']
     if not args.reuse_models:
-        assert not owner['reused_prerequisites'] and owner_path.stat().st_mtime_ns>=started
+        assert not owner['reused_prerequisites']
+        if collected is None:
+            assert owner_path.stat().st_mtime_ns>=started
     assert owner['source_bindings']['state_writes']==87
     assert owner['source_bindings']['constructor_fields']==132
     assert owner['source_bindings']['unsafe_callers']==179
     assert len(owner['owner_expressions']['caller_bindings'])==179
-    generated=(ROOT/'target/verification/owner-protocol/owner-protocol.generated.rs').read_text()
+    generated=evidence(ROOT/'target/verification/owner-protocol/owner-protocol.generated.rs').read_text()
     native=next(r for r in owner['results'] if r['name']=='owner-protocol')
     assert hashlib.sha256(generated.encode()).hexdigest()==native['generated_sha256'],'generated proof input differs from the verified input'
     verified=set(re.findall(r'\b(?:proof\s+)?fn\s+(\w+)\b',generated)) | set(string['verified_functions']) | set(shared['verified_functions']) | set(btree['verified_functions']) | {'kani:'+h for h in budget_native['kani_harnesses']+string['core']['kani_harnesses']+shared['kani_harnesses']+btree['kani_harnesses']}
     # These compatibility calls are checked inside the actual product crate in
     # the owner composition. Their bodies only invoke the original state methods.
+    producer_root=Path(collected['owner-protocol']['checkout']) if collected is not None else ROOT
     for name in ('state-adapters.rs','budget-adapters.rs','budget-ledger.rs','vec-adapters.rs','layout-adapters.rs','init-adapters.rs'):
         path=ROOT/'tools/direct-verus'/name
-        assert 'include!('+json.dumps(str(path),ensure_ascii=False)+')' in generated
+        producer_path=producer_root/path.relative_to(ROOT)
+        assert 'include!('+json.dumps(str(producer_path),ensure_ascii=False)+')' in generated
         verified |= set(re.findall(r'\b(?:(?:proof|spec)\s+)?fn\s+(\w+)\b',path.read_text()))
     verified |= {'direct:'+row['target'] for row in direct_verus['targets']}
     verified |= set(scratch.get('verified_functions',[]))|set(binary_heap.get('verified_functions',[]))|set(deque.get('verified_functions',[]))
@@ -262,14 +411,15 @@ def main():
     if not args.reuse_models:
         # Prove the actual UTF-8 adapter for every valid cursor and Unicode char;
         # the scalar 4-byte output lemma alone would not establish its producer.
-        assert run('utf8-native',['cargo','kani','--lib','-Z','loop-contracts','--exact','--harness',
-            'boxed::text::panic_proofs::character_byte_cursor_preserves_every_valid_state'],
-            {'RUSTFLAGS':'--cfg jzap_loop_contracts'})==0
-        assert 'Complete - 1 successfully verified harnesses, 0 failures, 1 total.' in (out/'utf8-native.log').read_text()
-    assert run('arithmetic-policy',['python3','scripts/verify_arithmetic_policy.py'])==0
-    link_code=run('link',['python3','scripts/check_link_exits.py','--profiles',args.profiles,'--output',str(out/'link')])
+        assert run('utf8-native')==0
+        assert 'Complete - 1 successfully verified harnesses, 0 failures, 1 total.' in evidence(out/'utf8-native.log').read_text()
+    assert run('arithmetic-policy')==0
+    link_code=run('link')
     assert link_code in (0,1)
-    link=json.loads((out/'link/summary.json').read_text());branches=[];forward=[]
+    link=json.loads(evidence(out/'link/summary.json').read_text());branches=[];forward=[]
+    if collected is not None:
+        assert link['source_commit']==context['commit'],'link summary was produced for a different commit'
+        assert link_code==int(any(r['status']=='retained-exit-edge' for r in link['results']))
     expected={(profile,None) for profile in args.profiles.split(',')}
     expected|={(profile,c) for profile in args.profiles.split(',') if profile in ('release','release-lto')
                for c in ('panic-control','bounds-control','oom-control','abort-control')}
@@ -282,9 +432,13 @@ def main():
         assert r['status'] in ('pass','retained-exit-edge'),r
         if r['status']=='pass':continue
         assert r.get('diagnostic_link_exit')==0,r
-        path=out/'link'/r['profile']/'product/retained-panic-calls.json'
+        path=evidence(out/'link'/r['profile']/'product/retained-panic-calls.json')
         assert path.exists()
-        for edge in json.loads(path.read_text()):
+        edges=json.loads(path.read_text())
+        if collected is not None:
+            assert edges and len(edges)==r['retained_panic_call_sites'],r
+            assert r['diagnostic_seeds']==65 and 'diagnostic_runtime_error' not in r,r
+        for edge in edges:
             family,contracts=classify(edge)
             assert all(name in verified for name in contracts),(edge,contracts)
             item=dict(edge,profile=r['profile'],family=family,contracts=contracts,
@@ -292,6 +446,20 @@ def main():
                       disposition='guard-unreachable-under-verified-source-contracts')
             if family=='forwarding':forward.append(item)
             else:branches.append(item)
+    bplus=None
+    if collected is not None:
+        for name in STAGES['bplus'][1]:
+            assert run(name)==0
+        for name,count in (('bplus-kani',2),('fixed-bplus-kani',3)):
+            assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
+        for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
+            assert re.search(r'test result: ok\. 1 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+        bplus=json.loads(evidence(out/'bplus-release/summary.json').read_text())
+        for profile in ('release-checked','release-lto-checked'):
+            outcomes={r['name']:r['status'] for r in bplus['results'] if r['profile']==profile}
+            assert outcomes=={'positive':'pass','consumer':'pass','overflow-control':'control-detected',
+                              'bounds-control':'control-detected','abort-control':'control-detected'}
+        assert len(bplus['results'])==10
     # Forwarders are closed only after every originating guard is bound. The
     # callback contract excludes user panic/abort, rather than proving their code.
     for row in forward:row['disposition']='no-unproved-library-originating-edge'
@@ -320,8 +488,8 @@ def main():
     report=dict(complete=complete,status='pass' if complete else 'development-only',
         source_sha256=before,source_unchanged=True,models=owner,budget_native=budget_native,direct_foundation=foundation,direct_verus=direct_verus,string=string,shared=shared,btree=btree,btree_set=btree_set,hash_map=hash_map,hash_set=hash_set,binary_heap=binary_heap,deque=deque,scratch=scratch,link=link,
         branches=branches+forward,unproved_link_edges=unproved_edges,open_source_obligations=open_source,
-        steps=steps,reused_models=args.reuse_models,
-        campaign=dict(started_ns=started,invocations=campaign.state['invocations']),
+        steps=steps,reused_models=args.reuse_models,bplus=bplus,
+        campaign=dict(started_ns=started,invocations=invocations,actions=context),
         scope='Numeric overflow-to-memory and internal guard unreachability for the checked Box/Vec/String/Rc/Arc/BTreeMap/BTreeSet/HashMap/HashSet/BinaryHeap/VecDeque/Scratch/checked-slice and concurrent-budget source contracts and Linux x86_64 link fixtures. Direct Rust/Verus kernels and reviewed source projections remain distinct evidence. Rust/compiler/core ABI, valid allocator, safe ownership, public unsafe and returning callback contracts remain explicit; actual alias/initialization/drop scenarios are checked by the separate Miri/ASan/compiler suites.')
     (out/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     (out/'source-obligations.json').write_text(json.dumps(source_obligations,indent=2)+'\n')

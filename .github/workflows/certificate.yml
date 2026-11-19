@@ -1,0 +1,131 @@
+name: Source certificate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: '1.95.0'
+  CERTIFICATE_OUTPUT: target/verification/ci-certificate
+
+jobs:
+  plan:
+    name: Plan certificate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Test the evidence handoff
+        run: python3 -m unittest discover -s scripts -p test_verify.py -k Campaign
+      - id: matrix
+        run: echo "value=$(python3 scripts/source_certificate.py --list-stages)" >> "$GITHUB_OUTPUT"
+
+  prove:
+    name: Certificate (${{ matrix.stage }})
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CERTIFICATE_STAGE: ${{ matrix.stage }}
+      CERTIFICATE_TOOLS: ${{ matrix.tools }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Rust and fetch locked dependencies
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src
+          cargo fetch --locked
+          for tool in $CERTIFICATE_TOOLS; do
+            case "$tool" in
+              link-audit|panic-audit|shared-loom|consumer-audit)
+                cargo fetch --locked --manifest-path "tools/$tool/Cargo.toml" ;;
+            esac
+          done
+      - name: Install Clippy
+        if: contains(matrix.tools, 'clippy')
+        run: rustup component add clippy --toolchain "$RUSTUP_TOOLCHAIN"
+      - name: Install Verus
+        if: contains(matrix.tools, 'verus')
+        run: |
+          python3 scripts/setup_verus.py --directory "$RUNNER_TEMP/verus"
+          echo "JZAP_VERUS=$RUNNER_TEMP/verus/verus-x86-linux/verus" >> "$GITHUB_ENV"
+      - name: Install Kani and Z3
+        if: contains(matrix.tools, 'kani')
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+          z3_release=z3-4.16.0-x64-glibc-2.39
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/$z3_release.zip" \
+            --output "$z3_release.zip"
+          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  $z3_release.zip" | sha256sum --check
+          unzip -q "$z3_release.zip" "$z3_release/bin/z3"
+          echo "$RUNNER_TEMP/$z3_release/bin" >> "$GITHUB_PATH"
+      - name: Install Miri
+        if: contains(matrix.tools, 'miri')
+        run: |
+          rustup toolchain install nightly-2026-10-30 --profile minimal \
+            --component miri --component rust-src --target i686-unknown-linux-gnu
+      - name: Run certificate stage
+        run: python3 scripts/source_certificate.py --stage "$CERTIFICATE_STAGE" --output "$CERTIFICATE_OUTPUT"
+      - name: Upload stage evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: certificate-${{ matrix.stage }}
+          path: ${{ env.CERTIFICATE_OUTPUT }}/evidence/${{ matrix.stage }}
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  certificate:
+    name: Full certificate
+    needs: [plan, prove]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require successful proof jobs
+        env:
+          PLAN: ${{ needs.plan.result }}
+          PROVE: ${{ needs.prove.result }}
+        run: |
+          if [[ "$PLAN" != success || "$PROVE" != success ]]; then
+            echo "::error::The certificate requires every stage to pass. Use Re-run all jobs to retry the complete certificate."
+            exit 1
+          fi
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Download proof evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: certificate-*
+          path: ${{ runner.temp }}/certificate-evidence
+      - name: Compose source proofs and final links
+        run: |
+          python3 scripts/source_certificate.py --assemble "$RUNNER_TEMP/certificate-evidence" \
+            --output "$CERTIFICATE_OUTPUT"
+      - name: Upload the composed certificate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: full-certificate
+          path: |
+            ${{ env.CERTIFICATE_OUTPUT }}/summary.json
+            ${{ env.CERTIFICATE_OUTPUT }}/source-obligations.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

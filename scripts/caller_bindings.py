@@ -186,6 +186,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     from verify_string import is_string
     from shared_bindings import separate, check as check_shared
     from btree_bindings import is_btree
+    from bplus_bindings import check as check_bplus, is_bplus
     from hash_map_bindings import is_hash_map,is_copy_capability_site
     from verify_hash_set import is_hash_set,bindings as check_hash_set
     from verify_binary_heap import is_binary_heap,bindings as check_binary_heap
@@ -201,8 +202,10 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     # Require its exact reviewed safe delegation and empty unsafe inventory
     # before handing that domain to the separate actual-Rust set checks.
     check_hash_set(root)
-    rows=[r for r in rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
-    unsafe_rows=[r for r in unsafe_rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
+    # The B+ audit verifies the source-bound initialized prefix and snapshot separately.
+    check_bplus(root)
+    rows=[r for r in rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
+    unsafe_rows=[r for r in unsafe_rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     compaction_leaves(root,unsafe_rows,rows)
     root=Path(root);theorems=set(re.findall(r'\b(?:proof\s+)?fn\s+(\w+)\b',generated))
     for filename in ('state-adapters.rs','budget-adapters.rs','budget-ledger.rs','vec-adapters.rs','layout-adapters.rs','init-adapters.rs'):

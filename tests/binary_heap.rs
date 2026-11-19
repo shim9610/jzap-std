@@ -8,6 +8,8 @@ use jzap::{
 };
 use std::{cell::Cell, cmp::Reverse, collections::BinaryHeap as StdHeap, rc::Rc};
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 #[global_allocator]
 static A: common::FaultAllocator = common::FaultAllocator;
 fn random(s: &mut u64) -> u64 {
@@ -558,13 +560,13 @@ fn comparator_unwind_restores_initialized_holes() {
 fn vector_transfer_drain_and_failure_release_storage_exactly_once() {
     let mut heap = BinaryHeap::try_from_array([4u64, 1, 3, 2]).unwrap();
     let address = heap.as_slice().as_ptr().addr();
-    let (_, freed) = common::deallocations_during(address, || {
+    let (_, freed) = deallocations::deallocations_during(address, || {
         drop(heap.drain());
     });
     assert_eq!(freed, 0);
     let data = heap.into_vec();
     assert_eq!(data.as_ptr().addr(), address);
-    let (_, freed) = common::deallocations_during(address, || drop(data));
+    let (_, freed) = deallocations::deallocations_during(address, || drop(data));
     assert_eq!(freed, 1);
 }
 

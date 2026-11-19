@@ -1,10 +1,6 @@
 use jzap::{
     ArithmeticError, Checked, DivisionError, DivisionError64, TryArithmetic, WrappingArithmetic,
 };
-#[expect(
-    dead_code,
-    reason = "Other suites use the shared allocator's separate drop watcher."
-)]
 mod common;
 #[global_allocator]
 static ALLOC: common::FaultAllocator = common::FaultAllocator;

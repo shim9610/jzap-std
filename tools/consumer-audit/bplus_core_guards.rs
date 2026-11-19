@@ -41,5 +41,38 @@ proof fn pair_window_advance(len: usize)
     requires len >= 2,
     ensures 1 <= len, 0 < len as int - 1 < len as int,
 {}
+// Projection of the private MaybeUninit path in Lookup. The checked slice
+// split gives history [0, depth) and the write slot at depth. The reviewed
+// implementation writes the slot before publishing depth, with every
+// fallible access and callback before either update.
+spec fn initialized_ancestors(path: Seq<bool>, depth: int) -> bool {
+    0 <= depth <= path.len()
+        && forall|index: int| 0 <= index < depth ==> #[trigger] path[index]
+}
+
+proof fn lookup_path_new(capacity: usize)
+    ensures initialized_ancestors(Seq::new(capacity as nat, |_: int| false), 0),
+{}
+
+proof fn lookup_path_read(path: Seq<bool>, depth: usize, index: usize)
+    requires
+        initialized_ancestors(path, depth as int),
+        index < depth,
+    ensures index < path.len(), path[index as int],
+{}
+
+proof fn lookup_path_write(path: Seq<bool>, depth: usize)
+    requires
+        initialized_ancestors(path, depth as int),
+        depth < path.len(),
+        depth < usize::MAX,
+    ensures initialized_ancestors(path.update(depth as int, true), depth as int + 1),
+{
+    assert forall|index: int| 0 <= index < depth as int + 1 implies
+        #[trigger] path.update(depth as int, true)[index] by {
+        if index < depth { assert(path[index]); }
+    }
+}
+
 }
 fn main() {}

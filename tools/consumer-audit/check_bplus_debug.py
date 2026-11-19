@@ -5,12 +5,14 @@ from collections import defaultdict
 import hashlib
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from bplus_bindings import check as check_bplus
+from link_call_graph import LinkCallGraph, PAIR_WINDOW_NEXT, PAIR_WINDOW_PATH
 SLICE = "core::slice::<impl [T]>::"
 LAYOUT = "core::alloc::layout::Layout::"
 GUARD = "::precondition_check"
@@ -33,10 +35,7 @@ SEARCH = {
 # Search and ordering use the pinned core arithmetic proofs. The other guards instantiate
 # the baseline Vec storage/layout/budget contracts and the fixture allocator.
 CALLERS = {
-    "<core::slice::iter::ArrayWindows<T,_> as core::iter::traits::iterator::Iterator>::next": {
-        ("core::iter::traits::iterator::Iterator::try_fold", SLICE + "is_sorted_by",
-         "jzap::collections::btree_map::view::bplus::Node<K,V,I>::new"),
-    },
+    PAIR_WINDOW_NEXT: {PAIR_WINDOW_PATH},
     "core::hint::assert_unchecked" + GUARD: SEARCH,
     "<usize as core::slice::index::SliceIndex<[T]>>::get_unchecked" + GUARD: SEARCH,
     LAYOUT + "from_size_align_unchecked" + GUARD: {CAPACITY},
@@ -77,56 +76,16 @@ FORWARDING = {
 }
 DIAGNOSTIC = {"jzap_link_audit_panic_reachable", "rust_eh_personality"}
 EXIT_NAMES = {"abort", "exit", "_Exit", "_exit", "quick_exit", "pthread_exit", "__assert_fail"}
-SYMBOL = re.compile(r"^([0-9a-f]+) <(.+)>:$")
-ADDRESS = re.compile(r"#\s*([0-9a-f]+)\s+<")
-BRANCH = re.compile(r"\b(?:callq?|j[a-z]+)\s+(?:\*[^#]+#\s*([0-9a-f]+)\s|([0-9a-f]+)\s+<)")
 PINNED_CALLER_SOURCES = {
     "tools/consumer-audit/cases/bplus_pool.rs": "3ec3be4986be9abb12aaf2ad6fded318a126bef42d2dd7d8a849b0551197556c",
-    "src/collections/btree_map/view/bplus.rs": "83915dd7b53ceb7d3590392e6b3138fbe1833155ec9f8c18374a6ed138d9eb59",
 }
 
 
 def inspect(assembly, relocations):
-    names = {}
-    got = {
-        int(slot, 16): int(target, 16)
-        for slot, target in re.findall(
-            r"^([0-9a-f]+)\s+R_X86_64_RELATIVE\s+\*ABS\*\+0x([0-9a-f]+)", relocations, re.M
-        )
-    }
-    calls = defaultdict(set)
-    references = defaultdict(set)
-    for line in assembly.splitlines():
-        if match := SYMBOL.match(line):
-            current = int(match[1], 16)
-            names[current] = match[2]
-        elif match := BRANCH.search(line):
-            target = got.get(int(match[1], 16), -1) if match[1] else int(match[2], 16)
-            calls[target].add(current)
-        elif match := ADDRESS.search(line):
-            address = int(match[1], 16)
-            references[got.get(address, address)].add(current)
-
-    def incoming(address):
-        return {caller for caller in calls[address] | references[address]
-                if caller in names and caller != address}
-
-    def verify_path(address, expected):
-        if () in expected and len(expected) == 1:
-            return {()}
-        actual_names = {names[caller] for caller in incoming(address)}
-        expected_names = {path[0] for path in expected if path}
-        if not actual_names or not actual_names <= expected_names:
-            raise ValueError(f"unexpected callers of {names[address]}: {sorted(actual_names)}")
-        return {
-            (names[caller], *tail)
-            for caller in incoming(address)
-            for tail in verify_path(caller, {path[1:] for path in expected if path[0] == names[caller]})
-        }
-
+    graph = LinkCallGraph(assembly, relocations)
     observed = defaultdict(set)
     count = 0
-    for target, target_name in names.items():
+    for target, target_name in graph.names.items():
         exit_sink = target_name.split("@", 1)[0] in EXIT_NAMES
         panic_sink = any(word in target_name for word in (
             PANICKING, "unwrap_failed", "handle_alloc_error", "jzap_link_audit_panic_reachable",
@@ -134,8 +93,8 @@ def inspect(assembly, relocations):
         ))
         if not (exit_sink or panic_sink):
             continue
-        for caller in incoming(target):
-            name = names[caller]
+        for caller in graph.incoming(target):
+            name = graph.names[caller]
             edge = (name, target_name)
             if exit_sink:
                 if name not in DIAGNOSTIC:
@@ -146,7 +105,7 @@ def inspect(assembly, relocations):
                 continue
             if name not in CALLERS:
                 raise ValueError(f"unbound panic edge: {edge}")
-            observed[name].update(verify_path(caller, CALLERS[name]))
+            observed[name].update(graph.verify_path(caller, CALLERS[name]))
     for name, paths in CALLERS.items():
         if observed[name] != paths:
             raise ValueError(f"missing caller paths for {name}: {sorted(paths - observed[name])}")
@@ -160,6 +119,7 @@ def main():
     args = parser.parse_args()
     if (os.uname().sysname, os.uname().machine) != ("Linux", "x86_64"):
         parser.error("this caller audit requires Linux x86-64 and GNU objdump")
+    check_bplus(ROOT)
     for path, expected in PINNED_CALLER_SOURCES.items():
         if hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != expected:
             raise SystemExit(f"unbound debug caller source: {path}")

@@ -9,7 +9,8 @@ import subprocess
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 POOL = ROOT / "tools/throughput-analysis/src/bplus_pool.rs"
-BASELINE = "42afdab"
+# Path and content digest of the 29 reviewed files at 42afdab.
+VEC_SOURCE_SHA256 = "315fd1adbe0d811d9f4e485868fbb99cc20175893f57faf4dbe2456a86ceadca"
 VEC_SOURCES = (
     "src/vec.rs", "src/vec", "src/buffer.rs", "src/buffer",
     "src/arithmetic", "src/layout", "src/error.rs",
@@ -51,6 +52,21 @@ def item(text, marker):
     raise ValueError(f"unclosed Rust item: {marker}")
 
 
+def vec_source_digest(root):
+    files = set()
+    for name in VEC_SOURCES:
+        path = root / name
+        if path.is_file():
+            files.add(path)
+        elif path.is_dir():
+            files.update(p for p in path.rglob("*") if p.is_file())
+    digest = hashlib.sha256()
+    for name in sorted(path.relative_to(root).as_posix() for path in files):
+        digest.update(name.encode() + b"\0")
+        digest.update(hashlib.sha256((root / name).read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=POOL)
@@ -59,10 +75,8 @@ def main():
     for name, expected in BOUND.items():
         if hashlib.sha256(item(text, name).encode()).hexdigest() != expected:
             raise SystemExit(f"unbound B+ constructor item: {name}")
-    subprocess.run(
-        ["git", "diff", "--exit-code", BASELINE, "--", *VEC_SOURCES],
-        cwd=ROOT, check=True,
-    )
+    if vec_source_digest(ROOT) != VEC_SOURCE_SHA256:
+        raise SystemExit("Vec constructor dependencies differ from the reviewed prefix proof baseline")
     subprocess.run(
         [os.environ.get("JZAP_VERUS", "verus"), str(HERE / "bplus_prefix.rs"), "--no-cheating"],
         check=True,

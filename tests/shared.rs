@@ -1,5 +1,7 @@
 //! Shared protocol, ownership, failure and concurrency regression cases.
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 use common::{FaultAllocator, track};
 use jzap::{
     Error, TryClone,
@@ -506,7 +508,7 @@ fn last_strong_unwind_releases_implicit_weak_once() {
     let value = Rc::try_new_in(Panics, Budget::Limited(&budget)).unwrap();
     let ptr = Rc::into_raw(value);
     let value = unsafe { Rc::<Panics, _>::from_raw(ptr) };
-    let (result, count) = common::deallocations_during(ptr.as_ptr().addr(), || {
+    let (result, count) = deallocations::deallocations_during(ptr.as_ptr().addr(), || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value)))
     });
     assert!(result.is_err());

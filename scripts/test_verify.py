@@ -351,4 +351,115 @@ class CampaignTests(unittest.TestCase):
                 self.assertLess(fresh.run('killed',killed),0)
                 self.assertNotIn('killed',fresh.state['steps'])
 
+class DistributedCampaignTests(unittest.TestCase):
+    def setUp(self):
+        from certificate_artifacts import collect, publish
+        from source_certificate import Campaign
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.directory = root / 'evidence'
+        self.bundle = self.directory / 'certificate-test'
+        self.manifest = self.bundle / 'manifest.json'
+        self.context = dict(commit='abc', source_sha256='fingerprint', repository='owner/repo',
+                            run_id='1000', run_attempt='1')
+        self.stages = {'test': ('', ('probe',))}
+        self.receipts = {'probe': ['receipt.json']}
+        self.command = [sys.executable, '-c', 'from pathlib import Path; Path("receipt.json").write_text("{}")']
+        output = root / 'output'
+        output.mkdir()
+        with patch.dict('source_certificate.RECEIPTS', self.receipts), contextlib.redirect_stdout(io.StringIO()):
+            campaign = Campaign(output, self.context['source_sha256'], False, root=root)
+            self.assertEqual(campaign.run('probe', self.command), 0)
+        publish(self.bundle, 'test', self.context, campaign.steps, root, output)
+        self.collect = lambda: collect(self.directory, self.context, self.stages, self.receipts,
+                                       {'probe': (self.command, {})}, ('release',))
+
+    def change_manifest(self, change):
+        manifest = json.loads(self.manifest.read_text())
+        change(manifest)
+        self.manifest.write_text(json.dumps(manifest))
+
+    def test_collects_fresh_evidence_without_repeating_step(self):
+        steps, files = self.collect()
+        self.assertEqual(steps['probe']['exit_code'], 0)
+        self.assertEqual(files['checkout/receipt.json'].read_text(), '{}')
+        self.assertIn('output/probe.log', files)
+
+    def test_rejects_different_commit_fingerprint_or_run_attempt(self):
+        for key in self.context:
+            with self.subTest(key=key), patch.dict(self.context, {key: 'different'}):
+                with self.assertRaisesRegex(AssertionError, 'stale or mismatched'):
+                    self.collect()
+
+    def test_rejects_missing_job_or_receipt(self):
+        self.stages['missing'] = ('', ('absent',))
+        with self.assertRaisesRegex(AssertionError, 'stage artifacts'):
+            self.collect()
+        del self.stages['missing']
+        self.change_manifest(lambda manifest: manifest['steps'][0]['files'].pop('checkout/receipt.json'))
+        with self.assertRaisesRegex(AssertionError, 'evidence files'):
+            self.collect()
+
+    def test_rejects_modified_receipt(self):
+        (self.bundle / 'checkout/receipt.json').write_text('modified')
+        with self.assertRaisesRegex(AssertionError, 'digest differs'):
+            self.collect()
+
+    def test_rejects_failed_step(self):
+        self.change_manifest(lambda manifest: manifest['steps'][0].update(exit_code=1))
+        with self.assertRaisesRegex(AssertionError, 'failed step'):
+            self.collect()
+
+    def test_rejects_changed_command(self):
+        self.change_manifest(lambda manifest: manifest['steps'][0]['command'].append('--reuse-models'))
+        with self.assertRaisesRegex(AssertionError, 'unexpected command'):
+            self.collect()
+
+    def test_rejects_unlisted_artifact_file(self):
+        (self.bundle / 'unlisted.txt').touch()
+        with self.assertRaisesRegex(AssertionError, 'unlisted artifact files'):
+            self.collect()
+
+class LinkCampaignTests(unittest.TestCase):
+    def test_bplus_route_rejects_changed_ancestor_publication(self):
+        from bplus_bindings import LOOKUP, SOURCES, check
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for name in SOURCES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((ROOT / name).read_bytes())
+            check(root)
+            lookup = root / LOOKUP
+            original = lookup.read_text()
+            self.assertIn('slot.write(id);', original)
+            lookup.write_text(original.replace('slot.write(id);', ''))
+            with self.assertRaisesRegex(AssertionError, r'unbound B\+ source'):
+                check(root)
+
+    def test_retained_bplus_guard_requires_reviewed_callers(self):
+        from link_call_graph import PAIR_WINDOW_NEXT, PAIR_WINDOW_PATH, SLICE_INDEX_FAIL, bind_pair_window_edges
+        from source_certificate import classify
+
+        edge = dict(function=f'10 <{PAIR_WINDOW_NEXT}>:',
+                    target=SLICE_INDEX_FAIL, location='/rust/core/src/slice/index.rs:569')
+        assembly = [
+            edge['function'],
+            f'20 <{PAIR_WINDOW_PATH[0]}>:',
+            f'   20: call 10 <{PAIR_WINDOW_NEXT}>',
+            f'30 <{PAIR_WINDOW_PATH[1]}>:',
+            f'   30: call 20 <{PAIR_WINDOW_PATH[0]}>',
+            f'40 <{PAIR_WINDOW_PATH[2]}>:',
+            f'   40: call 30 <{PAIR_WINDOW_PATH[1]}>',
+        ]
+        with self.assertRaisesRegex(AssertionError, r'unbound B\+ pair-window caller'):
+            classify(edge)
+        bind_pair_window_edges([edge], '\n'.join(assembly), '')
+        self.assertEqual(classify(edge), ('bplus-pair-window-advance', ['pair_window_advance']))
+        with self.assertRaisesRegex(ValueError, 'unexpected callers'):
+            bind_pair_window_edges([edge], '\n'.join([*assembly, '50 <unexpected>:', *assembly[-1:]]), '')
+
 if __name__=='__main__':unittest.main()

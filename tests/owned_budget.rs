@@ -1,6 +1,9 @@
 //! Heap-ledger lifetime, failure, transfer and async-state boundaries.
 mod common;
-use common::{FaultAllocator, deallocations_during, track};
+#[path = "common/deallocations.rs"]
+mod deallocations;
+use common::{FaultAllocator, track};
+use deallocations::deallocations_during;
 use jzap::{
     Error, TryClone,
     boxed::Box,

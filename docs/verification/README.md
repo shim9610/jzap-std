@@ -287,6 +287,7 @@ cargo fetch --locked
 # Additional verification workspaces, when selected:
 cargo fetch --locked --manifest-path tools/panic-audit/Cargo.toml
 cargo fetch --locked --manifest-path tools/shared-loom/Cargo.toml
+cargo fetch --locked --manifest-path tools/consumer-audit/Cargo.toml
 cargo fetch --locked --manifest-path fuzz/Cargo.toml
 ```
 
@@ -372,7 +373,21 @@ pass**. Select **GitHub Actions** as the source.
 | `Miri` | `unsafe_paths`, `vec`, `shared`, and `scratch_slice` with strict provenance on x86-64 and i686, plus Tree Borrows on x86-64 |
 | `Verus` | The direct product-source proof suite and its negative controls |
 | `Kani` | The foundation, arithmetic, Vec, and budget harness groups, including the local-budget proof and its negative control |
+| `Full certificate` | Composes the source proofs, negative controls, four Linux x86-64 final-link profiles, and B+ consumer checks |
 
-The three verification checks run on Ubuntu. Broader Miri and Kani runs,
-sanitizers, fuzzing, and the combined certificate are available through the
-local commands above. [Workflow configuration](../../.github/workflows/ci.yml)
+The verification checks run on Ubuntu. Broader Miri and Kani runs, sanitizers,
+and fuzzing are available through the local commands above.
+[CI workflow](../../.github/workflows/ci.yml)
+
+The **Source certificate** workflow runs the certificate stages in parallel on
+pull requests targeting `main` and pushes to `main`. The B+ stage checks the
+initialized prefix of the borrowed lookup's ancestor stack, reviewed debug
+panic callers, allocation refusals, two checked release link profiles, five
+Kani harnesses, and four B+ integration tests under Miri on x86-64 and i686.
+
+The `Full certificate` job checks each stage's evidence against the checked-out
+commit, input fingerprint, and Actions run attempt before matching retained
+panic callers to proved guards. It publishes `summary.json` and
+`source-obligations.json` as the `full-certificate` artifact. Select **Re-run
+all jobs** to retry so every stage produces evidence in the new attempt.
+[Source certificate workflow](../../.github/workflows/certificate.yml)

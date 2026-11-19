@@ -11,6 +11,8 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 #[global_allocator]
 static ALLOC: common::FaultAllocator = common::FaultAllocator;
 fn refuse_after(n: usize) {
@@ -448,7 +450,7 @@ fn unwind_cleans_partial_initialization_iterator_suffix_and_allocation() {
     let mut v = V::with_limit(1);
     v.try_push(Boom).ok().unwrap();
     let ptr = v.as_ptr().addr();
-    let (_, freed) = common::deallocations_during(ptr, || {
+    let (_, freed) = deallocations::deallocations_during(ptr, || {
         assert!(catch_unwind(AssertUnwindSafe(|| drop(v))).is_err());
     });
     // Boom is a ZST, so no allocator call is expected.
@@ -463,7 +465,7 @@ fn unwind_cleans_partial_initialization_iterator_suffix_and_allocation() {
     let mut v = V::with_limit(1);
     v.try_push(BigBoom(9)).ok().unwrap();
     let ptr = v.as_ptr().addr();
-    let (_, freed) = common::deallocations_during(ptr, || {
+    let (_, freed) = deallocations::deallocations_during(ptr, || {
         assert!(catch_unwind(AssertUnwindSafe(|| drop(v.into_iter()))).is_err());
     });
     assert_eq!(freed, 1);

@@ -6,6 +6,8 @@ use jzap::{
 };
 use std::{cell::Cell, collections::VecDeque as Std, rc::Rc};
 mod common;
+#[path = "common/deallocations.rs"]
+mod deallocations;
 #[global_allocator]
 static A: common::FaultAllocator = common::FaultAllocator;
 fn values<T: Copy, P: jzap::budget::AllocationPolicy, L: jzap::vec::LengthPolicy>(
@@ -570,7 +572,7 @@ fn allocation_ordinals_and_noncopy_policy_cleanup() {
     assert_eq!(owner.used(), 0);
     let mut d = ring(8, 5, 6);
     let ptr = d.as_slices().1.as_ptr() as usize;
-    let (_, frees) = common::deallocations_during(ptr, || {
+    let (_, frees) = deallocations::deallocations_during(ptr, || {
         d.clear();
         d.try_shrink_to_fit().unwrap();
     });

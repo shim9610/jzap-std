@@ -712,6 +712,166 @@ fn local_slice_lookup_allows_reusing_the_same_caller_buffers() {
 }
 
 #[test]
+fn bplus_point_lookup_matches_std() {
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+    use std::collections::BTreeMap;
+
+    let mut random = 617_u64;
+    for (fanout, leaf_width) in [
+        (1, 1),
+        (2, 8),
+        (3, 9),
+        (5, 3),
+        (8, 8),
+        (9, 8),
+        (17, 17),
+        (32, 32),
+    ] {
+        let keys: Vec<u64> = (0..fanout * leaf_width).map(|i| i as u64 * 2 + 2).collect();
+        let model: BTreeMap<_, _> = keys.iter().map(|&key| (key, key * 3)).collect();
+        let minima: Vec<_> = keys.chunks_exact(leaf_width).map(|leaf| leaf[0]).collect();
+        let children: Vec<_> = (1..=fanout).collect();
+        for _ in 0..256 {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            let query = random % (keys.len() as u64 * 2 + 4);
+            let mut lookup = Lookup::new(0, 1, &query).unwrap();
+            let root = Node::<_, u64, _>::branch(&minima, &children).unwrap();
+            let actual = match lookup.provide(0, &root).unwrap() {
+                LookupStep::Absent => None,
+                LookupStep::NeedNode(id) => {
+                    let keys = &keys[(id - 1) * leaf_width..id * leaf_width];
+                    let values: Vec<_> = keys.iter().map(|key| key * 3).collect();
+                    match lookup
+                        .provide(id, &Node::leaf(keys, &values).unwrap())
+                        .unwrap()
+                    {
+                        LookupStep::Found(key, value) => Some((*key, *value)),
+                        LookupStep::Absent => None,
+                        LookupStep::NeedNode(_) => unreachable!(),
+                    }
+                }
+                LookupStep::Found(_, _) => unreachable!(),
+            };
+            assert_eq!(actual, model.get_key_value(&query).map(|(&k, &v)| (k, v)));
+            assert_eq!(lookup.requested_node(), None);
+        }
+    }
+}
+
+#[test]
+fn bplus_reuses_parent_storage_and_checks_inherited_fences_on_retry() {
+    use jzap::Error;
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+
+    let query = 10;
+    let mut keys = [10, 20];
+    let mut lookup = Lookup::new(0, 2, &query).unwrap();
+    assert_eq!(
+        lookup.provide(0, &Node::<_, u32, _>::branch(&keys, &[1, 2]).unwrap()),
+        Ok(LookupStep::NeedNode(1))
+    );
+    keys = [10, 12];
+    assert_eq!(
+        lookup.provide(4, &Node::<_, u32, _>::branch(&keys[..1], &[3]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(
+        lookup.provide(1, &Node::<_, u32, _>::branch(&keys[..1], &[0]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(
+        lookup.provide(1, &Node::leaf(&keys, &[55, 56]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(lookup.requested_node(), Some(1));
+    assert_eq!(
+        lookup.provide(1, &Node::<_, u32, _>::branch(&keys[..1], &[3]).unwrap()),
+        Ok(LookupStep::NeedNode(3))
+    );
+
+    for malformed in [[9, 11], [11, 13], [10, 20], [10, 21]] {
+        keys = malformed;
+        assert_eq!(
+            lookup.provide(3, &Node::leaf(&keys, &[55, 56]).unwrap()),
+            Err(Error::InvalidStructure)
+        );
+        assert_eq!(lookup.requested_node(), Some(3));
+    }
+    assert_eq!(
+        lookup.provide(3, &Node::leaf(&[], &[] as &[u32]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    keys = [10, 19];
+    assert_eq!(
+        lookup.provide(3, &Node::leaf(&keys, &[55, 56]).unwrap()),
+        Ok(LookupStep::Found(&10, &55))
+    );
+    assert_eq!(lookup.requested_node(), None);
+    assert_eq!(
+        lookup.provide(3, &Node::leaf(&keys, &[55, 56]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+
+    assert!(Node::<u32, (), usize>::branch(&[], &[]).is_err());
+    assert!(Node::<_, (), _>::branch(&[1, 2], &[3]).is_err());
+    assert!(Node::<_, (), _>::branch(&[2, 1], &[3, 4]).is_err());
+    assert!(Node::<_, _, usize>::leaf(&[1, 1], &[1, 2]).is_err());
+    assert!(Node::<_, _, usize>::leaf(&[1, 2], &[1]).is_err());
+    assert!(Lookup::<i32, _>::new(0, usize::BITS as usize, &query).is_err());
+    let mut empty = Lookup::<i32, _>::new(0, 0, &query).unwrap();
+    assert_eq!(
+        empty.provide(0, &Node::leaf(&[], &[] as &[u32]).unwrap()),
+        Ok(LookupStep::Absent)
+    );
+}
+
+#[test]
+fn bplus_initializes_only_visited_ancestors_at_maximum_height() {
+    use jzap::Error;
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+    use std::num::NonZeroU32;
+
+    let height = usize::BITS as usize - 1;
+    let node_id = |depth| NonZeroU32::new(u32::try_from(depth + 1).unwrap()).unwrap();
+    let mut lookup = Lookup::<&str, _, str>::new(node_id(0), height, "middle").unwrap();
+
+    for depth in 0..height {
+        // The first descent is a self-edge. Later attempts point to the root.
+        let cycle = [node_id(0)];
+        let invalid = Node::<_, u32, _>::branch(&["first"], &cycle).unwrap();
+        assert_eq!(
+            lookup.provide(node_id(depth), &invalid),
+            Err(Error::InvalidStructure)
+        );
+        assert_eq!(lookup.requested_node(), Some(node_id(depth)));
+
+        let child = [node_id(depth + 1)];
+        let branch = Node::<_, u32, _>::branch(&["first"], &child).unwrap();
+        assert_eq!(
+            lookup.provide(node_id(depth), &branch),
+            Ok(LookupStep::NeedNode(child[0]))
+        );
+    }
+
+    let leaf = Node::leaf(&["first", "middle", "third"], &[10, 20, 30]).unwrap();
+    assert_eq!(
+        lookup.provide(node_id(height), &leaf),
+        Ok(LookupStep::Found(&"middle", &20))
+    );
+}
+
+#[test]
 fn destructors_unwind_once_and_still_release_every_node() {
     use std::cell::Cell;
     struct Item<'a>(&'a Cell<usize>, &'a Cell<bool>);
@@ -1033,4 +1193,59 @@ proptest::proptest! {
             assert!(a.iter().eq(b.iter()));validate(&a);
         }
     }
+}
+
+#[test]
+fn fixed_bplus_validates_a_complete_snapshot() {
+    use jzap::collections::btree_map::view::bplus::FixedTree;
+
+    let leaves = [
+        ([2, 3], [20, 30]),
+        ([5, 7], [50, 70]),
+        ([11, 13], [110, 130]),
+        ([17, 19], [170, 190]),
+    ];
+    let branches = [([2, 5], [0, 1]), ([11, 17], [2, 3]), ([2, 11], [4, 5])];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    for key in 0..21 {
+        let expected = leaves.iter().find_map(|(keys, values)| {
+            keys.iter()
+                .zip(values)
+                .find_map(|(candidate, value)| (*candidate == key).then_some(value))
+        });
+        assert_eq!(tree.get(&key), Ok(expected));
+    }
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0], branches[1], ([2, 11], [4, 6])]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0], branches[0], branches[2]]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0]]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0], branches[1], ([2, 5], [4, 1])]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    let overlapped = [([2, 8], [20, 80]), ([5, 7], [50, 70])];
+    assert!(matches!(
+        FixedTree::try_new(&overlapped, &[branches[0]]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert_eq!(
+        FixedTree::<i32, (), 1>::try_new(&[], &[]).unwrap().get(&0),
+        Ok(None)
+    );
+    assert_eq!(
+        FixedTree::try_new(&[([2], [17])], &[]).unwrap().get(&2),
+        Ok(Some(&17))
+    );
+    assert!(matches!(
+        FixedTree::<i32, (), 0>::try_new(&[], &[]),
+        Err(jzap::Error::InvalidStructure)
+    ));
 }

@@ -145,7 +145,7 @@ def plan(area,checks,out,test_targets=None):
                     'loop:panic_proofs::box_iterator_counters_cover_every_machine_word_length',
                     'loop:boxed::slice::panic_proofs::box_iterator_preserves_every_valid_cursor_state','loop:boxed::text::panic_proofs::character_byte_cursor_preserves_every_valid_state'],
                 'vec':['proofs::vec_'],'string':['string::proofs::'],'shared':['shared::proofs::','budget::concurrent::proofs::'],
-                'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::'],
+                'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::','collections::btree_map::view::bplus::proofs::','collections::btree_map::view::bplus::fixed::proofs::'],
                 'hash-map':['collections::hash_map::proofs::','collections::hash_map::iter::scan_proofs::'],
                 'binary-heap':['collections::binary_heap::proofs::'],'deque':['deque::proofs::'],'scratch-slice':['scratch::proofs::','slice::proofs::'],
                 'hash-set':['collections::hash_set::proofs::','collections::hash_map::proofs::hash_set_replace_preserves_slot_class_length_and_credit'],
@@ -181,6 +181,12 @@ def plan(area,checks,out,test_targets=None):
         elif check=='sbom':add(check,[sys.executable,'-c',SBOM,str(out/'jzap-sbom.json')],'dependency-inventory')
         elif check=='link':
             script(check,'check_link_exits.py','--output',str(out/'link'),kind='concrete-call-graph-check')
+            if area in ('all','btree'):
+                script('link-bplus-consumer','check_consumer_link.py',
+                       '--source','tools/consumer-audit/cases/bplus_pool.rs',
+                       '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
+                       '--require-success','--output',str(out/'bplus-consumer'),
+                       kind='concrete-call-graph-check')
             # The no_std fixture cannot link default std entropy; walk that root separately.
             if area in ('all','hash-map','hash-set'):script('link-seed','check_seed_link.py','--profiles','release,release-lto,release-checked','--output',str(out/'link-seed'),kind='concrete-call-graph-check')
         elif check=='certificate':

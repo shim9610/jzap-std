@@ -21,6 +21,9 @@ EXITS = ("abort", "exit", "_Exit", "_exit", "quick_exit", "pthread_exit", "__ass
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=FIXTURE / "cases/checked.rs")
+    parser.add_argument("--source-dependency", type=Path, action="append", default=[])
+    parser.add_argument("--require-success", action="store_true",
+                        help="require success without injection and Err at each injected allocation")
     parser.add_argument("--output", type=Path, default=ROOT / "target/verification/consumer-iterator")
     args = parser.parse_args()
     if os.uname().machine != "x86_64" or os.uname().sysname != "Linux":
@@ -33,7 +36,9 @@ def main():
     files = sorted((ROOT / "src").rglob("*.rs")) + [
         FIXTURE / "Cargo.toml", FIXTURE / "Cargo.lock", FIXTURE / "src/lib.rs",
         FIXTURE / "driver.c", Path(__file__), source,
-    ] + sorted((FIXTURE / "cases").glob("*.rs"))
+    ] + sorted((FIXTURE / "cases").glob("*.rs")) + [
+        path.resolve(strict=True) for path in args.source_dependency
+    ]
     report = dict(
         source=str(source), source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
         inputs={str(p.relative_to(ROOT) if p.is_relative_to(ROOT) else p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
@@ -83,6 +88,8 @@ def main():
                         str(FIXTURE / "driver.c"), str(archive), "-Wl,--gc-sections",
                         "-Wl,-Map=" + str(work / "link.map")]
                 link += ["-Wl,--wrap=" + symbol for symbol in EXITS]
+                if name == "consumer" and args.require_success:
+                    link += ["-DAUDIT_REQUIRE_SUCCESS"]
                 link += ["-ldl", "-lpthread", "-lm", "-o", str(binary)]
                 row["link"] = link
                 linked = run_step(link, "link", cwd=ROOT, capture_output=True, text=True, timeout=60)

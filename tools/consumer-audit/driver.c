@@ -26,13 +26,21 @@ int main(void) {
     for (size_t i = 0; i < sizeof(seeds)/sizeof(seeds[0]); ++i) {
         calls = fail_at = 0;
         uint32_t result = consumer_audit(seeds[i]);
+#ifdef AUDIT_REQUIRE_SUCCESS
+        if (result != 0 || live) return 10;
+#else
         if (result > 1 || live) return 10;
+#endif
         size_t allocations = calls;
         ++runs;
         for (size_t failure = 1; failure <= allocations; ++failure) {
             calls = 0; fail_at = failure;
             result = consumer_audit(seeds[i]);
+#ifdef AUDIT_REQUIRE_SUCCESS
+            if (result != 1 || live) return 11;
+#else
             if (result > 1 || live) return 11;
+#endif
             ++runs;
         }
     }

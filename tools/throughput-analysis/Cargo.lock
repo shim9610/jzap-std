@@ -3,6 +3,29 @@
 version = 4
 
 [[package]]
+name = "allocator-api2"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c583acf993cf4245c4acb0a2cc2ab1f9cc097de73411bb6d3647ff6af2b1013d"
+
+[[package]]
+name = "brie-tree"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc07bcb47a1eaa44b6eb9ae3dd5e895cbf222f7f378ecbe014e1dae4bba30a66"
+dependencies = [
+ "allocator-api2",
+ "cfg-if",
+ "nonmax",
+]
+
+[[package]]
+name = "cfg-if"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
+
+[[package]]
 name = "jzap-std"
 version = "0.1.0-beta.1"
 
@@ -10,5 +33,12 @@ version = "0.1.0-beta.1"
 name = "jzap-throughput-analysis"
 version = "0.0.0"
 dependencies = [
+ "brie-tree",
  "jzap-std",
 ]
+
+[[package]]
+name = "nonmax"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"

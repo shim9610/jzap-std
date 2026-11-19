@@ -10,5 +10,7 @@ pub mod hash_set;
 pub use hash_set::HashSet;
 
 pub mod binary_heap;
-pub use crate::deque::VecDeque;
 pub use binary_heap::BinaryHeap;
+
+pub use crate::deque as vec_deque;
+pub use vec_deque::VecDeque;

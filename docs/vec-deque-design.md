@@ -6,7 +6,7 @@ Target: Rust 1.95 stable, `no_std + alloc`.
 
 ## Scope and references
 
-`jzap::deque::VecDeque`, re-exported as `jzap::collections::VecDeque`, provides
+`jzap::collections::VecDeque` provides
 explicit counterparts for the 54 distinct stable inherent method names in the
 pinned standard implementation, plus fallible ownership/iterator/clone adapters.
 Byte-budget and optional element-limit policies use the existing foundations.
@@ -353,6 +353,10 @@ These are observations at the `GlobalAlloc` boundary. Handles are reported
 separately from payload allocation. Timing builds exclude this instrumentation.
 
 ## Usage and selective reproduction
+
+Import `VecDeque` from `jzap::collections`. Import named iterator types such as
+`Iter`, `IterMut`, and `Drain` from `jzap::collections::vec_deque`. Existing code
+can also import these types from `jzap::deque`.
 
 ```rust
 use jzap::collections::VecDeque;

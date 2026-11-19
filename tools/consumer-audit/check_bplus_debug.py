@@ -16,9 +16,12 @@ LAYOUT = "core::alloc::layout::Layout::"
 GUARD = "::precondition_check"
 ZERO = ("core::alloc::global::GlobalAlloc::alloc_zeroed", "__rustc::__rust_alloc_zeroed")
 VEC_SLICE = ("core::slice::raw::from_raw_parts", "jzap::vec::Vec<T,P,L>::as_slice")
+VEC_MUT_SLICE = ("core::slice::raw::from_raw_parts_mut", "jzap::vec::Vec<T,P,L>::as_mut_slice")
 CAPACITY = (LAYOUT + "from_size_align_unchecked", "jzap::capacity::Capacity<T>::layout")
 RESERVE = "jzap::budget::concurrent::ConcurrentMemoryBudget::reserve"
 SEARCH = {
+    # The inlined FixedTree lookup calls binary_search_by directly.
+    (SLICE + "binary_search_by", "jzap_consumer_audit::consumer::check_width"),
     (SLICE + "binary_search_by", SLICE + "binary_search",
      "jzap_consumer_audit::consumer::check_width"),
     (SLICE + "binary_search_by", SLICE + "partition_point",
@@ -49,12 +52,14 @@ CALLERS = {
     "core::ptr::const_ptr::<impl *const T>::is_aligned_to": {
         ("core::ptr::write_bytes" + GUARD, *ZERO),
         ("core::slice::raw::from_raw_parts" + GUARD, *VEC_SLICE),
+        ("core::slice::raw::from_raw_parts_mut" + GUARD, *VEC_MUT_SLICE),
     },
     "core::ptr::non_null::NonNull<T>::new_unchecked" + GUARD: {
         ("core::ptr::non_null::NonNull<T>::new", "jzap::storage::" + operation)
         for operation in ("allocate_impl", "reallocate")
     },
     "core::slice::raw::from_raw_parts" + GUARD: {VEC_SLICE},
+    "core::slice::raw::from_raw_parts_mut" + GUARD: {VEC_MUT_SLICE},
     "core::sync::atomic::atomic_load": {
         ("core::sync::atomic::AtomicUsize::load", RESERVE),
     },
@@ -76,8 +81,8 @@ SYMBOL = re.compile(r"^([0-9a-f]+) <(.+)>:$")
 ADDRESS = re.compile(r"#\s*([0-9a-f]+)\s+<")
 BRANCH = re.compile(r"\b(?:callq?|j[a-z]+)\s+(?:\*[^#]+#\s*([0-9a-f]+)\s|([0-9a-f]+)\s+<)")
 PINNED_CALLER_SOURCES = {
-    "tools/consumer-audit/cases/bplus_pool.rs": "574311a85e3970bee3307117291aa820f341c4fb17626e50fa3596646f67bd0d",
-    "src/collections/btree_map/view/bplus.rs": "4666b05891dbe8160a64f9b9628b710b42a37350f8fbbc211af0f8cbabd19c1a",
+    "tools/consumer-audit/cases/bplus_pool.rs": "3ec3be4986be9abb12aaf2ad6fded318a126bef42d2dd7d8a849b0551197556c",
+    "src/collections/btree_map/view/bplus.rs": "83915dd7b53ceb7d3590392e6b3138fbe1833155ec9f8c18374a6ed138d9eb59",
 }
 
 
@@ -159,7 +164,7 @@ def main():
         if hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != expected:
             raise SystemExit(f"unbound debug caller source: {path}")
 
-    for name in ("check_bplus_prefix.py", "check_bplus_core_guards.py"):
+    for name in ("check_bplus_prefix.py", "check_bplus_core_guards.py", "check_bplus_fixed.py"):
         subprocess.run([sys.executable, str(HERE / name)], check=True)
 
     out = args.output.resolve()

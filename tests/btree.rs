@@ -1194,3 +1194,58 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn fixed_bplus_validates_a_complete_snapshot() {
+    use jzap::collections::btree_map::view::bplus::FixedTree;
+
+    let leaves = [
+        ([2, 3], [20, 30]),
+        ([5, 7], [50, 70]),
+        ([11, 13], [110, 130]),
+        ([17, 19], [170, 190]),
+    ];
+    let branches = [([2, 5], [0, 1]), ([11, 17], [2, 3]), ([2, 11], [4, 5])];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    for key in 0..21 {
+        let expected = leaves.iter().find_map(|(keys, values)| {
+            keys.iter()
+                .zip(values)
+                .find_map(|(candidate, value)| (*candidate == key).then_some(value))
+        });
+        assert_eq!(tree.get(&key), Ok(expected));
+    }
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0], branches[1], ([2, 11], [4, 6])]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0], branches[0], branches[2]]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0]]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        FixedTree::try_new(&leaves, &[branches[0], branches[1], ([2, 5], [4, 1])]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    let overlapped = [([2, 8], [20, 80]), ([5, 7], [50, 70])];
+    assert!(matches!(
+        FixedTree::try_new(&overlapped, &[branches[0]]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+    assert_eq!(
+        FixedTree::<i32, (), 1>::try_new(&[], &[]).unwrap().get(&0),
+        Ok(None)
+    );
+    assert_eq!(
+        FixedTree::try_new(&[([2], [17])], &[]).unwrap().get(&2),
+        Ok(Some(&17))
+    );
+    assert!(matches!(
+        FixedTree::<i32, (), 0>::try_new(&[], &[]),
+        Err(jzap::Error::InvalidStructure)
+    ));
+}

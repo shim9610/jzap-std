@@ -193,6 +193,14 @@ pub(super) struct Pools<Keys, Children> {
 }
 
 impl<Keys, Children> Pools<Keys, Children> {
+    pub(super) fn leaves(&self) -> &[(Keys, Keys)] {
+        self.leaves.as_slice()
+    }
+
+    pub(super) fn branches(&self) -> &[(Keys, Children)] {
+        self.branches.as_slice()
+    }
+
     #[inline(always)]
     pub(super) fn get<const N: usize>(&self, query: u64) -> Answer
     where

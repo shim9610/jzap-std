@@ -411,6 +411,91 @@ The overflow-checked no-std consumer linked and ran with and without
 link-time optimization. Both profiles detected their overflow, bounds, and
 abort controls.
 
+#### Prevalidated fixed-width B+ snapshots
+
+`view::bplus::FixedTree` borrows two immutable arrays of records. A leaf
+record holds a key array and a value array. A branch record holds a key
+array and a child ID array. Every record has the same nonzero width.
+Number leaves first and branches second. Put each child before its parent
+and put the root last. Branch keys are the minimum keys of their children.
+
+`try_new` checks key order, equal child heights, non-overlapping key ranges,
+and exactly one parent for each non-root record. Two empty pools represent
+an empty tree. The constructor uses a fallible temporary allocation with
+one summary per node. It releases those summaries before returning. The
+caller retains ownership of both arrays. Borrowed keys must preserve their
+ordering while the view is alive.
+
+```rust
+use jzap::{Error, collections::btree_map::view::bplus::FixedTree};
+
+fn lookup_snapshot() -> Result<(), Error> {
+    let leaves = [([2, 4], [20, 40]), ([6, 8], [60, 80])];
+    let branches = [([2, 6], [0, 1])];
+    let tree = FixedTree::try_new(&leaves, &branches)?;
+    assert_eq!(tree.get(&6)?, Some(&60));
+    assert_eq!(tree.get(&7)?, None);
+    Ok(())
+}
+```
+
+Lookup performs bounded descent through the borrowed pools, allocates no memory,
+and returns a value borrowed from a leaf. Use the streaming `Lookup` when the
+caller supplies pages individually during each lookup.
+
+The benchmark uses Rust 1.95.0 and `brie-tree` 0.1.2 in one release binary
+on the same pinned Linux x86-64 CPU. It matches the sorted keys, values, seed,
+query order, counts, and checksums. Heights in the condition column describe
+the jzap fixture. The `brie-tree` fixtures have heights 2, 4, and 5. Latency
+is total elapsed time divided by total calls, and the gap is jzap time minus
+the paired `brie-tree` time.
+
+| Condition | `brie-tree` time (ns/lookup) | jzap time (ns/lookup) | Gap |
+| --- | ---: | ---: | ---: |
+| 8 / 2, streaming `Lookup` | 13.42 | 45.02 | +31.60 |
+| 8 / 2, `FixedTree` | 13.42 | 9.73 | −3.69 |
+| 32 / 2, streaming `Lookup` | 36.32 | 65.17 | +28.85 |
+| 32 / 2, `FixedTree` | 36.32 | 31.42 | −4.89 |
+| 16 / 3, streaming `Lookup` | 46.88 | 82.10 | +35.22 |
+| 16 / 3, `FixedTree` | 46.88 | 40.79 | −6.09 |
+
+The 36 lookup intervals all lasted at least 1.366 seconds. The per-seed
+`FixedTree` gaps ranged from −3.87 to −3.47 ns, −9.12 to −1.45 ns, and
+−9.47 to −2.03 ns. The prototype `packed` gaps in the same run were
+−3.21, −4.45, and −6.64 ns. The generated `FixedTree` lookup at width 32
+unrolls node routing into five key comparisons, and it carries no ancestor
+history between node visits.
+
+The preparation benchmark starts with the same sorted key-value pairs.
+The benchmark bulk-packs fixed-width arrays and opens a `FixedTree`.
+The other path appends the sorted input with a single `brie-tree` cursor.
+Both time allocation,
+construction, one lookup, and cleanup. `FixedTree` exposes the resulting
+tree for immutable lookup. `brie-tree` also supports mutation.
+
+| Condition | `brie-tree` time (µs/build) | jzap time (µs/build) | Gap |
+| --- | ---: | ---: | ---: |
+| 512 entries, 8 / 2 | 4.12 | 0.94 | −3.18 |
+| 32,768 entries, 32 / 2 | 711.97 | 43.59 | −668.38 |
+| 65,536 entries, 16 / 3 | 634.62 | 101.46 | −533.16 |
+
+All 18 preparation intervals lasted at least 1.174 seconds. The per-seed
+gaps were −3.22 to −3.14 µs, −702.74 to −648.28 µs, and −564.22 to −507.37 µs.
+The three timed `FixedTree` lookup instruction sequences matched between
+the two benchmark builds.
+
+```sh
+dir=target/verification/bplus-fixed
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release \
+  --manifest-path tools/throughput-analysis/Cargo.toml --features bplus-pool --bin bplus \
+  --target-dir "$dir/binary"
+export BPLUS_BATCHES_8_2=35000 BPLUS_BATCHES_32_2=11500 BPLUS_BATCHES_16_3=9500
+for seed in 1 2 3; do
+  BPLUS_FIXED_ONLY=1 taskset -c 2 "$dir/binary/release/bplus" "$seed"
+  BPLUS_PREPARE=1 taskset -c 2 "$dir/binary/release/bplus" "$seed"
+done
+```
+
 #### Fixed-width pool benchmark
 
 The `bplus-pool` benchmark compares prebuilt in-memory point lookups on
@@ -487,9 +572,8 @@ done
 
 #### B+ panic and termination checks
 
-The no_std consumer fixture calls the public checked B+ view and the exact
-pool source used by the benchmark at widths 8, 16, and 32 with `u64` keys and
-`usize` node IDs. The benchmark above uses the pool's verified height loop.
+The no_std consumer fixture calls the streaming B+ view, `FixedTree`, and
+the benchmark pool at widths 8, 16, and 32 with `u64` keys and `usize` node IDs.
 
 Pool construction publishes one record per accepted page. A branch resolves
 its child IDs against the completed prefix, verifies their height and key
@@ -503,21 +587,21 @@ their sources match. The caller proof relies on those contracts and on the
 allocator returning a suitably aligned block or a null pointer on failure.
 
 Both optimized Linux x86-64 `panic=abort` links with overflow checks passed,
-with and without link-time optimization. Each ran 228 normal and injected
+with and without link-time optimization. Each ran 264 normal and injected
 allocation-refusal cases without leaks. The fixture requires success in each
 normal case and `Err` for every allocation refusal. The overflow, bounds,
 and abort controls were detected in both profiles.
 
 The strict debug link still retains the unresolved panic sink. The diagnostic
-ELF has 17 resolved panic edges, including forwarding edges. The replay
-binds all 12 guard kinds to the exact static callers in this fixture,
-including the size-two window in node ordering, the three binary-search
-caller paths, and the shared Vec and allocator paths. The ordering guard
+ELF has 18 resolved panic edges, including forwarding edges. The replay
+binds all 13 guard kinds to the exact static callers in this fixture,
+including the size-two window in node ordering, the binary-search caller
+paths, and the shared Vec and allocator paths. The ordering guard
 can only take the suffix at index 1 after obtaining a window of length 2.
 The index proofs show that each binary-search access and endpoint is in range.
 The replay pins the Rust 1.95.0 slice and iterator sources and rejects an
 unreviewed caller with an unchanged guard symbol. The debug diagnostic also
-ran all 228 normal and allocation-refusal cases. These results apply to the
+ran all 264 normal and allocation-refusal cases. These results apply to the
 resolved edges of this concrete ELF and the reviewed source contracts.
 User comparisons and external allocators have their own contracts.
 
@@ -529,6 +613,13 @@ constructor's general prefix claim comes from the separately bound Verus
 proof. Allowing a child to point at the page being appended caused the
 Verus proof to fail. All three pool tests passed natively and in x86-64
 and i686 Miri.
+
+`FixedTree` reuses the Vec storage and slice-borrow contracts. Its source-bound
+Verus check adds parent uniqueness, connectivity, and the descent and address
+invariants. Three Kani harnesses covered all `u8` queries over a two-leaf tree,
+arbitrary machine-word child IDs in that constructor, and the branch-summary
+checks. Removing the duplicate-parent test yielded a Kani counterexample.
+The snapshot regression passed natively and in x86-64 and i686 Miri.
 
 ```sh
 python3 tools/consumer-audit/check_bplus_debug.py

@@ -4,6 +4,9 @@ use super::{LookupStep, search_index};
 use crate::Error;
 use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
 
+mod fixed;
+pub use fixed::FixedTree;
+
 const SMALL_NODE_KEYS: usize = 8;
 
 #[inline]

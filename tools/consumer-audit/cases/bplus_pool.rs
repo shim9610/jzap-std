@@ -4,7 +4,7 @@ use jzap::{
     Error,
     collections::btree_map::view::{
         LookupStep,
-        bplus::{Lookup, Node},
+        bplus::{FixedTree, Lookup, Node},
     },
     vec::Vec,
 };
@@ -51,6 +51,7 @@ fn check_width<const N: usize>(query: u64) -> Result<(), Error> {
     let resident = pool::Resident::check(pages.as_slice(), 1)?;
     let split = resident.split::<N>(N)?;
     let packed = pool::pack_pools(&split)?;
+    let fixed = FixedTree::try_new(packed.leaves(), packed.branches())?;
     let mut lookup = Lookup::new(N, 1, &query)?;
     let branch = Node::<_, u64, _>::branch(&minima, &children)?;
     let expected = match lookup.provide(N, &branch)? {
@@ -69,6 +70,7 @@ fn check_width<const N: usize>(query: u64) -> Result<(), Error> {
     if resident.get(query)? != expected
         || split.get::<N>(query)? != expected
         || packed.get::<N>(query)? != expected
+        || fixed.get(&query)?.copied() != expected
     {
         return Err(Error::InvalidStructure);
     }

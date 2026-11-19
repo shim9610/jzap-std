@@ -14,6 +14,8 @@ use jzap::{
         bplus::{Lookup, Node},
     },
 };
+#[cfg(feature = "bplus-pool")]
+use jzap::{collections::btree_map::view::bplus::FixedTree, vec::Vec as FallibleVec};
 use std::{collections::BTreeMap, hint::black_box, time::Instant};
 
 type WordNode<'a, I> = Node<'a, u64, u64, I>;
@@ -196,6 +198,14 @@ fn measure(
 
 fn run<const N: usize>(seed: u64, fanout: usize, height: u32) -> Result<(), Error> {
     let pages = make_pages::<usize>(fanout, height);
+    #[cfg(feature = "bplus-pool")]
+    if std::env::var_os("BPLUS_PREPARE").is_some() {
+        let entries: Vec<_> = pages[..fanout.pow(height)]
+            .iter()
+            .flat_map(|page| page.keys.iter().copied().zip(page.values.iter().copied()))
+            .collect();
+        return measure_preparation::<N>(seed, height, &entries);
+    }
     let views: Vec<_> = pages.iter().map(Page::view).collect::<Result<_, _>>()?;
     let pages_u32 = make_pages::<u32>(fanout, height);
     let views_u32: Vec<_> = pages_u32.iter().map(Page::view).collect::<Result<_, _>>()?;
@@ -225,6 +235,8 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) -> Result<(), Erro
     let split = resident.split::<N>(fanout.pow(height as u32))?;
     #[cfg(feature = "bplus-pool")]
     let packed = pool::pack_pools(&split)?;
+    #[cfg(feature = "bplus-pool")]
+    let fixed = FixedTree::try_new(packed.leaves(), packed.branches())?;
     let methods: &[(&str, &dyn Fn(u64) -> Answer)] = &[
         ("jzap", &|q| {
             jzap_lookup::<false, _>(&pages, &views, height, q)
@@ -253,6 +265,8 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) -> Result<(), Erro
         ("split", &|q| split.get::<N>(q)),
         #[cfg(feature = "bplus-pool")]
         ("packed", &|q| packed.get::<N>(q)),
+        #[cfg(feature = "bplus-pool")]
+        ("fixed", &|q| fixed.get(&q).map(|value| value.copied())),
     ];
     for query in queries.iter().copied() {
         for &(name, method) in methods {
@@ -298,7 +312,12 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) -> Result<(), Erro
             let offset = if seed % 2 == 0 { methods.len() - i } else { i };
             let (name, method) = methods[(start + offset) % methods.len()];
             #[cfg(feature = "bplus-pool")]
-            if !matches!(name, "jzap" | "brie" | "resident" | "split" | "packed") {
+            if !matches!(
+                name,
+                "jzap" | "brie" | "resident" | "split" | "packed" | "fixed"
+            ) || (std::env::var_os("BPLUS_FIXED_ONLY").is_some()
+                && !matches!(name, "jzap" | "brie" | "packed" | "fixed"))
+            {
                 continue;
             }
             let (elapsed, sum) = measure(method, &queries, batches)?;
@@ -327,6 +346,13 @@ fn main() -> Result<(), Error> {
     println!(
         "seed,fanout,height,implementation,alloc_calls,requested_peak,requested_final,actual_peak,actual_final"
     );
+    #[cfg(feature = "bplus-pool")]
+    if std::env::var_os("BPLUS_PREPARE").is_some() {
+        println!("seed,fanout,height,implementation,seconds,operations,checksum");
+        run::<8>(seed, 8, 2)?;
+        run::<32>(seed, 32, 2)?;
+        return run::<16>(seed, 16, 3);
+    }
     #[cfg(not(feature = "bplus-memory"))]
     println!("seed,fanout,height,implementation,seconds,operations,checksum");
     #[cfg(feature = "bplus-pool")]
@@ -340,4 +366,99 @@ fn main() -> Result<(), Error> {
         run::<0>(seed, fanout, height)?;
     }
     Ok(())
+}
+
+// Bulk layout of the same sorted pairs supplied to brie-tree's insertion API.
+#[cfg(feature = "bplus-pool")]
+fn prepare_fixed<const N: usize>(entries: &[(u64, u64)]) -> Result<Option<u64>, Error> {
+    let leaf_count = entries.len() / N;
+    let mut leaves = FallibleVec::try_with_capacity(leaf_count)?;
+    for entries in entries.chunks_exact(N) {
+        let keys = std::array::from_fn(|i| entries[i].0);
+        let values = std::array::from_fn(|i| entries[i].1);
+        leaves
+            .try_push((keys, values))
+            .map_err(|rejected| rejected.error)?;
+    }
+    let mut branches = FallibleVec::try_with_capacity((leaf_count - 1) / (N - 1))?;
+    let mut level_start = 0;
+    let mut width = leaf_count;
+    while width > 1 {
+        let next_start = leaf_count + branches.len();
+        for first in (level_start..level_start + width).step_by(N) {
+            let children = std::array::from_fn(|i| first + i);
+            let keys = std::array::from_fn(|i| {
+                let child = children[i];
+                if child < leaf_count {
+                    leaves.as_slice()[child].0[0]
+                } else {
+                    let record: &([u64; N], [usize; N]) = &branches.as_slice()[child - leaf_count];
+                    record.0[0]
+                }
+            });
+            branches
+                .try_push((keys, children))
+                .map_err(|rejected| rejected.error)?;
+        }
+        level_start = next_start;
+        width /= N;
+    }
+    let tree = FixedTree::try_new(leaves.as_slice(), branches.as_slice())?;
+    black_box(&tree)
+        .get(&black_box(2u64))
+        .map(|item| item.copied())
+}
+
+#[cfg(feature = "bplus-pool")]
+fn measure_preparation<const N: usize>(
+    seed: u64,
+    height: u32,
+    entries: &[(u64, u64)],
+) -> Result<(), Error> {
+    let fixed = || prepare_fixed::<N>(black_box(entries));
+    let brie = || {
+        let mut tree = BTree::new();
+        {
+            let mut cursor = tree.cursor_mut();
+            for &(key, value) in black_box(entries) {
+                cursor.insert_before(NonMaxU64::new(key).ok_or(Error::InvalidStructure)?, value);
+                cursor.next();
+            }
+        }
+        Ok(black_box(&tree)
+            .get(NonMaxU64::new(2).ok_or(Error::InvalidStructure)?)
+            .copied())
+    };
+    let run = |method: &dyn Fn() -> Answer, batches| -> Result<_, Error> {
+        let start = Instant::now();
+        let mut checksum = 0u64;
+        for _ in 0..batches {
+            checksum = checksum.wrapping_add(black_box(method)()?.ok_or(Error::InvalidStructure)?);
+        }
+        Ok((start.elapsed().as_secs_f64(), black_box(checksum)))
+    };
+    let methods: [(&str, &dyn Fn() -> Answer); 2] = [("fixed", &fixed), ("brie", &brie)];
+    let pilot = 256;
+    let fastest = run(&fixed, pilot)?.0.min(run(&brie, pilot)?.0);
+    let mut batches = (pilot as f64 * 1.35 / fastest).ceil() as usize;
+    loop {
+        let first = seed as usize % methods.len();
+        let second = (first + 1) % methods.len();
+        let first_run = run(methods[first].1, batches)?;
+        let second_run = run(methods[second].1, batches)?;
+        let shortest = first_run.0.min(second_run.0);
+        if shortest < 1.0 {
+            batches = (batches as f64 * 1.35 / shortest).ceil() as usize;
+            continue;
+        }
+        for ((name, _), (seconds, checksum)) in
+            [(methods[first], first_run), (methods[second], second_run)]
+        {
+            if checksum != 6 * batches as u64 {
+                return Err(Error::InvalidStructure);
+            }
+            println!("{seed},{N},{height},{name},{seconds:.9},{batches},{checksum}");
+        }
+        return Ok(());
+    }
 }

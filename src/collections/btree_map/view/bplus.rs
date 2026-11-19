@@ -2,10 +2,12 @@
 
 use super::{LookupStep, search_index};
 use crate::Error;
-use core::borrow::Borrow;
+use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
+
+const SMALL_NODE_KEYS: usize = 8;
 
 #[inline]
-fn child_index<K: Borrow<Q>, Q: ?Sized + Ord>(
+fn child_index<const CONDITIONAL: bool, K: Borrow<Q>, Q: ?Sized + Ord>(
     keys: &[K],
     query: &Q,
 ) -> Result<Option<usize>, Error> {
@@ -19,12 +21,23 @@ fn child_index<K: Borrow<Q>, Q: ?Sized + Ord>(
         let half = remaining / 2;
         let middle = base.checked_add(half).ok_or(Error::InvalidStructure)?;
         let key = keys.get(middle).ok_or(Error::InvalidStructure)?;
-        if key.borrow() <= query {
+        if CONDITIONAL {
+            let advance = select_unpredictable(key.borrow() <= query, half, 0);
+            base = base.wrapping_add(advance);
+        } else if key.borrow() <= query {
             base = middle;
         }
         remaining = remaining.checked_sub(half).ok_or(Error::InvalidStructure)?;
     }
     Ok(Some(base))
+}
+
+#[inline]
+fn leaf_index<K: Borrow<Q>, Q: ?Sized + Ord>(keys: &[K], query: &Q) -> Option<usize> {
+    let index = keys.partition_point(|key| key.borrow().cmp(query).is_lt());
+    keys.get(index)
+        .filter(|key| (*key).borrow().cmp(query).is_eq())
+        .map(|_| index)
 }
 
 enum Contents<'a, V, I> {
@@ -71,7 +84,8 @@ pub struct Lookup<'q, K, I, Q: ?Sized = K> {
     pending: Option<I>,
     height: usize,
     depth: usize,
-    path: [I; usize::BITS as usize],
+    // The first `depth` entries contain the visited ancestors.
+    path: [MaybeUninit<I>; usize::BITS as usize],
     minimum: Option<K>,
     ceiling: Option<K>,
 }
@@ -87,7 +101,7 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
             pending: Some(root),
             height,
             depth: 0,
-            path: [root; usize::BITS as usize],
+            path: [MaybeUninit::uninit(); usize::BITS as usize],
             minimum: None,
             ceiling: None,
         })
@@ -117,19 +131,29 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
         }
 
         let result = match node.contents {
-            Contents::Leaf(values) => match search_index(node.keys, self.query)? {
-                Ok(index) => {
+            Contents::Leaf(values) => {
+                let index = if node.keys.len() <= SMALL_NODE_KEYS {
+                    search_index(node.keys, self.query)?.ok()
+                } else {
+                    leaf_index(node.keys, self.query)
+                };
+                if let Some(index) = index {
                     let (key, value) = node
                         .keys
                         .get(index)
                         .zip(values.get(index))
                         .ok_or(Error::InvalidStructure)?;
                     LookupStep::Found(key, value)
+                } else {
+                    LookupStep::Absent
                 }
-                Err(_) => LookupStep::Absent,
-            },
+            }
             Contents::Branch(children) => {
-                let index = child_index(node.keys, self.query)?;
+                let index = if node.keys.len() <= SMALL_NODE_KEYS {
+                    child_index::<false, _, _>(node.keys, self.query)?
+                } else {
+                    child_index::<true, _, _>(node.keys, self.query)?
+                };
                 if let Some(index) = index {
                     return self.descend(id, index, node.keys, children);
                 }
@@ -157,11 +181,17 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
             .get_mut(..=self.depth)
             .and_then(|path| path.split_last_mut())
             .ok_or(Error::InvalidStructure)?;
-        if child == id || history.contains(&child) {
+        if child == id
+            || history.iter().any(|ancestor| {
+                // SAFETY: The prefix excludes the current slot. Each
+                // successful descent writes its slot before increasing depth.
+                *unsafe { ancestor.assume_init_ref() } == child
+            })
+        {
             return Err(Error::InvalidStructure);
         }
         let next = index.checked_add(1).ok_or(Error::InvalidStructure)?;
-        *slot = id;
+        slot.write(id);
         self.depth = depth;
         self.height = height;
         self.minimum = Some(minimum);
@@ -192,11 +222,41 @@ mod proofs {
             .zip(children.iter().copied())
             .filter(|(key, _)| **key <= query)
             .last();
+        assert!(
+            child_index::<true, _, _>(minima, &query).unwrap()
+                == minima.iter().rposition(|key| *key <= query)
+        );
         let mut lookup = Lookup::new(0, 1, &query).unwrap();
         let step = lookup.provide(0, &node).unwrap();
         assert!(match expected {
             Some((_, child)) => step == LookupStep::NeedNode(child),
             None => step == LookupStep::Absent,
         });
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn leaf_lookup_matches_linear_search() {
+        let keys: [u8; 5] = kani::any();
+        let values = [9, 8, 7, 6, 5];
+        let query: u8 = kani::any();
+        let count = usize::from(kani::any::<u8>());
+        kani::assume(count <= keys.len());
+        let Ok(node) = Node::leaf(&keys[..count], &values[..count]) else {
+            return;
+        };
+        let expected = keys[..count]
+            .iter()
+            .zip(&values)
+            .find(|(key, _)| **key == query)
+            .map_or(LookupStep::<_, _, usize>::Absent, |(key, value)| {
+                LookupStep::Found(key, value)
+            });
+        assert!(
+            leaf_index(&keys[..count], &query)
+                == keys[..count].iter().position(|key| *key == query)
+        );
+        let mut lookup = Lookup::new(0, 0, &query).unwrap();
+        assert!(lookup.provide(0, &node) == Ok(expected));
     }
 }

@@ -341,6 +341,9 @@ The cases omitting cycle detection or key fences are benchmark controls
 over the valid, immutable fixtures. A key fence is the key range inherited
 from the parent. These controls still check node ID, height, and slice bounds.
 
+Run the diagnostic generator against the experiment snapshot `5da0191`.
+It derives its variants from that snapshot's eager-path implementation.
+
 ```sh
 dir=target/verification/bplus-bottlenecks
 python3 tools/throughput-analysis/prepare_bplus_bottlenecks.py "$PWD" "$dir/experiment"
@@ -352,6 +355,61 @@ for seed in 1 2 3; do
   taskset -c 2 "$dir/binary/release/jzap-throughput-analysis" "$seed"
 done
 ```
+
+#### Checked point-lookup changes
+
+Each successful descent initializes one ancestor slot. The cycle check reads
+the initialized prefix and the candidate child ID. A rejected node leaves
+the prefix and pending ID intact for retry. For nodes with more than eight
+keys, internal nodes choose the last admitted separator using a conditional
+selection and leaves look for the first key at or above the query before
+checking it for equality. Nodes with up to eight keys use branch-based
+search. The same node ID, height, key fence, cycle, and slice bounds checks
+govern lookup.
+
+The release binary omits the full-path initialization in both ID variants.
+On x86-64, the larger internal-node search uses `cmov`. The ancestor-array
+capacity is still 64 entries on that target, and the instrumented run
+recorded zero lookup heap allocations at either ID width.
+
+The paired benchmark builds `5da0191` and the current implementation with
+Rust 1.95.0 and `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`. The timed
+loop runs only the `jzap`, `jzap_u32`, and `brie` labels. All seven
+benchmark methods participate in the per-query comparison with the
+standard map. The run uses Linux CPU 2 on an AMD EPYC 9V74 and alternates
+the binary order across seeds 1, 2, and 3. The three case-specific batch
+counts are `BPLUS_BATCHES_8_2=28000`, `BPLUS_BATCHES_32_2=9800`, and
+`BPLUS_BATCHES_16_3=9000`.
+
+All 54 timing intervals had matching query counts and checksums within each
+case and seed. The shortest lasted 1.218 seconds. The target gaps subtract
+the `brie-tree` mean for the corresponding build before rounding. The table
+uses call-weighted nanoseconds per lookup.
+
+| Fanout / height | Current `brie-tree` target | Current `usize` | `usize` gap before → current | Current `u32` | `u32` gap before → current |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | 13.40 | 27.60 | +22.51 → +14.20 | 30.23 | +19.83 → +16.84 |
+| 32 / 2 | 31.44 | 62.30 | +55.60 → +30.87 | 63.08 | +52.52 → +31.64 |
+| 16 / 3 | 44.14 | 78.32 | +73.46 → +34.18 | 81.03 | +69.38 → +36.89 |
+
+The paired changes in jzap lookup latency, current minus baseline, were
+−13.60 to −1.34 ns, −27.02 to −22.37 ns, and −38.26 to −35.47 ns for
+`usize`. The `u32` ranges were −10.50 to +2.89 ns, −28.07 to −10.28 ns,
+and −40.42 to −23.63 ns. Only 8 / 2 with `u32` changed direction between
+seeds. At 16 / 3 the `brie-tree` paired change ranged from −5.15 to +13.48 ns.
+
+An earlier paired run applied both search changes to every node size.
+At 8 / 2 that version took 5.81 ns more per lookup for `usize` and
+7.87 ns more for `u32` than its baseline. The current version chooses the
+search by key count and scans initialized ancestors with a scalar loop.
+
+The all-feature suite passed 437 tests. The three B+ tests passed under native,
+i686, and Tree Borrows Miri. The maximum-height test retries after a cycle
+using nonzero IDs and borrowed string keys. Two Kani harnesses compared
+branch routing and leaf lookup against linear search over up to five keys.
+The overflow-checked no-std consumer linked and ran with and without
+link-time optimization. Both profiles detected their overflow, bounds, and
+abort controls.
 
 ## Consumer checks and build tuning
 

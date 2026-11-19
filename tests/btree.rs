@@ -720,10 +720,19 @@ fn bplus_point_lookup_matches_std() {
     use std::collections::BTreeMap;
 
     let mut random = 617_u64;
-    for fanout in [1, 2, 3, 5, 8, 17, 32] {
-        let keys: Vec<u64> = (0..fanout * 8).map(|i| i as u64 * 2 + 2).collect();
+    for (fanout, leaf_width) in [
+        (1, 1),
+        (2, 8),
+        (3, 9),
+        (5, 3),
+        (8, 8),
+        (9, 8),
+        (17, 17),
+        (32, 32),
+    ] {
+        let keys: Vec<u64> = (0..fanout * leaf_width).map(|i| i as u64 * 2 + 2).collect();
         let model: BTreeMap<_, _> = keys.iter().map(|&key| (key, key * 3)).collect();
-        let minima: Vec<_> = keys.chunks_exact(8).map(|leaf| leaf[0]).collect();
+        let minima: Vec<_> = keys.chunks_exact(leaf_width).map(|leaf| leaf[0]).collect();
         let children: Vec<_> = (1..=fanout).collect();
         for _ in 0..256 {
             random ^= random << 13;
@@ -735,7 +744,7 @@ fn bplus_point_lookup_matches_std() {
             let actual = match lookup.provide(0, &root).unwrap() {
                 LookupStep::Absent => None,
                 LookupStep::NeedNode(id) => {
-                    let keys = &keys[(id - 1) * 8..id * 8];
+                    let keys = &keys[(id - 1) * leaf_width..id * leaf_width];
                     let values: Vec<_> = keys.iter().map(|key| key * 3).collect();
                     match lookup
                         .provide(id, &Node::leaf(keys, &values).unwrap())
@@ -821,6 +830,44 @@ fn bplus_reuses_parent_storage_and_checks_inherited_fences_on_retry() {
     assert_eq!(
         empty.provide(0, &Node::leaf(&[], &[] as &[u32]).unwrap()),
         Ok(LookupStep::Absent)
+    );
+}
+
+#[test]
+fn bplus_initializes_only_visited_ancestors_at_maximum_height() {
+    use jzap::Error;
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+    use std::num::NonZeroU32;
+
+    let height = usize::BITS as usize - 1;
+    let node_id = |depth| NonZeroU32::new(u32::try_from(depth + 1).unwrap()).unwrap();
+    let mut lookup = Lookup::<&str, _, str>::new(node_id(0), height, "middle").unwrap();
+
+    for depth in 0..height {
+        // The first descent is a self-edge. Later attempts point to the root.
+        let cycle = [node_id(0)];
+        let invalid = Node::<_, u32, _>::branch(&["first"], &cycle).unwrap();
+        assert_eq!(
+            lookup.provide(node_id(depth), &invalid),
+            Err(Error::InvalidStructure)
+        );
+        assert_eq!(lookup.requested_node(), Some(node_id(depth)));
+
+        let child = [node_id(depth + 1)];
+        let branch = Node::<_, u32, _>::branch(&["first"], &child).unwrap();
+        assert_eq!(
+            lookup.provide(node_id(depth), &branch),
+            Ok(LookupStep::NeedNode(child[0]))
+        );
+    }
+
+    let leaf = Node::leaf(&["first", "middle", "third"], &[10, 20, 30]).unwrap();
+    assert_eq!(
+        lookup.provide(node_id(height), &leaf),
+        Ok(LookupStep::Found(&"middle", &20))
     );
 }
 

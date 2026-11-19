@@ -133,6 +133,7 @@ requires unique initialized storage with the correct global allocation layout an
 existing budget charge. `leak` deliberately retains both storage and its charge.
 
 Conversions from Vec, String, CString, OS strings, and paths have dedicated APIs.
+OS string and path conversions require the `std` feature.
 A failed fallible Vec shrink returns the original owner, including its pointer,
 length, and capacity. CStr/OS/path conversions validate the necessary borrowed
 layout and metadata rather than assuming a private fat-pointer representation.

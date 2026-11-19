@@ -4,13 +4,19 @@
 It provides fallible ownership types and checked operations for Rust. The package
 is `jzap-std`, and the library is imported as `jzap`.
 
-**Box and Vec are provisionally closed as implementation milestones.** Vec has
-explicit counterparts for all 46 Rust 1.95 stable inherent methods, element limits,
-fallible iteration and a source-connected safety certificate. Its repeated std
-comparisons include improvements and remaining default-build regressions; see the
-[ExtractIf results](docs/verification/vec-extract-inline.md) and the
-[Splice batch report](docs/verification/vec-splice-batch.md). Box performance remains
-provisional. This is not a production-release or full-library completion claim.
+**Version `0.1.0-beta.1`** is a prerelease for evaluating the current APIs and
+failure contracts. APIs may change before `0.1.0`. The support guide lists
+implemented features, remaining work, and verification evidence. [Beta support status](docs/support.md)
+
+## Getting started
+
+Add a local checkout to your application's `Cargo.toml`. Adjust the path to
+match your checkout location.
+
+```toml
+[dependencies]
+jzap-std = { path = "../jzap-std", version = "=0.1.0-beta.1" }
+```
 
 ```rust
 use jzap::{boxed::Box, budget::{Budget, MemoryBudget}, TryClone, TryCloneIn};
@@ -25,10 +31,15 @@ fn example() -> Result<(), jzap::Error> {
 }
 ```
 
-The library has no external runtime dependencies. Rust 1.95 is the declared
-minimum version. The default configuration is `no_std` with `alloc` enabled;
-`--no-default-features` builds core-only foundations, and `std` adds operating
-system string and path interoperability.
+The library requires Rust 1.95 or later and has no external runtime dependencies.
+
+| Cargo configuration | Available APIs |
+| --- | --- |
+| Default (`alloc`) | `no_std` with owning containers. Hash tables accept explicit seeds or hash builders. Atomic shared owners require pointer-width atomics. |
+| `default-features = false` | Core-only APIs including checked arithmetic, borrowed scratch storage, and checked slices. |
+| `features = ["std"]` | Adds OS string and path interoperability and lets `HashMap` and `HashSet` obtain seeds on [supported platforms](docs/random-state.md#platform-boundaries-and-premises). |
+
+## Documentation
 
 | Documentation | Purpose |
 | --- | --- |
@@ -37,7 +48,7 @@ system string and path interoperability.
 | [Memory budget guide](docs/budget.md) | Borrowed and owning policies, thread-safe application state, bootstrap costs and reallocation admission |
 | [Owning budget verification](docs/verification/owned-budgets.md) | Lifetime, failure, concurrency, source-to-link and paired performance checks |
 | [Arc application workflows](docs/verification/arc-scenarios.md) | Shared state, request fanout, page COW, contention, memory costs and practical suitability |
-| [Arc headroom experiment](docs/verification/arc-headroom.md) | Experimental locked-increment clone comparison, performance gains and unresolved saturation safety |
+| [Arc headroom experiment](docs/verification/arc-headroom.md) | Historical locked-increment clone experiment and its saturation findings |
 | [BTreeMap guide](docs/btree.md) | Fallible ordered maps, Entry operations and caller-owned node slices |
 | [BTreeMap verification](docs/verification/btree.md) | Acceptance checks, allocation contracts and std comparison |
 | [BTreeSet guide and results](docs/btree-set-design.md) | Stable API counterparts, failure contracts, memory checks, per-operation std comparisons and selective reproduction |
@@ -64,7 +75,10 @@ system string and path interoperability.
 | [Foundation contracts](docs/foundation-contracts.md) | Clone, initialization, and budget semantics |
 | [Reference provenance](reference/README.md) | Fixed source snapshots and their licenses |
 
-Basic checks require Rust 1.95 and the locked development dependencies:
+## Build and verification
+
+From the repository checkout, run the basic checks with Rust 1.95 and the locked
+development dependencies.
 
 ```sh
 cargo test --locked --all-features
@@ -73,8 +87,9 @@ cargo check --locked --no-default-features
 cargo doc --locked --all-features --no-deps
 ```
 
-GitHub Actions runs the basic checks for pull requests targeting `main` and
-pushes to `main`. See [CI coverage](docs/verification/README.md#continuous-integration).
+GitHub Actions runs Rust tests, selected Miri, Verus, and Kani checks, and
+CodeQL scanning for pull requests targeting `main` and pushes to `main`.
+[CI coverage](docs/verification/README.md#continuous-integration)
 
 For a single-commit export, see [snapshot preparation and regression checks](docs/verification/README.md#snapshot-regression-checks).
 The [verification index](docs/verification/README.md) describes Miri, sanitizers,

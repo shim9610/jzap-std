@@ -42,10 +42,13 @@ counterparts for allocating traits.
 | Traits | Equality across builders/policies, debug formatting and inferred thread/lifetime bounds; allocating implicit `Default`, `Clone`, collection/extension and set operators are replaced by explicit methods |
 
 Explicit keys via `RandomState::from_seed`, or a caller-selected builder, work
-without `std`. Default OS entropy currently uses the existing Linux `std`
-implementation; unsupported sources return `Entropy`. Allocator and returning
-Hash/Eq/clone/iterator/destructor callbacks retain the documented execution
-contract. The internal map remains private.
+without `std`. Default seeding uses the same `std` feature and platform support
+as `HashMap`. Unavailable entropy returns `Error::Entropy`.
+[RandomState platform requirements](random-state.md#platform-boundaries-and-premises)
+
+Allocator behavior and user-provided hash, equality, clone, iterator, and
+destructor callbacks follow their documented contracts. The internal map
+remains private.
 
 The control array includes at least one byte per bucket plus 16 mirror bytes.
 The admitted layout bounds each table's bucket count by `isize::MAX - 16`;
@@ -293,9 +296,10 @@ for case, rows in sorted(groups.items()):
 ## Disjoint scan code generation
 
 The earlier direct Boolean scan removed an outlined resumable-filter boundary.
-The current change keeps the size relation explicit in two branches:
+This excerpt from `HashSet::is_disjoint` shows the two branches used to keep the
+size relation explicit.
 
-```rust
+```rust,ignore
 if self.len() <= other.len() {
     self.iter().all(|key| !other.contains(key))
 } else {

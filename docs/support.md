@@ -1,11 +1,10 @@
 # Support status
 
-Box and Vec implementation work is **provisionally closed**. Further work should
-be triggered by a defect or an explicit requirement. Their performance status
-remains separate from the implementation milestones.
-The [remaining implementation](#remaining-implementation) and
+This page describes the APIs and verification scope of `0.1.0-beta.1`. Public
+APIs can change during the beta. Box and Vec have reached their implementation
+checkpoints. The [remaining implementation](#remaining-implementation) and
 [measurement and verification follow-up](#measurement-and-verification-follow-up)
-tables track the outstanding specification items.
+tables record outstanding specification work and measured performance limits.
 
 | Area | Implemented scope | Status |
 | --- | --- | --- |
@@ -18,7 +17,7 @@ tables track the outstanding specification items.
 | Fallible iteration | Open iterator/conversion traits, double-ended/exact-size/fused counterparts, Box/Vec propagation, consumer link checks | Initial trait foundation; full adapter catalogue is not implemented; see [iteration contracts](iteration.md) |
 | `InitSlot` | Recorded initialization of individual values, arrays, and named fields | Implemented; partial cleanup and small-stack tests passed |
 | Box | Sized and dynamically sized ownership, slices, strings, trait objects, Pin, collection, calls, and explicit standard-owner conversions | Provisionally closed; see the API matrix |
-| OS strings and paths | `OsStr` / `Path` ownership under the `std` feature | Linux execution tested; Windows execution not tested |
+| OS strings and paths | `OsStr` / `Path` ownership under the `std` feature | Box and shared-owner integration tests run with all features on Linux, macOS, and Windows in [CI](verification/README.md#continuous-integration) |
 | Performance | Repeated equal-work std comparisons and separate allocation measurements | ExtractIf meets the adjusted std +15% criterion in all 12 measured default-build conditions. Splice batch staging improves large zero-hint replacements. Three small-input Splice conditions exceed the criterion, and one is unresolved. See [ExtractIf](verification/vec-extract-inline.md) and [Splice](verification/vec-splice-batch.md). |
 | Linked exit paths | Concrete Box/Vec/String/Rc/Arc/BTreeMap/BTreeSet/HashMap/HashSet/BinaryHeap/VecDeque/Scratch/checked-slice and owning-budget panic/exit checks with deliberate negative controls | Fresh release/LTO/overflow-checked/debug source-link composition has zero open conditions or unproved linked edges. Retained core guards are bound to their caller proofs; see [scope and reproduction](verification/vec-splice-batch.md#reproduction) |
 | Rc / Arc / Weak | Stable Rust 1.95 functional counterparts, fallible counts/allocation/COW, dynamically sized values, conversions, pinning and byte budgets | Implemented; source/guard, memory and concurrency checks pass. Arc performance depends on contention and allocation; [workflow evaluation](verification/arc-scenarios.md) and [foundation results](verification/shared.md) |
@@ -84,7 +83,7 @@ fallible formatting are also implemented.
 | Fallible iterator adapters | Open iterator traits, nth/fold/for-each/take helpers, std/result bridges and collection consumers | Native fallible map/filter/zip and the rest of the adapter catalogue; [current contracts](iteration.md) |
 | Clone derive | Manual `TryClone`/`TryCloneIn` implementations and field initialization | The separate `jzap-derive` procedural-macro package, including generics, renamed dependencies and target-budget propagation |
 | Numeric operations and conversions | Checked/wrapping add, subtract, multiply, divide and remainder for 12 integer types | Checked absolute value/negation, lossless shifts, integer-width/signedness conversion, and integer/float conversion with explicit precision and special-value rules |
-| System runtime | Rc/Arc/Weak, Linux-tested OS string/path ownership and fallible in-memory formatting | Fallible thread creation, Mutex/RwLock, checked time/duration, general I/O and print/eprint; resource errors and partial-progress contracts |
+| System runtime | Rc/Arc/Weak, OS string/path ownership, and fallible in-memory formatting | Fallible thread creation, Mutex/RwLock, checked time/duration, general I/O and print/eprint; resource errors and partial-progress contracts |
 | Consumer policy tooling | Library Clippy rules, arithmetic enforcement, source inventories, compile-fail checks and consumer link fixtures | Packaging and applying the specification's `jzap-policy` checks to consuming projects |
 
 Scratch/slice reuse the allocation and initialization foundations in the basic
@@ -113,7 +112,7 @@ BinaryHeap retain their user-directed implementation checkpoints.
 | Scratch large-value copy layout | The 256-byte borrowed push/pop layouts measure +54.8% and −30.7%, with +3.4% combined. A fixed-address copy diagnostic reproduces the temporary-address phase effect | [Scratch results](scratch-and-slice.md#final-timing-and-allocation-matrix) |
 | Optional shared byte ledger | High-rate shared-domain allocation carries ledger operations absent from std; the cost is documented for policy selection | [Arc workflows](verification/arc-scenarios.md) |
 | Direct-source proof migration | Original arithmetic, initialization, budget, state, layout, Vec numeric/control, String cursor, shared numeric and BTree kernels have direct source checks. ExtractIf and splice-fill control/content/caller checks and executed memory checks pass. Repeated std time and allocation comparisons are recorded; some measured time conditions remain slower. Remaining Vec/Buffer owner loops, pinned core and domain/global projections are in progress. | [Migration groups and partial reproduction](direct-source-migration.md) |
-| Platform execution | OS strings/paths have Linux execution results; Windows execution is outstanding. Wasm/thumb builds and i686 Miri cover the configurations identified in the individual reports | [Verification tools and targets](verification/README.md#tool-requirements) |
+| Platform execution | Current CI targets Linux, macOS, and Windows. Wasm/thumb builds and i686 Miri cover the configurations identified in the individual reports | [CI and local verification targets](verification/README.md#continuous-integration) |
 
 The four-profile source/link certificate for `42afdab` passed with zero open
 source obligations and zero unproved link edges. The run includes direct

@@ -357,6 +357,10 @@ The Linux runner also checks formatting, runs Clippy on the core-only and
 all-features library builds, and builds API documentation. Clippy and rustdoc
 warnings fail their checks.
 
+A separate CodeQL workflow scans Rust source on pull requests targeting `main`
+and pushes to `main`. It uploads analysis results to GitHub Code Scanning.
+[CodeQL workflow](../../.github/workflows/codeql.yml)
+
 Use these exact check names for GitHub rulesets under **Require status checks to
 pass**. Select **GitHub Actions** as the source.
 

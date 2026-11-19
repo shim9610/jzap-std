@@ -209,6 +209,35 @@ allocations, zero peak and retained allocation bytes during the lookup intervals
 and a 584-byte `Lookup<u64, usize>` on this target. Node and index construction
 occur outside those intervals.
 
+#### Branch routing follow-up
+
+Internal nodes select the last admitted separator with a single ordering test
+per iteration. In the measured `u64` build, the branch search uses a comparison
+and one direction branch in place of the three-way decision used for exact-key
+search. Leaves still use exact-key search. Node construction uses the slice's
+strict ordering predicate, and descent checks and splits the active ancestor
+prefix once before recording the current node.
+
+The paired rerun used the same machine, CPU affinity, and release settings.
+It reran `f563596` and the candidate with identical query counts and checksums,
+alternating execution order by seed. All 108 valid intervals lasted at least
+one second. Values are call-weighted ns/lookup.
+
+| Fanout / height | Prevalidated jzap before → after | Checked reference | jzap with validation before → after | Checked reference with validation | brie-tree | std BTreeMap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | 43.83 → 38.05 | 49.71 | 71.47 → 71.55 | 63.20 | 13.54 | 12.50 |
+| 32 / 2 | 88.70 → 86.48 | 83.17 | 145.30 → 143.46 | 122.68 | 31.93 | 32.98 |
+| 16 / 3 | 122.49 → 114.05 | 103.37 | 156.87 → 154.15 | 136.63 | 46.63 | 45.64 |
+
+The final prevalidated seed ranges were 33.81–43.39, 79.37–93.53 and
+108.26–128.15 ns/lookup, respectively. At height three the final mean was
+10.3% above the same-layout reference. Repeated prevalidated reference means
+shifted by −3.7% to +5.3%, and the standard map shifted by up to +21.2%.
+The validation-inclusive path still
+costs 12.8–16.9% more than the checked reference, and the specialized whole
+index remains faster. The allocation run again observed zero lookup allocations,
+zero peak and retained allocation bytes, and a 584-byte continuation.
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

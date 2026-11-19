@@ -4,6 +4,29 @@ use super::{LookupStep, search_index};
 use crate::Error;
 use core::borrow::Borrow;
 
+#[inline]
+fn child_index<K: Borrow<Q>, Q: ?Sized + Ord>(
+    keys: &[K],
+    query: &Q,
+) -> Result<Option<usize>, Error> {
+    if keys.first().is_none_or(|key| key.borrow() > query) {
+        return Ok(None);
+    }
+    // The base is admitted, and base + remaining stays within the key slice.
+    let mut base = 0usize;
+    let mut remaining = keys.len();
+    while remaining > 1 {
+        let half = remaining / 2;
+        let middle = base.checked_add(half).ok_or(Error::InvalidStructure)?;
+        let key = keys.get(middle).ok_or(Error::InvalidStructure)?;
+        if key.borrow() <= query {
+            base = middle;
+        }
+        remaining = remaining.checked_sub(half).ok_or(Error::InvalidStructure)?;
+    }
+    Ok(Some(base))
+}
+
 enum Contents<'a, V, I> {
     Leaf(&'a [V]),
     Branch(&'a [I]),
@@ -30,7 +53,7 @@ impl<'a, K: Ord, V, I> Node<'a, K, V, I> {
     }
 
     fn new(keys: &'a [K], count: usize, contents: Contents<'a, V, I>) -> Result<Self, Error> {
-        if keys.len() != count || keys.iter().zip(keys.iter().skip(1)).any(|(a, b)| a >= b) {
+        if keys.len() != count || !keys.is_sorted_by(|a, b| a < b) {
             return Err(Error::InvalidStructure);
         }
         Ok(Self { keys, contents })
@@ -93,9 +116,8 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
             return Err(Error::InvalidStructure);
         }
 
-        let position = search_index(node.keys, self.query)?;
         let result = match node.contents {
-            Contents::Leaf(values) => match position {
+            Contents::Leaf(values) => match search_index(node.keys, self.query)? {
                 Ok(index) => {
                     let (key, value) = node
                         .keys
@@ -107,10 +129,7 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
                 Err(_) => LookupStep::Absent,
             },
             Contents::Branch(children) => {
-                let index = match position {
-                    Ok(index) => Some(index),
-                    Err(index) => index.checked_sub(1),
-                };
+                let index = child_index(node.keys, self.query)?;
                 if let Some(index) = index {
                     return self.descend(id, index, node.keys, children);
                 }
@@ -133,15 +152,15 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
         let minimum = *minima.get(index).ok_or(Error::InvalidStructure)?;
         let depth = self.depth.checked_add(1).ok_or(Error::InvalidStructure)?;
         let height = self.height.checked_sub(1).ok_or(Error::InvalidStructure)?;
-        let history = self.path.get(..self.depth).ok_or(Error::InvalidStructure)?;
+        let (slot, history) = self
+            .path
+            .get_mut(..=self.depth)
+            .and_then(|path| path.split_last_mut())
+            .ok_or(Error::InvalidStructure)?;
         if child == id || history.contains(&child) {
             return Err(Error::InvalidStructure);
         }
         let next = index.checked_add(1).ok_or(Error::InvalidStructure)?;
-        let slot = self
-            .path
-            .get_mut(self.depth)
-            .ok_or(Error::InvalidStructure)?;
         *slot = id;
         self.depth = depth;
         self.height = height;
@@ -157,17 +176,20 @@ mod proofs {
     use super::*;
 
     #[kani::proof]
-    #[kani::unwind(9)]
+    #[kani::unwind(10)]
     fn branch_routes_to_the_last_admitted_minimum() {
-        let minima: [u8; 4] = kani::any();
+        let minima: [u8; 5] = kani::any();
         let query: u8 = kani::any();
-        let children = [1, 2, 3, 4];
-        let Ok(node) = Node::<_, (), _>::branch(&minima, &children) else {
+        let count = usize::from(kani::any::<u8>());
+        kani::assume(count <= minima.len());
+        let minima = &minima[..count];
+        let children = &[1, 2, 3, 4, 5][..count];
+        let Ok(node) = Node::<_, (), _>::branch(minima, children) else {
             return;
         };
         let expected = minima
             .iter()
-            .zip(children)
+            .zip(children.iter().copied())
             .filter(|(key, _)| **key <= query)
             .last();
         let mut lookup = Lookup::new(0, 1, &query).unwrap();

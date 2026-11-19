@@ -720,7 +720,7 @@ fn bplus_point_lookup_matches_std() {
     use std::collections::BTreeMap;
 
     let mut random = 617_u64;
-    for fanout in [1, 2, 8, 32] {
+    for fanout in [1, 2, 3, 5, 8, 17, 32] {
         let keys: Vec<u64> = (0..fanout * 8).map(|i| i as u64 * 2 + 2).collect();
         let model: BTreeMap<_, _> = keys.iter().map(|&key| (key, key * 3)).collect();
         let minima: Vec<_> = keys.chunks_exact(8).map(|leaf| leaf[0]).collect();

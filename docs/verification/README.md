@@ -355,5 +355,20 @@ The GitHub Actions workflow uses Rust 1.95.0 on Linux, macOS, and Windows. Each
 runner checks the core-only build and runs tests with default and all features.
 The Linux runner also checks formatting, runs Clippy on the core-only and
 all-features library builds, and builds API documentation. Clippy and rustdoc
-warnings fail their checks. Miri, sanitizers, fuzzing, and formal verification
-run through the local commands above. [Workflow configuration](../../.github/workflows/ci.yml)
+warnings fail their checks.
+
+Use these exact check names for GitHub rulesets under **Require status checks to
+pass**. Select **GitHub Actions** as the source.
+
+| Required check name | What it runs |
+| --- | --- |
+| `Rust (ubuntu-24.04)` | Native build, tests, formatting, Clippy, and rustdoc |
+| `Rust (macos-15)` | Native build and tests |
+| `Rust (windows-2025)` | Native build and tests |
+| `Miri` | `unsafe_paths`, `vec`, `shared`, and `scratch_slice` with strict provenance on x86-64 and i686, plus Tree Borrows on x86-64 |
+| `Verus` | The direct product-source proof suite and its negative controls |
+| `Kani` | The default-feature library harnesses and the separate local-budget proof with its negative control |
+
+The three verification checks run on Ubuntu. Broader memory checks, sanitizers,
+fuzzing, and the combined certificate are available through the local commands
+above. [Workflow configuration](../../.github/workflows/ci.yml)

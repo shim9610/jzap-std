@@ -49,3 +49,64 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --all-features --no-deps
+
+  verification:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [Miri, Verus, Kani]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Rust and fetch locked dependencies
+        if: matrix.check != 'Verus'
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          cargo fetch --locked
+      - name: Install Miri
+        if: matrix.check == 'Miri'
+        run: |
+          rustup toolchain install nightly-2026-10-30 --profile minimal \
+            --component miri --component rust-src --target i686-unknown-linux-gnu
+      - name: Install Verus
+        if: matrix.check == 'Verus'
+        run: |
+          python3 scripts/setup_verus.py --directory "$RUNNER_TEMP/verus"
+          echo "JZAP_VERUS=$RUNNER_TEMP/verus/verus-x86-linux/verus" >> "$GITHUB_ENV"
+      - name: Install Kani and Z3
+        if: matrix.check == 'Kani'
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+          z3_release=z3-4.16.0-x64-glibc-2.39
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/$z3_release.zip" \
+            --output "$z3_release.zip"
+          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  $z3_release.zip" | sha256sum --check
+          unzip -q "$z3_release.zip" "$z3_release/bin/z3"
+          echo "$RUNNER_TEMP/$z3_release/bin" >> "$GITHUB_PATH"
+      - name: Run Miri memory checks
+        if: matrix.check == 'Miri'
+        run: |
+          bash scripts/verify.sh --check miri --check miri-32 --check miri-tree \
+            --test-target unsafe_paths --test-target vec --test-target shared --test-target scratch_slice \
+            --keep-going --timeout 600 --output target/verification/replay/ci
+      - name: Run direct Verus proofs
+        if: matrix.check == 'Verus'
+        run: bash scripts/verify.sh --check verus --timeout 1200 --output target/verification/replay/ci
+      - name: Run Kani proofs
+        if: matrix.check == 'Kani'
+        run: bash scripts/verify.sh --check kani --keep-going --timeout 1200 --output target/verification/replay/ci
+      - name: Show verification diagnostics
+        if: failure()
+        run: |
+          for directory in target/verification/replay/ci target/verification/budget-native; do
+            if [ -d "$directory" ]; then
+              find "$directory" -maxdepth 1 -name '*.log' -exec tail -n 100 {} +
+            fi
+          done

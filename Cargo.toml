@@ -14,7 +14,6 @@ include = [
     "/src/**",
     "/tests/**",
     "/examples/**",
-    "/fuzz/fuzz_targets/**",
     "/docs/**",
     "/README.md",
     "/LICENSE-MIT",

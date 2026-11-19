@@ -2,8 +2,8 @@
 
 The Cargo package is `jzap-std`, the Rust import is `jzap`, and the release
 candidate is `0.1.0-beta.1`. The package includes source, guides, licenses,
-examples, and tests with their fuzz replay inputs. Run the formal verification
-and benchmark tooling from the corresponding Git checkout.
+examples, and tests with their fuzz replay inputs. Run coverage-guided fuzzing,
+formal verification, and benchmark tooling from the corresponding Git checkout.
 [Beta support status](support.md)
 
 ## Check the release candidate
@@ -14,6 +14,7 @@ candidate. The dry run builds the packaged sources.
 ```sh
 cargo +1.95.0 package --locked --list
 cargo +1.95.0 publish --dry-run --locked
+cargo +1.95.0 package --locked
 cargo +1.95.0 test --manifest-path target/package/jzap-std-0.1.0-beta.1/Cargo.toml --locked --all-features
 cargo +1.95.0 check --manifest-path target/package/jzap-std-0.1.0-beta.1/Cargo.toml --locked --no-default-features
 ```

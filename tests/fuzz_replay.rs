@@ -28,17 +28,17 @@ macro_rules! targets {
     )*};
 }
 targets!(
-    binary_heap = "../fuzz/fuzz_targets/binary_heap.rs",
-    btree = "../fuzz/fuzz_targets/btree.rs",
-    btree_set = "../fuzz/fuzz_targets/btree_set.rs",
-    deque = "../fuzz/fuzz_targets/deque.rs",
-    foundation = "../fuzz/fuzz_targets/foundation.rs",
-    hash_map = "../fuzz/fuzz_targets/hash_map.rs",
-    hash_set = "../fuzz/fuzz_targets/hash_set.rs",
-    scratch_slice = "../fuzz/fuzz_targets/scratch_slice.rs",
-    shared = "../fuzz/fuzz_targets/shared.rs",
-    string = "../fuzz/fuzz_targets/string.rs",
-    vec = "../fuzz/fuzz_targets/vec.rs",
+    binary_heap = "fuzz_targets/binary_heap.rs",
+    btree = "fuzz_targets/btree.rs",
+    btree_set = "fuzz_targets/btree_set.rs",
+    deque = "fuzz_targets/deque.rs",
+    foundation = "fuzz_targets/foundation.rs",
+    hash_map = "fuzz_targets/hash_map.rs",
+    hash_set = "fuzz_targets/hash_set.rs",
+    scratch_slice = "fuzz_targets/scratch_slice.rs",
+    shared = "fuzz_targets/shared.rs",
+    string = "fuzz_targets/string.rs",
+    vec = "fuzz_targets/vec.rs",
 );
 
 fn bytes(seed: u64, len: usize) -> Vec<u8> {

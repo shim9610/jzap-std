@@ -1,7 +1,8 @@
 # jzap-std
 
-Fallible ownership types and checked operations for Rust. The package is
-`jzap-std`; the library is imported as `jzap`.
+**jzap-std** stands for **J**ustified **Z**ero-**A**bort **P**anic-free **Std**.
+It provides fallible ownership types and checked operations for Rust. The package
+is `jzap-std`, and the library is imported as `jzap`.
 
 **Box and Vec are provisionally closed as implementation milestones.** Vec has
 explicit counterparts for all 46 Rust 1.95 stable inherent methods, element limits,

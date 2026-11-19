@@ -166,8 +166,8 @@ contains a reference still borrows its referent. A `Found` result borrows the
 supplied leaf and a rejected node can be replaced without restarting the
 lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
 
-The B+ API covers point lookups with complete keys. The design issue tracks
-partial-key comparison and range traversal. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
+The B+ streaming API covers point lookups with complete keys. The design issue
+tracks partial-key comparison and traversal over individually supplied pages. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
 
 The point-lookup benchmark compares the same resident node slices against a
 checked Rust reference, with and without local node validation in the timed
@@ -442,6 +442,33 @@ fn lookup_snapshot() -> Result<(), Error> {
 Lookup performs bounded descent through the borrowed pools, allocates no memory,
 and returns a value borrowed from a leaf. Use the streaming `Lookup` when the
 caller supplies pages individually during each lookup.
+
+For a range over an already validated snapshot, use
+`FixedTree::range(start, end)` and the `TryIterator` interface. The cursor
+returns borrowed key-value pairs in increasing key order.
+
+```rust
+use core::ops::Bound::{Excluded, Included};
+use jzap::{Error, TryIterator, collections::btree_map::view::bplus::FixedTree};
+
+fn scan_snapshot() -> Result<(), Error> {
+    let leaves = [([6, 8], [60, 80]), ([2, 4], [20, 40])];
+    let branches = [([2, 6], [1, 0])];
+    let tree = FixedTree::try_new(&leaves, &branches)?;
+    let mut range = tree.range(Included(&4), Excluded(&8))?;
+    assert_eq!(range.try_next()?, Some((&4, &40)));
+    assert_eq!(range.try_next()?, Some((&6, &60)));
+    assert_eq!(range.try_next()?, None);
+    Ok(())
+}
+```
+
+Either endpoint can be `Unbounded`. Reversed endpoints and equal endpoints
+that both exclude the key return `Error::Bounds`. The cursor descends to the
+first possible leaf and walks siblings in separator order. It uses a private
+stack of two machine words per level, reserved inline in the cursor.
+Width-one trees have no siblings and do not use stack entries. Neither
+opening the range nor advancing it allocates.
 
 The benchmark uses Rust 1.95.0 and `brie-tree` 0.1.2 in one release binary
 on the same pinned Linux x86-64 CPU. It matches the sorted keys, values, seed,

@@ -5,7 +5,7 @@ use crate::Error;
 use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
 
 mod fixed;
-pub use fixed::FixedTree;
+pub use fixed::{FixedTree, Range};
 
 const SMALL_NODE_KEYS: usize = 8;
 

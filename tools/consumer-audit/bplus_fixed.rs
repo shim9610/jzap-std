@@ -76,5 +76,23 @@ proof fn ordered_child_ranges(
     ensures left_min <= left_max < right_min <= right_max,
 {}
 
+// Above the selected child, the frame stores the next sibling slot.
+// A slot equal to width means that the parent has no unvisited child.
+proof fn range_save_sibling(depth: usize, height: usize, cap: usize, index: usize, width: usize)
+    requires depth < height <= cap, index < width,
+    ensures depth < cap, depth as int + 1 <= height, index as int + 1 <= width,
+{}
+
+proof fn range_resume_height(depth: usize, height: usize)
+    requires 0 < depth <= height,
+    ensures 0 <= (height as int - depth as int), (height as int - depth as int) < (height as int),
+            (height as int) - (depth as int - 1) == (height as int) - (depth as int) + 1,
+{}
+
+proof fn range_advance_leaf_slot(index: usize, width: usize)
+    requires index < width,
+    ensures index < width, index as int + 1 <= width,
+{}
+
 fn main() {}
 }

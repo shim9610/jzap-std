@@ -77,7 +77,7 @@ FORWARDING = {
 DIAGNOSTIC = {"jzap_link_audit_panic_reachable", "rust_eh_personality"}
 EXIT_NAMES = {"abort", "exit", "_Exit", "_exit", "quick_exit", "pthread_exit", "__assert_fail"}
 PINNED_CALLER_SOURCES = {
-    "tools/consumer-audit/cases/bplus_pool.rs": "3ec3be4986be9abb12aaf2ad6fded318a126bef42d2dd7d8a849b0551197556c",
+    "tools/consumer-audit/cases/bplus_pool.rs": "c0c685f58d33d718a7ad6e004d0dd0a18a250b602455ec4b514bfc7fcd24c079",
 }
 
 

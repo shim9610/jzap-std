@@ -34,7 +34,7 @@ STAGES={
     'native-policy': ('kani clippy', ('utf8-native','arithmetic-policy')),
     'link': ('link-audit', ('link',)),
     'bplus': ('verus kani miri consumer-audit', ('bplus-debug','bplus-kani',
-              'fixed-bplus-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release')),
+              'fixed-bplus-kani','bplus-range-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release')),
 }
 BPLUS='collections::btree_map::view::bplus::'
 
@@ -233,6 +233,7 @@ def commands(out,profiles):
                          '--output',str(out/'bplus-debug')],{}),
         'bplus-kani': (['cargo','kani','--lib','--harness',BPLUS+'proofs::'],{}),
         'fixed-bplus-kani': (['cargo','kani','--lib','--harness',BPLUS+'fixed::proofs::'],{}),
+        'bplus-range-kani': (['cargo','kani','--lib','--harness',BPLUS+'fixed::range::proofs::'],{}),
         'fixed-bplus-miri': ([*miri,'--target','x86_64-unknown-linux-gnu',
                              '--test','btree','bplus'],miri_env),
         'fixed-bplus-miri-32': ([*miri,'--target','i686-unknown-linux-gnu',
@@ -424,10 +425,10 @@ def main():
     if collected is not None:
         for name in STAGES['bplus'][1][1:]:
             assert run(name)==0
-        for name,count in (('bplus-kani',2),('fixed-bplus-kani',3)):
+        for name,count in (('bplus-kani',2),('fixed-bplus-kani',3),('bplus-range-kani',1)):
             assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
         for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
-            assert re.search(r'test result: ok\. 4 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+            assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus=json.loads(evidence(out/'bplus-release/summary.json').read_text())
         for profile in ('release-checked','release-lto-checked'):
             outcomes={r['name']:r['status'] for r in bplus['results'] if r['profile']==profile}

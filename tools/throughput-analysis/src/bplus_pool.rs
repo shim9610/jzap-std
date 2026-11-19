@@ -75,50 +75,47 @@ enum ResidentContents<'a> {
     Branch(&'a [usize]),
 }
 
+// Validate a branch against the completed prefix before publishing its summary.
+fn summarize_branch(
+    page: &Page<'_>,
+    pages: &[Page<'_>],
+    summaries: &[(usize, u64)],
+) -> Result<(usize, u64), Error> {
+    let first = *page.children.first().ok_or(Error::InvalidStructure)?;
+    let (first_height, mut max_key) = *summaries.get(first).ok_or(Error::InvalidStructure)?;
+    let mut minima = page.keys.iter();
+    let mut minimum = minima.next();
+    for &child in page.children {
+        let (child_height, child_max) = *summaries.get(child).ok_or(Error::InvalidStructure)?;
+        let ceiling = minima.next();
+        if child_height != first_height
+            || pages.get(child).and_then(|page| page.keys.first()) != minimum
+            || ceiling.is_some_and(|ceiling| child_max >= *ceiling)
+        {
+            return Err(Error::InvalidStructure);
+        }
+        minimum = ceiling;
+        max_key = child_max;
+    }
+    let height = first_height.checked_add(1).ok_or(Error::InvalidStructure)?;
+    Ok((height, max_key))
+}
+
 impl<'a> Resident<'a> {
     pub(super) fn check(pages: &'a [Page<'a>], height: usize) -> Result<Self, Error> {
         let mut summaries: Vec<(usize, u64)> = Vec::try_with_capacity(pages.len())?;
         let mut views = Vec::try_with_capacity(pages.len())?;
         for page in pages {
-            let id = summaries.len();
             page.check()?;
-            let last_key = *page.keys.last().ok_or(Error::InvalidStructure)?;
-            let contents;
-            let summary;
-            if page.children.is_empty() {
-                summary = (0usize, last_key);
-                contents = ResidentContents::Leaf(page.values);
+            let (summary, contents) = if page.children.is_empty() {
+                let maximum = *page.keys.last().ok_or(Error::InvalidStructure)?;
+                ((0, maximum), ResidentContents::Leaf(page.values))
             } else {
-                let first = page.children.first().ok_or(Error::InvalidStructure)?;
-                let (first_height, _) = *summaries
-                    .as_slice()
-                    .get(*first)
-                    .ok_or(Error::InvalidStructure)?;
-                let mut max_key = last_key;
-                let mut minima = page.keys.iter();
-                let mut minimum = minima.next();
-                for &child in page.children {
-                    let (child_height, child_max) = *summaries
-                        .as_slice()
-                        .get(child)
-                        .ok_or(Error::InvalidStructure)?;
-                    let ceiling = minima.next();
-                    if child >= id
-                        || child_height != first_height
-                        || pages.get(child).and_then(|page| page.keys.first()) != minimum
-                        || ceiling.is_some_and(|ceiling| child_max >= *ceiling)
-                    {
-                        return Err(Error::InvalidStructure);
-                    }
-                    minimum = ceiling;
-                    max_key = child_max;
-                }
-                summary = (
-                    first_height.checked_add(1).ok_or(Error::InvalidStructure)?,
-                    max_key,
-                );
-                contents = ResidentContents::Branch(page.children);
-            }
+                (
+                    summarize_branch(page, pages, summaries.as_slice())?,
+                    ResidentContents::Branch(page.children),
+                )
+            };
             summaries
                 .try_push(summary)
                 .map_err(|rejected| rejected.error)?;
@@ -317,6 +314,40 @@ pub(super) fn pack_pools<const N: usize>(
 #[cfg(kani)]
 mod proofs {
     use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn packed_branch_validation_rejects_invalid_child() {
+        let left = [2, 4];
+        let right = [6, 8];
+        let minima = [2, 6];
+        let child: usize = kani::any();
+        let children = [0, child];
+        let pages = [
+            Page {
+                keys: &left,
+                values: &left,
+                children: &[],
+            },
+            Page {
+                keys: &right,
+                values: &right,
+                children: &[],
+            },
+            Page {
+                keys: &minima,
+                values: &[],
+                children: &children,
+            },
+        ];
+        let summaries = [(0, 4), (kani::any(), kani::any())];
+        let expected = if child == 1 && summaries[1].0 == 0 {
+            Ok((1, summaries[1].1))
+        } else {
+            Err(Error::InvalidStructure)
+        };
+        assert!(summarize_branch(&pages[2], &pages, &summaries) == expected);
+    }
 
     #[kani::proof]
     #[kani::unwind(10)]

@@ -498,8 +498,12 @@ The actual checked B+ Rust source passed both Kani search proofs. The
 pool source passed the exact-key oracle and the three lookup-step proofs
 for widths 8, 16, and 32. The step proofs use arbitrary 64-bit keys, query,
 values and machine-word IDs, including invalid IDs, for zero or one descent
-over a one-branch, one-leaf pool. Full construction and debug caller
-composition have separate proof obligations.
+over a one-branch, one-leaf pool. An additional Kani harness runs the branch
+validation function used by pool construction with every machine-word
+candidate child ID and arbitrary second-child summaries in a two-leaf
+fixture. It checks rejection of invalid IDs and heights and publication of
+the verified height and maximum. The allocation-inclusive construction
+proof timed out, and the debug caller composition remains open.
 
 ## Consumer checks and build tuning
 

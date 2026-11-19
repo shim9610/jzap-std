@@ -59,7 +59,6 @@ fn leaf_index<K: Borrow<Q>, Q: ?Sized + Ord>(keys: &[K], query: &Q) -> Option<us
 }
 
 pub(super) struct Resident<'a> {
-    pages: &'a [Page<'a>],
     views: Vec<ResidentNode<'a>>,
     root: usize,
     height: usize,
@@ -68,6 +67,8 @@ pub(super) struct Resident<'a> {
 struct ResidentNode<'a> {
     keys: &'a [u64],
     contents: ResidentContents<'a>,
+    height: usize,
+    max_key: u64,
 }
 
 enum ResidentContents<'a> {
@@ -76,64 +77,65 @@ enum ResidentContents<'a> {
 }
 
 // Validate a branch against the completed prefix before publishing its summary.
-fn summarize_branch(
-    page: &Page<'_>,
-    pages: &[Page<'_>],
-    summaries: &[(usize, u64)],
-) -> Result<(usize, u64), Error> {
+fn summarize_branch(page: &Page<'_>, prefix: &[ResidentNode<'_>]) -> Result<(usize, u64), Error> {
     let first = *page.children.first().ok_or(Error::InvalidStructure)?;
-    let (first_height, mut max_key) = *summaries.get(first).ok_or(Error::InvalidStructure)?;
+    let first = prefix.get(first).ok_or(Error::InvalidStructure)?;
+    let mut max_key = first.max_key;
     let mut minima = page.keys.iter();
     let mut minimum = minima.next();
     for &child in page.children {
-        let (child_height, child_max) = *summaries.get(child).ok_or(Error::InvalidStructure)?;
+        let child = prefix.get(child).ok_or(Error::InvalidStructure)?;
         let ceiling = minima.next();
-        if child_height != first_height
-            || pages.get(child).and_then(|page| page.keys.first()) != minimum
-            || ceiling.is_some_and(|ceiling| child_max >= *ceiling)
+        if child.height != first.height
+            || child.keys.first() != minimum
+            || ceiling.is_some_and(|ceiling| child.max_key >= *ceiling)
         {
             return Err(Error::InvalidStructure);
         }
         minimum = ceiling;
-        max_key = child_max;
+        max_key = child.max_key;
     }
-    let height = first_height.checked_add(1).ok_or(Error::InvalidStructure)?;
+    let height = first.height.checked_add(1).ok_or(Error::InvalidStructure)?;
     Ok((height, max_key))
 }
 
+fn validate_next<'a>(
+    page: &Page<'a>,
+    prefix: &[ResidentNode<'a>],
+) -> Result<ResidentNode<'a>, Error> {
+    page.check()?;
+    let ((height, max_key), contents) = if page.children.is_empty() {
+        let maximum = *page.keys.last().ok_or(Error::InvalidStructure)?;
+        ((0, maximum), ResidentContents::Leaf(page.values))
+    } else {
+        (
+            summarize_branch(page, prefix)?,
+            ResidentContents::Branch(page.children),
+        )
+    };
+    Ok(ResidentNode {
+        keys: page.keys,
+        contents,
+        height,
+        max_key,
+    })
+}
+
 impl<'a> Resident<'a> {
-    pub(super) fn check(pages: &'a [Page<'a>], height: usize) -> Result<Self, Error> {
-        let mut summaries: Vec<(usize, u64)> = Vec::try_with_capacity(pages.len())?;
+    pub(super) fn check(pages: &[Page<'a>], height: usize) -> Result<Self, Error> {
         let mut views = Vec::try_with_capacity(pages.len())?;
         for page in pages {
-            page.check()?;
-            let (summary, contents) = if page.children.is_empty() {
-                let maximum = *page.keys.last().ok_or(Error::InvalidStructure)?;
-                ((0, maximum), ResidentContents::Leaf(page.values))
-            } else {
-                (
-                    summarize_branch(page, pages, summaries.as_slice())?,
-                    ResidentContents::Branch(page.children),
-                )
-            };
-            summaries
-                .try_push(summary)
-                .map_err(|rejected| rejected.error)?;
-            views
-                .try_push(ResidentNode {
-                    keys: page.keys,
-                    contents,
-                })
-                .map_err(|rejected| rejected.error)?;
+            // `views` contains one complete record for each preceding page.
+            let node = validate_next(page, views.as_slice())?;
+            views.try_push(node).map_err(|rejected| rejected.error)?;
         }
-        let (actual_height, _) = *summaries.last().ok_or(Error::InvalidStructure)?;
-        if actual_height != height {
+        let root = views.len().checked_sub(1).ok_or(Error::InvalidStructure)?;
+        if views.last().ok_or(Error::InvalidStructure)?.height != height {
             return Err(Error::InvalidStructure);
         }
         Ok(Self {
-            pages,
             views,
-            root: pages.len().checked_sub(1).ok_or(Error::InvalidStructure)?,
+            root,
             height,
         })
     }
@@ -141,7 +143,9 @@ impl<'a> Resident<'a> {
     #[inline(always)]
     pub(super) fn get(&self, query: u64) -> Answer {
         let mut id = self.root;
-        for _ in 0..self.height {
+        let mut remaining = self.height;
+        while let Some(next_height) = remaining.checked_sub(1) {
+            remaining = next_height;
             let node = self
                 .views
                 .as_slice()
@@ -214,7 +218,9 @@ fn lookup<const N: usize, Keys: Borrow<[u64; N]>, Children: Borrow<[usize; N]>>(
     query: u64,
 ) -> Answer {
     let mut id = root;
-    for _ in 0..height {
+    let mut remaining = height;
+    while let Some(next_height) = remaining.checked_sub(1) {
+        remaining = next_height;
         let branch_id = id
             .checked_sub(leaves.len())
             .ok_or(Error::InvalidStructure)?;
@@ -253,27 +259,29 @@ impl<'a> Resident<'a> {
         &self,
         leaf_count: usize,
     ) -> Result<SplitPools<'a, N>, Error> {
-        let (leaves, branches) = self
-            .pages
-            .split_at_checked(leaf_count)
+        let branch_count = self
+            .views
+            .len()
+            .checked_sub(leaf_count)
             .ok_or(Error::InvalidStructure)?;
-        let mut leaf_pool = Vec::try_with_capacity(leaves.len())?;
-        for page in leaves {
-            if !page.children.is_empty() {
-                return Err(Error::InvalidStructure);
+        let mut leaf_pool = Vec::try_with_capacity(leaf_count)?;
+        let mut branch_pool = Vec::try_with_capacity(branch_count)?;
+        for node in self.views.iter() {
+            if leaf_pool.len() < leaf_count {
+                let ResidentContents::Leaf(values) = node.contents else {
+                    return Err(Error::InvalidStructure);
+                };
+                leaf_pool
+                    .try_push((array(node.keys)?, array(values)?))
+                    .map_err(|rejected| rejected.error)?;
+            } else {
+                let ResidentContents::Branch(children) = node.contents else {
+                    return Err(Error::InvalidStructure);
+                };
+                branch_pool
+                    .try_push((array(node.keys)?, array(children)?))
+                    .map_err(|rejected| rejected.error)?;
             }
-            leaf_pool
-                .try_push((array(page.keys)?, array(page.values)?))
-                .map_err(|rejected| rejected.error)?;
-        }
-        let mut branch_pool = Vec::try_with_capacity(branches.len())?;
-        for page in branches {
-            if page.children.is_empty() {
-                return Err(Error::InvalidStructure);
-            }
-            branch_pool
-                .try_push((array(page.keys)?, array(page.children)?))
-                .map_err(|rejected| rejected.error)?;
         }
         Ok(Pools {
             branches: branch_pool,
@@ -316,6 +324,31 @@ mod proofs {
     use super::*;
 
     #[kani::proof]
+    #[kani::unwind(5)]
+    fn resident_publishes_only_a_complete_backward_prefix() {
+        let child: usize = kani::any();
+        let keys = [2];
+        let children = [child];
+        let pages = [
+            Page {
+                keys: &keys,
+                values: &keys,
+                children: &[],
+            },
+            Page {
+                keys: &keys,
+                values: &[],
+                children: &children,
+            },
+        ];
+        if let Ok(resident) = Resident::check(&pages, 1) {
+            assert!(child == 0);
+            assert!(resident.views.len() == pages.len());
+            assert!(resident.root == 1);
+        }
+    }
+
+    #[kani::proof]
     #[kani::unwind(6)]
     fn packed_branch_validation_rejects_invalid_child() {
         let left = [2, 4];
@@ -323,30 +356,32 @@ mod proofs {
         let minima = [2, 6];
         let child: usize = kani::any();
         let children = [0, child];
-        let pages = [
-            Page {
+        let branch = Page {
+            keys: &minima,
+            values: &[],
+            children: &children,
+        };
+        let prefix = [
+            ResidentNode {
                 keys: &left,
-                values: &left,
-                children: &[],
+                contents: ResidentContents::Leaf(&left),
+                height: 0,
+                max_key: 4,
             },
-            Page {
+            ResidentNode {
                 keys: &right,
-                values: &right,
-                children: &[],
-            },
-            Page {
-                keys: &minima,
-                values: &[],
-                children: &children,
+                contents: ResidentContents::Leaf(&right),
+                height: kani::any(),
+                max_key: kani::any(),
             },
         ];
-        let summaries = [(0, 4), (kani::any(), kani::any())];
-        let expected = if child == 1 && summaries[1].0 == 0 {
-            Ok((1, summaries[1].1))
+        let expected = if child == 1 && prefix[1].height == 0 {
+            Ok((1, prefix[1].max_key))
         } else {
             Err(Error::InvalidStructure)
         };
-        assert!(summarize_branch(&pages[2], &pages, &summaries) == expected);
+        let checked = validate_next(&branch, &prefix).map(|node| (node.height, node.max_key));
+        assert!(checked == expected);
     }
 
     #[kani::proof]

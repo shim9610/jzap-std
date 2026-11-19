@@ -13,22 +13,22 @@ use jzap::{
 mod pool;
 
 fn check_width<const N: usize>(query: u64) -> Result<(), Error> {
-    let keys: [[u64; N]; N] = core::array::from_fn(|leaf| {
-        core::array::from_fn(|slot| {
-            (leaf as u64)
-                .wrapping_mul(N as u64)
-                .wrapping_add(slot as u64)
-                .wrapping_mul(2)
-                .wrapping_add(2)
-        })
-    });
-    let minima: [u64; N] = core::array::from_fn(|leaf| {
-        (leaf as u64)
-            .wrapping_mul(N as u64)
-            .wrapping_mul(2)
-            .wrapping_add(2)
-    });
-    let children: [usize; N] = core::array::from_fn(|leaf| leaf);
+    let mut keys = [[0; N]; N];
+    let mut minima = [0; N];
+    let mut children = [0; N];
+    let mut next_key = 2u64;
+    let mut next_child = 0usize;
+    let mut limits = minima.iter_mut();
+    let mut edges = children.iter_mut();
+    for keys in &mut keys {
+        *limits.next().ok_or(Error::InvalidStructure)? = next_key;
+        *edges.next().ok_or(Error::InvalidStructure)? = next_child;
+        next_child = next_child.checked_add(1).ok_or(Error::InvalidStructure)?;
+        for key in keys {
+            *key = next_key;
+            next_key = next_key.checked_add(2).ok_or(Error::InvalidStructure)?;
+        }
+    }
     let count = N.checked_add(1).ok_or(Error::InvalidStructure)?;
     let mut pages = Vec::try_with_capacity(count)?;
     for keys in &keys {

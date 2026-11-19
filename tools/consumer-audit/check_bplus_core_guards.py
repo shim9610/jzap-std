@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 
 PINNED_SLICE = "decea260b5d73957cd573e827257d8c00d6614fb1cb10f8001d54e3c264de08d"
+PINNED_ITER = "c309e04ca3da2fc4220ee3f93b4466c578ea7f3f2ef52cca6a3fdf8ac28e53d3"
 PROOF = Path(__file__).resolve().with_name("bplus_core_guards.rs")
 
 
@@ -38,6 +39,18 @@ def main():
             raise SystemExit(f"unbound core binary-search operation: {fragment}")
     if "if mid <= self.len()" not in split or "self.split_at_unchecked(mid)" not in split:
         raise SystemExit("unbound core split operation")
+
+    iterator = source.with_name("iter.rs").read_bytes()
+    if hashlib.sha256(iterator).hexdigest() != PINNED_ITER:
+        raise SystemExit("core slice iterator differs from verified Rust 1.95.0")
+    for fragment in (
+        "self.array_windows().all(|[a, b]| compare(a, b))",
+        "pub const fn first_chunk<const N: usize>(&self) -> Option<&[T; N]> {\n        if self.len() < N",
+    ):
+        if fragment not in text:
+            raise SystemExit(f"unbound pair window operation: {fragment}")
+    if "let ret = self.v.first_chunk();\n        if ret.is_some() {\n            self.v = &self.v[1..];" not in iterator.decode():
+        raise SystemExit("unbound pair window advance")
 
     subprocess.run(
         [os.environ.get("JZAP_VERUS", "verus"), str(PROOF), "--no-cheating"], check=True

@@ -35,5 +35,11 @@ proof fn checked_split_subslices(len: usize, mid: usize)
         0 <= len as int - mid as int <= len as int,
         mid as int + (len as int - mid as int) == len as int,
 {}
+// is_sorted_by constructs ArrayWindows<T, 2>. A successful first_chunk
+// permits both reading the pair and advancing by the suffix starting at 1.
+proof fn pair_window_advance(len: usize)
+    requires len >= 2,
+    ensures 1 <= len, 0 < len as int - 1 < len as int,
+{}
 }
 fn main() {}

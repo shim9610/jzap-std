@@ -469,58 +469,63 @@ done
 
 #### B+ panic and termination checks
 
-The optimized consumer fixture invokes the public checked B+ view and
-includes the exact pool code used by the benchmark. It exercises widths
-8, 16, and 32. Pool construction uses fallible jzap allocations and the
-timed driver propagates lookup errors. Internal-node routing selects between
-the current index and a checked midpoint.
+The no_std consumer fixture calls the public checked B+ view and the exact
+pool source used by the benchmark at widths 8, 16, and 32 with `u64` keys and
+`usize` node IDs. The timings above describe the earlier benchmark at
+`16724a9`. The verification revision changes the pool's height loop and has
+no fresh timing measurements.
 
-The Linux x86-64 `panic=abort` consumer links with overflow checks enabled,
-both with and without link-time optimization. Each profile ran 264 normal
-and allocation-refusal cases without leaks. The driver requires a successful
-normal return and an error at every injected allocation failure. Its
-overflow, bounds, and abort controls each fail the link as intended.
+Pool construction publishes one record per accepted page. A branch resolves
+its child IDs against the completed prefix, verifies their height and key
+bounds, and only then calls `try_push`. Missing or forward child IDs return
+`Err`. Splitting validates the partition and fixed array widths before
+returning the pools. Verus checked five constructor lemmas, including the
+prefix invariant preserved by each successful append and the capacity of
+each split pool. The replay checks the reviewed Rust bodies and reuses the
+Vec, layout, storage, and budget contracts from `42afdab` after confirming
+their sources match. The caller proof relies on those contracts and on the
+allocator returning a suitably aligned block or a null pointer on failure.
+
+Both optimized Linux x86-64 `panic=abort` links with overflow checks passed,
+with and without link-time optimization. Each ran 228 normal and injected
+allocation-refusal cases without leaks. The fixture requires success in each
+normal case and `Err` for every allocation refusal. The overflow, bounds,
+and abort controls were detected in both profiles.
+
+The strict debug link still retains the unresolved panic sink. The diagnostic
+ELF has 17 resolved panic edges, including forwarding edges. The replay
+binds all 12 guard kinds to the exact static callers in this fixture,
+including the size-two window in node ordering, the three binary-search
+caller paths, and the shared Vec and allocator paths. The ordering guard
+can only take the suffix at index 1 after obtaining a window of length 2.
+The index proofs show that each binary-search access and endpoint is in range.
+The replay pins the Rust 1.95.0 slice and iterator sources and rejects an
+unreviewed caller with an unchanged guard symbol. The debug diagnostic also
+ran all 228 normal and allocation-refusal cases. These results apply to the
+resolved edges of this concrete ELF and the reviewed source contracts.
+User comparisons and external allocators have their own contracts.
+
+The pool passed six Kani harnesses over the actual Rust implementation.
+That includes the constructor with an arbitrary machine-word child ID on
+a two-page fixture, branch validation with arbitrary child summaries, the
+exact-key lookup oracle, and one-step lookup for all three widths. The
+constructor's general prefix claim comes from the separately bound Verus
+proof. Allowing a child to point at the page being appended caused the
+Verus proof to fail. All three pool tests passed natively and in x86-64
+and i686 Miri.
 
 ```sh
+python3 tools/consumer-audit/check_bplus_debug.py
 python3 scripts/check_consumer_link.py \
   --source tools/consumer-audit/cases/bplus_pool.rs \
   --source-dependency tools/throughput-analysis/src/bplus_pool.rs \
   --require-success
-```
-
-The default debug consumer still retains `core` and allocator precondition
-guards. Inspection of the linked diagnostic found 23 static guard and
-forwarding edges. Closing those paths requires proof binding to the
-concrete callers. The release link results cover these concrete B+ roots
-and the configured panic and process-exit sinks.
-
-The actual checked B+ Rust source passed both Kani search proofs. The
-pool source passed the exact-key oracle and the three lookup-step proofs
-for widths 8, 16, and 32. The step proofs use arbitrary 64-bit keys, query,
-values and machine-word IDs, including invalid IDs, for zero or one descent
-over a one-branch, one-leaf pool. An additional Kani harness runs the branch
-validation function used by pool construction with every machine-word
-candidate child ID and arbitrary second-child summaries in a two-leaf
-fixture. It checks rejection of invalid IDs and heights and publication of
-the verified height and maximum. The allocation-inclusive construction
-proof timed out, and the debug caller composition remains open.
-
-Removing the child-height comparison caused that harness to produce a
-counterexample. Both native-width and i686 Miri passed the three pool tests
-on the final constructor source. The default debug fixture also ran 264
-normal and allocation-refusal cases with its diagnostic panic sink installed.
-
-The debug call graph reaches `assert_unchecked` from the pinned Rust core
-`binary_search_by` and `split_at_unchecked` through `split_at_checked`.
-Verus discharged four local index and split obligations, and rejected a
-mutated midpoint step. These lemmas cover arithmetic under the stated
-slice invariants. Connecting all retained guards to the exact B+ callers
-remains a separate proof obligation. The Rust 1.95.0 `core/src/slice/mod.rs`
-used for the inspection has SHA-256
-`decea260b5d73957cd573e827257d8c00d6614fb1cb10f8001d54e3c264de08d`.
-
-```sh
-python3 tools/consumer-audit/check_bplus_core_guards.py
+cargo kani --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-pool --bin bplus --harness pool::proofs::
+for target in x86_64-unknown-linux-gnu i686-unknown-linux-gnu; do
+  cargo +nightly-2026-10-30 miri test --locked --target "$target" \
+    --manifest-path tools/throughput-analysis/Cargo.toml --features bplus-pool --bin bplus
+done
 ```
 
 ## Consumer checks and build tuning

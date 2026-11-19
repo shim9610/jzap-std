@@ -169,6 +169,46 @@ lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
 The B+ API covers point lookups with complete keys. The design issue tracks
 partial-key comparison and range traversal. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
 
+The point-lookup benchmark compares the same resident node slices against a
+checked Rust reference, with and without local node validation in the timed
+path. It also includes `brie-tree` 0.1.2 and the standard `BTreeMap` as whole-index
+references. The executable checks every query against the standard map before
+timing. Build first, then run each seed on the same idle CPU.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus
+for seed in 1 2 3; do
+  tools/throughput-analysis/target/release/bplus "$seed"
+done
+```
+
+On Linux, build with `bplus-memory` to record lookup allocation counts and bytes
+using the instrumented system allocator. Use the uninstrumented `bplus-bench`
+build for timing. Both builds report the size of the lookup continuation.
+
+#### Complete-key prototype timing
+
+The Linux x86-64 run used Rust 1.95.0, the release profile, and CPU affinity 2
+on an AMD EPYC 9V74. Each build ran 54 intervals across three seeds, with matching
+query counts and checksums before and after inlining. The shortest interval was
+1.066 seconds. All table values are call-weighted ns/lookup. The range in
+parentheses gives the fastest and slowest seed means for the jzap lookup.
+
+| Fanout / height | jzap before → after inlining | Checked reference | jzap with validation | Checked reference with validation | brie-tree | std BTreeMap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | 69.11 → 45.84 (41.62–52.13) | 48.40 | 72.58 | 62.61 | 13.30 | 11.51 |
+| 32 / 2 | 108.85 → 82.42 (77.85–85.93) | 81.40 | 146.67 | 119.48 | 31.77 | 29.69 |
+| 16 / 3 | 140.62 → 120.67 (115.96–123.29) | 104.46 | 160.16 | 131.19 | 48.57 | 42.02 |
+
+The generated lookup loop after inlining omits the per-node `provide` and
+`descend` calls. The prevalidated jzap means range from 5.3% below to 15.5% above
+the same-layout reference. The two whole-index references use their own node
+layouts and trust their internal structure. The memory run observed zero heap
+allocations, zero peak and retained allocation bytes during the lookup intervals,
+and a 584-byte `Lookup<u64, usize>` on this target. Node and index construction
+occur outside those intervals.
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

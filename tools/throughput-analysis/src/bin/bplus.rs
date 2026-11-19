@@ -222,12 +222,17 @@ fn run(seed: u64, fanout: usize, height: u32) {
     }
     #[cfg(not(feature = "bplus-memory"))]
     {
-        let pilot = 256;
-        let fastest = methods
-            .iter()
-            .map(|(_, method)| measure(*method, &queries, pilot).0)
-            .fold(f64::INFINITY, f64::min);
-        let batches = (pilot as f64 * 1.5 / fastest).ceil() as usize;
+        let batches = std::env::var(format!("BPLUS_BATCHES_{fanout}_{height}"))
+            .ok()
+            .map(|value| value.parse::<usize>().expect("positive batch count"))
+            .unwrap_or_else(|| {
+                let pilot = 256;
+                let fastest = methods
+                    .iter()
+                    .map(|(_, method)| measure(*method, &queries, pilot).0)
+                    .fold(f64::INFINITY, f64::min);
+                (pilot as f64 * 1.5 / fastest).ceil() as usize
+            });
         for i in 0..methods.len() {
             let (name, method) = methods[(i + seed as usize + fanout) % methods.len()];
             let (elapsed, sum) = measure(method, &queries, batches);

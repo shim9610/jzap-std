@@ -75,6 +75,7 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
     }
 
     /// Validate and search one node. A `Found` result borrows the supplied leaf.
+    #[inline(always)]
     pub fn provide<'a, V>(
         &mut self,
         id: I,
@@ -120,6 +121,7 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
         Ok(result)
     }
 
+    #[inline(always)]
     fn descend<'a, V>(
         &mut self,
         id: I,

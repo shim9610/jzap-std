@@ -413,57 +413,75 @@ abort controls.
 
 #### Fixed-width pool benchmark
 
-The `bplus-pool` benchmark records immutable snapshots with full, fixed-width
-nodes for the 8 / 2, 32 / 2, and 16 / 3 fixtures. Setup checks strict node key
-order, child IDs, child height, and key fences before timing. Each child must
-have a lower ID than its parent, so validation rejects forward edges and cycles.
-Subtree maxima propagate upward to check inherited upper fences. The fixed-width
-setup also checks that the leaf and branch pools contain the expected node kinds
-and record widths.
+The `bplus-pool` benchmark compares prebuilt in-memory point lookups on
+512, 32,768, and 65,536 entries. The checked view uses the public jzap
+lookup API with prevalidated nodes and retains path checks during lookup.
+The resident view validates the entire snapshot during setup. The
+`split` and `packed` pools share fixed node widths, numeric IDs, topology,
+and search code. The split pool borrows per-node arrays. The packed pool
+embeds those arrays in separate contiguous leaf and branch allocations.
 
-The timing compares the checked lookup, a validated variable-width resident
-view, and two fixed-width pools that share the same query loop. The `split`
-case borrows per-node arrays, and `packed` embeds those same arrays directly
-in separate contiguous branch and leaf pools. The numeric IDs, topology and
-key sets match across these fixtures. Pool construction and validation occur
-before timing. This baseline is a benchmark fixture for full nodes in resident
-memory.
+Each implementation uses the same `u64` keys and values, 4,096-query sequence
+per seed, hit and miss outcomes, and number of lookup calls. The benchmark
+builds the trees and validates every query against the standard map before it
+starts the clock. Timed lookups use the same dispatcher and checksum.
+The `brie-tree` adapter converts the common `u64` query to its
+`NonMaxU64` key type during lookup. In the timed binary this adds a
+comparison and branch for the reserved `u64::MAX` value.
 
-Native and Miri tests compare all queries in their fixture ranges against the
-standard map, test a query at `u64::MAX`, and reject invalid pool boundaries,
-record widths, child edges, depths, and inherited key fences. The Miri tests
-passed on Linux x86-64 and i686. The Kani lookup harness passed for every
-`u8` query over one valid two-leaf pool. A separate Kani attempt covering pool
-construction reached its time limit. The instrumented seed recorded zero
-lookup allocations for both pool layouts in all three cases.
+The run used source `bbea8dc`, Rust 1.95.0, and `brie-tree` 0.1.2 in a single
+release binary on Linux x86-64, pinned to virtual CPU 2 on an AMD EPYC 9V74.
+Independent processes used seeds 1, 2, 3, and 10. In each fixture, every jzap
+path ran before `brie-tree` twice and after it twice. The 60 intervals all
+matched call counts and checksums within each fixture and seed. The shortest
+lasted 1.308 seconds. Each latency is total elapsed time divided by total
+lookup calls. A target gap is the measured latency minus the `brie-tree`
+latency from the same run, in ns/lookup.
 
-The packed x86-64 lookup functions matched the three experimental versions
-byte for byte. The node strides are 128, 512, and 256 bytes in fixture order.
+| Fanout / height | `brie-tree` target (ns) | Checked view gap | Resident gap | Split gap | Packed gap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | 13.89 | +26.75 | +8.10 | −2.25 | −3.49 |
+| 32 / 2 | 32.71 | +29.77 | +18.86 | +0.41 | −2.36 |
+| 16 / 3 | 43.44 | +35.92 | +25.88 | −1.49 | −8.02 |
 
-The baseline at `16724a9` used Rust 1.95.0 on Linux x86-64 and CPU 2 of an AMD EPYC
-9V74. All 45 timing intervals matched operation counts and checksums for
-each case and seed. The shortest lasted 1.200 seconds. Times are call-weighted
-nanoseconds per lookup. The target gap is packed latency minus the
-`brie-tree` latency in the same run.
+The per-seed gaps show run-to-run variation. SD is the sample standard
+deviation of the four paired gaps, in ns/lookup.
 
-| Fanout / height | `brie-tree` target | Packed | Packed target gap | Per-seed packed target gaps |
-| --- | ---: | ---: | ---: | --- |
-| 8 / 2 | 13.16 | 9.92 | −3.24 | −1.47, −4.36, −3.89 |
-| 32 / 2 | 32.45 | 31.73 | −0.72 | −2.07, −1.52, +1.44 |
-| 16 / 3 | 55.01 | 41.28 | −13.73 | −14.12, −13.83, −13.24 |
+| Fanout / height | jzap path | Seed 1 | Seed 2 | Seed 3 | Seed 10 | SD |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | Checked view | +28.41 | +19.29 | +31.10 | +28.22 | 5.15 |
+| 8 / 2 | Resident | +11.13 | +7.98 | +10.39 | +2.89 | 3.72 |
+| 8 / 2 | Split | −1.51 | −1.16 | −1.59 | −4.76 | 1.68 |
+| 8 / 2 | Packed | −2.96 | −2.38 | −3.05 | −5.55 | 1.41 |
+| 32 / 2 | Checked view | +27.84 | +33.14 | +29.63 | +28.46 | 2.37 |
+| 32 / 2 | Resident | +22.52 | +24.51 | +16.72 | +11.71 | 5.80 |
+| 32 / 2 | Split | −1.93 | +4.00 | +2.54 | −2.99 | 3.39 |
+| 32 / 2 | Packed | −6.42 | −2.08 | −0.57 | −0.37 | 2.81 |
+| 16 / 3 | Checked view | +42.40 | +36.02 | +33.30 | +31.98 | 4.63 |
+| 16 / 3 | Resident | +29.28 | +20.95 | +21.99 | +31.28 | 5.17 |
+| 16 / 3 | Split | +6.19 | −4.21 | −2.65 | −5.31 | 5.24 |
+| 16 / 3 | Packed | −1.94 | −9.05 | −8.86 | −12.25 | 4.35 |
 
-Inspection of the `brie-tree` fixtures showed root heights of 2, 4, and 5.
-The table compares complete lookups on the same keys across the two libraries.
-The `split` and `packed` cases within jzap use identical heights and widths.
+Height counts edges from the root to a leaf. The jzap fixtures use the fanout
+and height shown in the table. The same entries inserted in ascending order
+give `brie-tree` 16 key slots per node and root heights of 2, 4, and 5,
+respectively. The benchmark compares each library's complete lookup at the
+same workload size. The two fixed-width jzap pools also provide a comparison
+with matched topology.
+
+The earlier run at `16724a9` recorded zero timed lookup allocations for
+both fixed-width layouts across these three fixtures.
+See [B+ panic and termination checks](#b-panic-and-termination-checks) for
+the verified setup and lookup paths.
 
 ```sh
-dir=target/verification/bplus-pool-baseline
+dir=target/verification/bplus-pool-rematch
 CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release \
   --manifest-path tools/throughput-analysis/Cargo.toml --features bplus-pool --bin bplus \
   --target-dir "$dir/binary"
-export BPLUS_BATCHES_8_2=32000 BPLUS_BATCHES_32_2=9800 BPLUS_BATCHES_16_3=9000
-for seed in 1 2 3; do
-  taskset -c 2 "$dir/binary/release/bplus" "$seed"
+export BPLUS_BATCHES_8_2=40000 BPLUS_BATCHES_32_2=13000 BPLUS_BATCHES_16_3=11200
+for seed in 1 2 3 10; do
+  taskset -c 2 "$dir/binary/release/bplus" "$seed" > "$dir/timing-$seed.csv"
 done
 ```
 
@@ -471,9 +489,7 @@ done
 
 The no_std consumer fixture calls the public checked B+ view and the exact
 pool source used by the benchmark at widths 8, 16, and 32 with `u64` keys and
-`usize` node IDs. The timings above describe the earlier benchmark at
-`16724a9`. The verification revision changes the pool's height loop and has
-no fresh timing measurements.
+`usize` node IDs. The benchmark above uses the pool's verified height loop.
 
 Pool construction publishes one record per accepted page. A branch resolves
 its child IDs against the completed prefix, verifies their height and key

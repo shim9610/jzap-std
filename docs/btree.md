@@ -505,6 +505,24 @@ fixture. It checks rejection of invalid IDs and heights and publication of
 the verified height and maximum. The allocation-inclusive construction
 proof timed out, and the debug caller composition remains open.
 
+Removing the child-height comparison caused that harness to produce a
+counterexample. Both native-width and i686 Miri passed the three pool tests
+on the final constructor source. The default debug fixture also ran 264
+normal and allocation-refusal cases with its diagnostic panic sink installed.
+
+The debug call graph reaches `assert_unchecked` from the pinned Rust core
+`binary_search_by` and `split_at_unchecked` through `split_at_checked`.
+Verus discharged four local index and split obligations, and rejected a
+mutated midpoint step. These lemmas cover arithmetic under the stated
+slice invariants. Connecting all retained guards to the exact B+ callers
+remains a separate proof obligation. The Rust 1.95.0 `core/src/slice/mod.rs`
+used for the inspection has SHA-256
+`decea260b5d73957cd573e827257d8c00d6614fb1cb10f8001d54e3c264de08d`.
+
+```sh
+"$JZAP_VERUS" tools/consumer-audit/bplus_core_guards.rs --no-cheating
+```
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

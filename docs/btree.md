@@ -238,6 +238,52 @@ costs 12.8–16.9% more than the checked reference, and the specialized whole
 index remains faster. The allocation run again observed zero lookup allocations,
 zero peak and retained allocation bytes, and a 584-byte continuation.
 
+#### Node ID width
+
+The benchmark uses the same prevalidated lookup for `jzap` (`usize` node IDs)
+and `jzap_u32` (`u32` IDs). Both fixtures use identical keys, values, numeric
+node IDs, and topology. Fixture construction and node validation run before
+timing. Each method must match the standard map on every query before timing.
+The `u32` measurement includes the checked conversion of the root index. Its
+child-link storage uses 4 bytes per link, compared with 8 bytes for `usize`
+on this target.
+
+The release build used Rust 1.95.0 on an AMD EPYC 9V74, pinned to Linux CPU 2.
+The three seeds provided 63 intervals. The shortest lasted 1.054 seconds.
+Each case and seed used matching operation counts and
+checksums across all seven methods. Both relative orders of the ID variants
+occurred for each case. Times are call-weighted nanoseconds per lookup.
+The target gap is the measured jzap time minus the `brie-tree` time from
+the same run.
+
+| Fanout / height | `brie-tree` target | jzap `usize` | `usize` target gap | jzap `u32` | `u32` target gap | `u32` − `usize` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | 14.11 | 42.92 | +28.81 | 39.05 | +24.94 | −3.87 |
+| 32 / 2 | 32.65 | 80.61 | +47.96 | 79.22 | +46.57 | −1.39 |
+| 16 / 3 | 51.60 | 112.75 | +61.15 | 112.48 | +60.88 | −0.27 |
+
+The per-seed differences for `u32` minus `usize` were −6.20 to −1.65 ns
+at 8 / 2, −9.30 to +9.24 ns at 32 / 2, and −4.41 to +3.36 ns at 16 / 3.
+Only 8 / 2 showed a reduction in every seed.
+
+The x86-64 release binary initializes the 64-slot ancestor array with 36
+stores (512 bytes) for `usize` and 16 stores (256 bytes) for `u32`. The
+continuation sizes are 584 and 320 bytes, respectively. The child loads
+and scalar ancestor comparisons also change from 64-bit to 32-bit.
+This experiment measures the full cost of changing ID width, including
+child-link layout, conversion, and generated code.
+The instrumented run for seed 1 observed zero lookup heap allocations for
+both ID widths in all three cases.
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release \
+  --manifest-path tools/throughput-analysis/Cargo.toml --features bplus-bench --bin bplus
+export BPLUS_BATCHES_8_2=28696 BPLUS_BATCHES_32_2=9839 BPLUS_BATCHES_16_3=9480
+for seed in 1 2 3; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus "$seed"
+done
+```
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

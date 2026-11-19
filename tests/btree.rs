@@ -1318,6 +1318,15 @@ fn fixed_bplus_range_matches_std_across_scrambled_leaf_ids() {
     }
     assert_eq!(cursor.try_next(), Ok(None));
     assert_eq!(cursor.try_next(), Ok(None));
+
+    let leaves = [([17, 19], [(); 2]), ([2, 3], [(); 2])];
+    let branches = [([2, 17], [1, 0])];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    let mut cursor = tree.range(Excluded(&2), Included(&17)).unwrap();
+    assert_eq!(cursor.try_next(), Ok(Some((&3, &()))));
+    assert_eq!(cursor.try_next(), Ok(Some((&17, &()))));
+    assert_eq!(cursor.try_next(), Ok(None));
+    assert_eq!(cursor.try_next(), Ok(None));
 }
 
 #[test]

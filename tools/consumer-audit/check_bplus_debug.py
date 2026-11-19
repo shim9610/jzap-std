@@ -30,14 +30,26 @@ SEARCH = {
      "jzap::collections::btree_map::view::bplus::leaf_index"),
     (SLICE + "binary_search_by", SLICE + "partition_point",
      "jzap_consumer_audit::consumer::pool::leaf_index"),
+    (SLICE + "binary_search_by", SLICE + "partition_point",
+     "jzap::collections::btree_map::view::bplus::fixed::range::prefix_len"),
 }
 
-# Search and ordering use the pinned core arithmetic proofs. The other guards instantiate
-# the baseline Vec storage/layout/budget contracts and the fixture allocator.
+ZIP = (
+    "<core::slice::iter::Iter<T> as core::iter::traits::iterator::Iterator>::size_hint",
+    "core::iter::adapters::zip::TrustedRandomAccessNoCoerce::size",
+    "<core::iter::adapters::zip::Zip<A,B> as core::iter::adapters::zip::ZipImpl<A,B>>::new",
+    "core::iter::traits::iterator::Iterator::zip",
+)
+
+# Search, ordering, and range iteration use the pinned core arithmetic proofs.
+# The other guards instantiate the baseline Vec and fixture allocator contracts.
 CALLERS = {
     PAIR_WINDOW_NEXT: {PAIR_WINDOW_PATH},
     "core::hint::assert_unchecked" + GUARD: SEARCH,
     "<usize as core::slice::index::SliceIndex<[T]>>::get_unchecked" + GUARD: SEARCH,
+    "core::ptr::const_ptr::<impl *const T>::offset_from_unsigned" + GUARD: {
+        (*ZIP, "jzap_consumer_audit::consumer::check_width"),
+    },
     LAYOUT + "from_size_align_unchecked" + GUARD: {CAPACITY},
     LAYOUT + "from_size_alignment_unchecked" + GUARD: {
         (LAYOUT + "from_size_alignment_unchecked", "__rustc::__rust_" + name)

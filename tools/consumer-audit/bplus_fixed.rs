@@ -99,9 +99,10 @@ proof fn range_decode_digit(rank: int, child_width: int, fanout: int)
             rank == child_width * (rank / child_width) + rank % child_width;
 }
 
-proof fn range_advance_leaf_slot(index: usize, width: usize)
-    requires index < width,
-    ensures index < width, index as int + 1 <= width,
+proof fn range_admit_leaf_span(first: usize, limit: usize, width: usize, index: usize)
+    requires first <= limit <= width, index < limit as int - first as int,
+    ensures 0 <= limit as int - first as int <= width,
+        0 <= (first as int + index as int) < width,
 {}
 
 fn main() {}

@@ -2,7 +2,7 @@
 
 use super::FixedTree;
 use crate::{Error, TryIterator};
-use core::{borrow::Borrow, ops::Bound};
+use core::{borrow::Borrow, iter::Zip, ops::Bound, slice::Iter};
 
 /// Forward range cursor over a validated [`FixedTree`].
 ///
@@ -15,9 +15,8 @@ pub struct Range<'t, 'a, 'q, K, V, Q: ?Sized, const N: usize> {
     // Leaf rank in separator order, independent of the caller's node IDs.
     rank: usize,
     parent: Option<&'a [usize; N]>,
-    leaf: Option<&'a ([K; N], [V; N])>,
-    index: usize,
-    limit: usize,
+    remaining: Zip<Iter<'a, K>, Iter<'a, V>>,
+    more_leaves: bool,
 }
 
 impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
@@ -25,7 +24,7 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
     ///
     /// Returns [`Error::Bounds`] if the start exceeds the end or both exclude
     /// the same key. An empty tree or range yields no items.
-    #[inline]
+    #[inline(always)]
     pub fn range<'q, Q: ?Sized + Ord>(
         &self,
         start: Bound<&'q Q>,
@@ -52,19 +51,18 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             end,
             rank: 0,
             parent: None,
-            leaf: None,
-            index: 0,
-            limit: 0,
+            remaining: [].iter().zip([].iter()),
+            more_leaves: false,
         };
         if let Some(root) = self.root {
             let mut id = root;
             let mut height = self.height;
             while let Some(next) = height.checked_sub(1) {
                 height = next;
-                let (keys, children) = cursor.branch(id)?;
+                let (keys, children) = branch(self, id)?;
                 let slot = match start {
                     Bound::Included(query) | Bound::Excluded(query) => {
-                        super::child_index::<false, _, _>(keys, query)?.unwrap_or(0)
+                        prefix_len(keys, query, true).saturating_sub(1)
                     }
                     Bound::Unbounded => 0,
                 };
@@ -76,13 +74,7 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
                 cursor.parent = Some(children);
                 id = *children.get(slot).ok_or(Error::InvalidStructure)?;
             }
-            cursor.open_leaf(id)?;
-            let (keys, _) = cursor.leaf.ok_or(Error::InvalidStructure)?;
-            cursor.index = match start {
-                Bound::Included(query) => prefix_len(keys, query, false)?,
-                Bound::Excluded(query) => prefix_len(keys, query, true)?,
-                Bound::Unbounded => 0,
-            };
+            cursor.open_leaf(id, start)?;
         }
         Ok(cursor)
     }
@@ -90,52 +82,56 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
 
 // Count the keys below the bound, optionally including a matching key.
 #[inline]
-fn prefix_len<K: Borrow<Q>, Q: ?Sized + Ord>(
-    keys: &[K],
-    query: &Q,
-    inclusive: bool,
-) -> Result<usize, Error> {
-    let Some(index) = super::child_index::<false, _, _>(keys, query)? else {
-        return Ok(0);
-    };
-    if inclusive || keys.get(index).ok_or(Error::InvalidStructure)?.borrow() < query {
-        index.checked_add(1).ok_or(Error::InvalidStructure)
-    } else {
-        Ok(index)
-    }
+fn prefix_len<K: Borrow<Q>, Q: ?Sized + Ord>(keys: &[K], query: &Q, inclusive: bool) -> usize {
+    keys.partition_point(|key| match key.borrow().cmp(query) {
+        core::cmp::Ordering::Less => true,
+        core::cmp::Ordering::Equal => inclusive,
+        core::cmp::Ordering::Greater => false,
+    })
+}
+
+#[inline]
+fn branch<'a, K, V, const N: usize>(
+    tree: &FixedTree<'a, K, V, N>,
+    id: usize,
+) -> Result<&'a ([K; N], [usize; N]), Error> {
+    let index = id
+        .checked_sub(tree.leaves.len())
+        .ok_or(Error::InvalidStructure)?;
+    tree.branches.get(index).ok_or(Error::InvalidStructure)
 }
 
 impl<'a, K: Borrow<Q>, V, Q: ?Sized + Ord, const N: usize> Range<'_, 'a, '_, K, V, Q, N> {
-    #[inline]
-    fn branch(&self, id: usize) -> Result<&'a ([K; N], [usize; N]), Error> {
-        let index = id
-            .checked_sub(self.tree.leaves.len())
-            .ok_or(Error::InvalidStructure)?;
-        self.tree.branches.get(index).ok_or(Error::InvalidStructure)
-    }
-
-    #[inline]
-    fn open_leaf(&mut self, id: usize) -> Result<(), Error> {
+    #[inline(always)]
+    fn open_leaf(&mut self, id: usize, start: Bound<&Q>) -> Result<(), Error> {
         let leaf = self.tree.leaves.get(id).ok_or(Error::InvalidStructure)?;
         let keys = &leaf.0;
-        self.limit = match self.end {
+        let first = match start {
+            Bound::Included(query) => prefix_len(keys, query, false),
+            Bound::Excluded(query) => prefix_len(keys, query, true),
+            Bound::Unbounded => 0,
+        };
+        let limit = match self.end {
             Bound::Included(query) if keys.last().is_some_and(|k| k.borrow() > query) => {
-                prefix_len(keys, query, true)?
+                prefix_len(keys, query, true)
             }
             Bound::Excluded(query) if keys.last().is_some_and(|k| k.borrow() >= query) => {
-                prefix_len(keys, query, false)?
+                prefix_len(keys, query, false)
             }
             _ => N,
         };
-        self.leaf = Some(leaf);
-        self.index = 0;
+        let keys = keys.get(first..limit).ok_or(Error::InvalidStructure)?;
+        let values = leaf.1.get(first..limit).ok_or(Error::InvalidStructure)?;
+        self.remaining = keys.iter().zip(values.iter());
+        self.more_leaves = limit == N;
         Ok(())
     }
 
     // Most leaf changes stay within the cached parent. Changing parents
     // decodes the logical rank from the root, in separator order.
+    #[inline(always)]
     fn advance_leaf(&mut self) -> Result<(), Error> {
-        self.leaf = None;
+        self.more_leaves = false;
         let rank = self.rank.checked_add(1).ok_or(Error::InvalidStructure)?;
         let count = self.tree.leaves.len();
         if rank >= count {
@@ -145,23 +141,39 @@ impl<'a, K: Borrow<Q>, V, Q: ?Sized + Ord, const N: usize> Range<'_, 'a, '_, K, 
         let slot = rank.checked_rem(N).ok_or(Error::InvalidStructure)?;
         if slot != 0 {
             let children = self.parent.ok_or(Error::InvalidStructure)?;
-            return self.open_leaf(*children.get(slot).ok_or(Error::InvalidStructure)?);
+            return self.open_leaf(
+                *children.get(slot).ok_or(Error::InvalidStructure)?,
+                Bound::Unbounded,
+            );
         }
-        let mut id = self.tree.root.ok_or(Error::InvalidStructure)?;
-        let mut relative = rank;
-        let mut width = count;
-        let mut height = self.tree.height;
-        while let Some(next) = height.checked_sub(1) {
-            height = next;
-            width = width.checked_div(N).ok_or(Error::InvalidStructure)?;
-            let slot = relative.checked_div(width).ok_or(Error::InvalidStructure)?;
-            relative = relative.checked_rem(width).ok_or(Error::InvalidStructure)?;
-            let (_, children) = self.branch(id)?;
-            self.parent = Some(children);
-            id = *children.get(slot).ok_or(Error::InvalidStructure)?;
-        }
-        self.open_leaf(id)
+        let (id, parent) = next_parent(self.tree, rank)?;
+        self.parent = Some(parent);
+        self.open_leaf(id, Bound::Unbounded)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn next_parent<'a, K, V, const N: usize>(
+    tree: &FixedTree<'a, K, V, N>,
+    rank: usize,
+) -> Result<(usize, &'a [usize; N]), Error> {
+    let mut id = tree.root.ok_or(Error::InvalidStructure)?;
+    let mut relative = rank;
+    let mut width = tree.leaves.len();
+    let mut height = tree.height;
+    while let Some(next) = height.checked_sub(1) {
+        height = next;
+        width = width.checked_div(N).ok_or(Error::InvalidStructure)?;
+        let slot = relative.checked_div(width).ok_or(Error::InvalidStructure)?;
+        relative = relative.checked_rem(width).ok_or(Error::InvalidStructure)?;
+        let (_, children) = branch(tree, id)?;
+        id = *children.get(slot).ok_or(Error::InvalidStructure)?;
+        if height == 0 {
+            return Ok((id, children));
+        }
+    }
+    Err(Error::InvalidStructure)
 }
 
 impl<'a, K: Borrow<Q> + 'a, V: 'a, Q: ?Sized + Ord, const N: usize> TryIterator
@@ -172,24 +184,14 @@ impl<'a, K: Borrow<Q> + 'a, V: 'a, Q: ?Sized + Ord, const N: usize> TryIterator
 
     #[inline(always)]
     fn try_next(&mut self) -> Result<Option<Self::Item>, Error> {
-        if self.index >= self.limit {
-            if self.leaf.is_none() || self.limit < N {
-                self.leaf = None;
-                return Ok(None);
-            }
-            self.advance_leaf()?;
+        if let Some(item) = self.remaining.next() {
+            return Ok(Some(item));
         }
-        let Some((keys, values)) = self.leaf else {
-            return Ok(None);
-        };
-        if self.index >= self.limit {
-            self.leaf = None;
+        if !self.more_leaves {
             return Ok(None);
         }
-        let key = keys.get(self.index).ok_or(Error::InvalidStructure)?;
-        let value = values.get(self.index).ok_or(Error::InvalidStructure)?;
-        self.index = self.index.checked_add(1).ok_or(Error::InvalidStructure)?;
-        Ok(Some((key, value)))
+        self.advance_leaf()?;
+        Ok(self.remaining.next())
     }
 }
 

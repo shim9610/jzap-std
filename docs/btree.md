@@ -284,6 +284,75 @@ for seed in 1 2 3; do
 done
 ```
 
+#### Point-lookup bottlenecks
+
+This experiment uses the same resident fixtures and `usize` node IDs as the
+standard benchmark. The generated cases validate every query against the
+standard map, and each seed times the same jzap implementation twice to expose
+timing variation. `brie-tree` provides the latency target in the same binary.
+
+Rust 1.95.0 on Linux x86-64, pinned to CPU 2 of an AMD EPYC 9V74, produced
+108 intervals across three seeds. The shortest interval lasted 1.219 seconds.
+All methods matched operation counts and checksums within each case and seed.
+The gap is jzap latency minus the `brie-tree` latency in this run. The
+fastest variant that retains the lookup checks by case was lazy path
+initialization at 8 / 2, and lazy initialization with both search changes
+at 32 / 2 and 16 / 3.
+
+| Fanout / height | `brie-tree` target (ns) | jzap baseline (ns) | Baseline gap (ns) | Fastest checked variant (ns) | Checked variant gap (ns) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 8 / 2 | 13.24 | 47.31 | +34.07 | 37.17 | +23.93 |
+| 32 / 2 | 34.99 | 97.38 | +62.39 | 64.30 | +29.32 |
+| 16 / 3 | 47.96 | 126.87 | +78.91 | 84.78 | +36.82 |
+
+Each comparison below subtracts the stated control time from the variant
+time in ns/lookup. Cases that reversed direction across seeds are marked
+with an asterisk. Changes affect compiler output and the differences cannot
+be added as independent costs.
+
+| Variant and control | 8 / 2 | 32 / 2 | 16 / 3 |
+| --- | ---: | ---: | ---: |
+| Same baseline measured a second time | +4.22 | +2.76* | −2.81* |
+| Lazy versus eager path initialization | −22.91 | −2.17* | −9.00 |
+| Conditional move for child selection versus baseline | −0.31* | −11.40 | −20.69 |
+| Lower-bound leaf search added to conditional-move child selection | +3.11* | −9.13 | −9.65 |
+| Omit cycle detection versus lazy initialization | −11.41 | −13.61 | −11.48 |
+| Omit key fence checks versus lazy initialization | −9.44 | −0.97* | −4.12 |
+| Omit cycle detection and fences versus lazy initialization | −17.38 | −33.31 | −31.15 |
+| Contiguous buffers versus baseline | +7.73* | −3.05 | −1.32* |
+
+The initialization comparison uses identical ancestor checks in both variants.
+The eager variant fills the full path, and the lazy variant writes a slot as
+each node is visited. The eager variant and the library baseline compiled to
+the same 337 instructions, with one encoding difference in the relative
+address of a call to the same ancestor-check helper. Both variants call that
+helper out of line in this binary. At 8 / 2 the eager variant nevertheless
+averaged 12.77 ns above the library baseline. The two execute at different
+addresses and read separate view arrays. The measured spread limits the
+precision of the 8 / 2 initialization estimate.
+
+The `cmov` variant changes child selection. The second search variant also
+uses a lower-bound search followed by one equality test in the leaf. Both
+search changes retain
+the path checks. The packed fixture places keys, values, and child IDs in
+three contiguous buffers and uses the same lookup machine code as the baseline.
+
+The cases omitting cycle detection or key fences are benchmark controls
+over the valid, immutable fixtures. A key fence is the key range inherited
+from the parent. These controls still check node ID, height, and slice bounds.
+
+```sh
+dir=target/verification/bplus-bottlenecks
+python3 tools/throughput-analysis/prepare_bplus_bottlenecks.py "$PWD" "$dir/experiment"
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release \
+  --manifest-path "$dir/experiment/Cargo.toml" --features bplus-bench \
+  --target-dir "$dir/binary"
+export BPLUS_BATCHES_8_2=28000 BPLUS_BATCHES_32_2=9500 BPLUS_BATCHES_16_3=8000
+for seed in 1 2 3; do
+  taskset -c 2 "$dir/binary/release/jzap-throughput-analysis" "$seed"
+done
+```
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

@@ -520,7 +520,7 @@ used for the inspection has SHA-256
 `decea260b5d73957cd573e827257d8c00d6614fb1cb10f8001d54e3c264de08d`.
 
 ```sh
-"$JZAP_VERUS" tools/consumer-audit/bplus_core_guards.rs --no-cheating
+python3 tools/consumer-audit/check_bplus_core_guards.py
 ```
 
 ## Consumer checks and build tuning

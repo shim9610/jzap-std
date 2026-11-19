@@ -1,7 +1,7 @@
 use jzap::{
     Error, TryClone, TryCloneIn, TryExactSizeIterator, TryIterator,
     budget::{Budget, MemoryBudget},
-    collections::VecDeque,
+    collections::{VecDeque, vec_deque},
     vec::Unlimited,
 };
 use std::{cell::Cell, collections::VecDeque as Std, rc::Rc};
@@ -325,8 +325,8 @@ fn retain_resize_errors_retire_once() {
 }
 #[test]
 fn iteration_conversions_search_and_clone() {
-    assert_eq!(jzap::deque::Iter::<u8>::default().len(), 0);
-    assert_eq!(jzap::deque::IterMut::<u8>::default().len(), 0);
+    assert_eq!(vec_deque::Iter::<u8>::default().len(), 0);
+    assert_eq!(vec_deque::IterMut::<u8>::default().len(), 0);
     let mut d = ring(8, 5, 7);
     for v in d.range_mut(2..6).unwrap() {
         *v += 10

@@ -39,6 +39,9 @@ The library requires Rust 1.95 or later and has no external runtime dependencies
 | `default-features = false` | Core-only APIs including checked arithmetic, borrowed scratch storage, and checked slices. |
 | `features = ["std"]` | Adds OS string and path interoperability and lets `HashMap` and `HashSet` obtain seeds on [supported platforms](docs/random-state.md#platform-boundaries-and-premises). |
 
+Import `BTreeMap`, `HashMap`, and `VecDeque` from `jzap::collections`. Named deque
+iterator types such as `Iter` and `Drain` live under `jzap::collections::vec_deque`.
+
 ## Documentation
 
 | Documentation | Purpose |

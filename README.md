@@ -10,8 +10,8 @@ implemented features, remaining work, and verification evidence. [Beta support s
 
 ## Getting started
 
-Add a local checkout to your application's `Cargo.toml`. Adjust the path to
-match your checkout location.
+Before publication, point your application's `Cargo.toml` at a local checkout.
+Adjust the path to match your checkout location.
 
 ```toml
 [dependencies]
@@ -29,6 +29,14 @@ fn example() -> Result<(), jzap::Error> {
     assert_eq!(*metered, 42);
     Ok(())
 }
+```
+
+Once the beta appears on crates.io, use the exact prerelease version in your
+application:
+
+```toml
+[dependencies]
+jzap-std = "=0.1.0-beta.1"
 ```
 
 The library requires Rust 1.95 or later and has no external runtime dependencies.
@@ -73,10 +81,11 @@ iterator types such as `Iter` and `Drain` live under `jzap::collections::vec_deq
 | [Support status and remaining work](docs/support.md) | Implemented scope, remaining specification items, and measurement/verification follow-up |
 | [Box contracts](docs/box-completion-contracts.md) | Implementation and benchmark contracts |
 | [Box API and verification](docs/verification/box-completion/README.md) | Feature mapping, executed checks, and evidence |
+| [Beta release procedure](docs/releasing.md) | Package checks and publication from an approved candidate |
 | [Performance methodology](docs/benchmarks.md) | Conditions, uncertainty, reproduction, and remaining work |
 | [1MiB string clone analysis](docs/verification/box-str-clone-cause/README.md) | Actual binary paths and the reported 6.4% estimate |
 | [Foundation contracts](docs/foundation-contracts.md) | Clone, initialization, and budget semantics |
-| [Reference provenance](reference/README.md) | Fixed source snapshots and their licenses |
+| [Reference provenance](https://github.com/shim9610/jzap-std/blob/main/reference/README.md) | Fixed source snapshots and their licenses |
 
 ## Build and verification
 

@@ -440,7 +440,7 @@ lookup allocations for both pool layouts in all three cases.
 The packed x86-64 lookup functions matched the three experimental versions
 byte for byte. The node strides are 128, 512, and 256 bytes in fixture order.
 
-The fixed baseline used Rust 1.95.0 on Linux x86-64 and CPU 2 of an AMD EPYC
+The baseline at `16724a9` used Rust 1.95.0 on Linux x86-64 and CPU 2 of an AMD EPYC
 9V74. All 45 timing intervals matched operation counts and checksums for
 each case and seed. The shortest lasted 1.200 seconds. Times are call-weighted
 nanoseconds per lookup. The target gap is packed latency minus the
@@ -466,6 +466,40 @@ for seed in 1 2 3; do
   taskset -c 2 "$dir/binary/release/bplus" "$seed"
 done
 ```
+
+#### B+ panic and termination checks
+
+The optimized consumer fixture invokes the public checked B+ view and
+includes the exact pool code used by the benchmark. It exercises widths
+8, 16, and 32. Pool construction uses fallible jzap allocations and the
+timed driver propagates lookup errors. Internal-node routing selects between
+the current index and a checked midpoint.
+
+The Linux x86-64 `panic=abort` consumer links with overflow checks enabled,
+both with and without link-time optimization. Each profile ran 264 normal
+and allocation-refusal cases without leaks. The driver requires a successful
+normal return and an error at every injected allocation failure. Its
+overflow, bounds, and abort controls each fail the link as intended.
+
+```sh
+python3 scripts/check_consumer_link.py \
+  --source tools/consumer-audit/cases/bplus_pool.rs \
+  --source-dependency tools/throughput-analysis/src/bplus_pool.rs \
+  --require-success
+```
+
+The default debug consumer still retains `core` and allocator precondition
+guards. Inspection of the linked diagnostic found 23 static guard and
+forwarding edges. Closing those paths requires proof binding to the
+concrete callers. The release link results cover these concrete B+ roots
+and the configured panic and process-exit sinks.
+
+The actual checked B+ Rust source passed both Kani search proofs. The
+pool source passed the exact-key oracle and the three lookup-step proofs
+for widths 8, 16, and 32. The step proofs use arbitrary 64-bit keys, query,
+values and machine-word IDs, including invalid IDs, for zero or one descent
+over a one-branch, one-leaf pool. Full construction and debug caller
+composition have separate proof obligations.
 
 ## Consumer checks and build tuning
 

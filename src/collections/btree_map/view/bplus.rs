@@ -22,8 +22,7 @@ fn child_index<const CONDITIONAL: bool, K: Borrow<Q>, Q: ?Sized + Ord>(
         let middle = base.checked_add(half).ok_or(Error::InvalidStructure)?;
         let key = keys.get(middle).ok_or(Error::InvalidStructure)?;
         if CONDITIONAL {
-            let advance = select_unpredictable(key.borrow() <= query, half, 0);
-            base = base.wrapping_add(advance);
+            base = select_unpredictable(key.borrow() <= query, middle, base);
         } else if key.borrow() <= query {
             base = middle;
         }

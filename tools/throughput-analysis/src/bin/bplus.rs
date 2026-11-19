@@ -35,6 +35,17 @@ impl<I> Page<I> {
     }
 }
 
+#[cfg(feature = "bplus-pool")]
+impl Page<usize> {
+    fn borrowed(&self) -> pool::Page<'_> {
+        pool::Page {
+            keys: &self.keys,
+            values: &self.values,
+            children: &self.children,
+        }
+    }
+}
+
 fn make_pages<I: TryFrom<usize>>(fanout: usize, height: u32) -> Vec<Page<I>> {
     let leaves = fanout.pow(height);
     let mut pages = Vec::new();
@@ -168,28 +179,32 @@ fn reference_lookup<const VALIDATE: bool>(
     }
 }
 
-fn measure(get: &dyn Fn(u64) -> Answer, queries: &[u64], batches: usize) -> (f64, u64) {
+fn measure(
+    get: &dyn Fn(u64) -> Answer,
+    queries: &[u64],
+    batches: usize,
+) -> Result<(f64, u64), Error> {
     let start = Instant::now();
     let mut sum = 0u64;
     for _ in 0..batches {
         for &query in queries {
-            sum = sum.wrapping_add(black_box(get)(black_box(query)).unwrap().unwrap_or(0));
+            sum = sum.wrapping_add(black_box(get)(black_box(query))?.unwrap_or(0));
         }
     }
-    (start.elapsed().as_secs_f64(), black_box(sum))
+    Ok((start.elapsed().as_secs_f64(), black_box(sum)))
 }
 
-fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
+fn run<const N: usize>(seed: u64, fanout: usize, height: u32) -> Result<(), Error> {
     let pages = make_pages::<usize>(fanout, height);
-    let views: Vec<_> = pages.iter().map(|page| page.view().unwrap()).collect();
+    let views: Vec<_> = pages.iter().map(Page::view).collect::<Result<_, _>>()?;
     let pages_u32 = make_pages::<u32>(fanout, height);
-    let views_u32: Vec<_> = pages_u32.iter().map(|page| page.view().unwrap()).collect();
+    let views_u32: Vec<_> = pages_u32.iter().map(Page::view).collect::<Result<_, _>>()?;
     let mut std = BTreeMap::new();
     let mut brie = BTree::new();
     for page in &pages[..fanout.pow(height)] {
         for (&key, &value) in page.keys.iter().zip(&page.values) {
             std.insert(key, value);
-            brie.insert(NonMaxU64::new(key).unwrap(), value);
+            brie.insert(NonMaxU64::new(key).ok_or(Error::InvalidStructure)?, value);
         }
     }
     let mut random = seed;
@@ -203,11 +218,13 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
         .collect();
     let height = height as usize;
     #[cfg(feature = "bplus-pool")]
-    let resident = pool::Resident::check(&pages, height).unwrap();
+    let borrowed_pages: Vec<_> = pages.iter().map(Page::borrowed).collect();
     #[cfg(feature = "bplus-pool")]
-    let split = resident.split::<N>(fanout.pow(height as u32)).unwrap();
+    let resident = pool::Resident::check(&borrowed_pages, height)?;
     #[cfg(feature = "bplus-pool")]
-    let packed = pool::pack_pools(&split);
+    let split = resident.split::<N>(fanout.pow(height as u32))?;
+    #[cfg(feature = "bplus-pool")]
+    let packed = pool::pack_pools(&split)?;
     let methods: &[(&str, &dyn Fn(u64) -> Answer)] = &[
         ("jzap", &|q| {
             jzap_lookup::<false, _>(&pages, &views, height, q)
@@ -222,7 +239,9 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
             reference_lookup::<true>(&pages, height, q)
         }),
         ("brie", &|q| {
-            Ok(brie.get(NonMaxU64::new(q).unwrap()).copied())
+            Ok(brie
+                .get(NonMaxU64::new(q).ok_or(Error::InvalidStructure)?)
+                .copied())
         }),
         ("std", &|q| Ok(std.get(&q).copied())),
         ("jzap_u32", &|q| {
@@ -237,18 +256,18 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
     ];
     for query in queries.iter().copied() {
         for &(name, method) in methods {
-            assert_eq!(
-                method(query).unwrap(),
-                std.get(&query).copied(),
-                "{name}: {query}"
-            );
+            if method(query)? != std.get(&query).copied() {
+                eprintln!("lookup mismatch for {name}: {query}");
+                return Err(Error::InvalidStructure);
+            }
         }
     }
     #[cfg(feature = "bplus-memory")]
     for &(name, method) in methods {
         memory::start();
-        measure(method, &queries, 1);
+        let result = measure(method, &queries, 1);
         let stats = memory::stop();
+        result?;
         println!(
             "{seed},{fanout},{height},{name},{},{},{},{},{}",
             stats.calls, stats.peak, stats.live, stats.actual_peak, stats.actual
@@ -256,18 +275,25 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
     }
     #[cfg(not(feature = "bplus-memory"))]
     {
-        let batches = std::env::var(format!("BPLUS_BATCHES_{fanout}_{height}"))
+        let requested = std::env::var(format!("BPLUS_BATCHES_{fanout}_{height}"))
             .ok()
-            .map(|value| value.parse::<usize>().expect("positive batch count"))
-            .unwrap_or_else(|| {
-                let pilot = 256;
-                let fastest = methods
-                    .iter()
-                    .map(|(_, method)| measure(*method, &queries, pilot).0)
-                    .fold(f64::INFINITY, f64::min);
-                (pilot as f64 * 1.5 / fastest).ceil() as usize
-            });
-        let start = (seed as usize + fanout) % methods.len();
+            .map(|value| value.parse::<std::num::NonZeroUsize>())
+            .transpose()
+            .map_err(|_| Error::InvalidStructure)?;
+        let batches = if let Some(requested) = requested {
+            requested.get()
+        } else {
+            let pilot = 256;
+            let mut fastest = f64::INFINITY;
+            for &(_, method) in methods {
+                fastest = fastest.min(measure(method, &queries, pilot)?.0);
+            }
+            (pilot as f64 * 1.5 / fastest).ceil() as usize
+        };
+        let operations = batches
+            .checked_mul(queries.len())
+            .ok_or(Error::InvalidStructure)?;
+        let start = ((seed as usize % methods.len()) + fanout) % methods.len();
         for i in 0..methods.len() {
             let offset = if seed % 2 == 0 { methods.len() - i } else { i };
             let (name, method) = methods[(start + offset) % methods.len()];
@@ -275,23 +301,23 @@ fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
             if !matches!(name, "jzap" | "brie" | "resident" | "split" | "packed") {
                 continue;
             }
-            let (elapsed, sum) = measure(method, &queries, batches);
-            assert!(elapsed >= 1.0, "short interval for {name}");
-            println!(
-                "{seed},{fanout},{height},{name},{elapsed:.9},{},{sum}",
-                batches * queries.len()
-            );
+            let (elapsed, sum) = measure(method, &queries, batches)?;
+            if elapsed < 1.0 {
+                eprintln!("short interval for {name}");
+                return Err(Error::InvalidStructure);
+            }
+            println!("{seed},{fanout},{height},{name},{elapsed:.9},{operations},{sum}");
         }
     }
+    Ok(())
 }
 
-fn main() {
+fn main() -> Result<(), Error> {
     let seed = std::env::args()
         .nth(1)
-        .expect("positive seed")
-        .parse::<u64>()
-        .unwrap();
-    assert_ne!(seed, 0);
+        .and_then(|value| value.parse::<std::num::NonZeroU64>().ok())
+        .ok_or(Error::InvalidStructure)?
+        .get();
     eprintln!(
         "lookup_state_bytes={} lookup_u32_state_bytes={}",
         std::mem::size_of::<Lookup<'_, u64, usize>>(),
@@ -305,12 +331,13 @@ fn main() {
     println!("seed,fanout,height,implementation,seconds,operations,checksum");
     #[cfg(feature = "bplus-pool")]
     {
-        run::<8>(seed, 8, 2);
-        run::<32>(seed, 32, 2);
-        run::<16>(seed, 16, 3);
+        run::<8>(seed, 8, 2)?;
+        run::<32>(seed, 32, 2)?;
+        run::<16>(seed, 16, 3)?;
     }
     #[cfg(not(feature = "bplus-pool"))]
     for (fanout, height) in [(8, 2), (32, 2), (16, 3)] {
-        run::<0>(seed, fanout, height);
+        run::<0>(seed, fanout, height)?;
     }
+    Ok(())
 }

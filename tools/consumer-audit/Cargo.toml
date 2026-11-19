@@ -8,6 +8,8 @@ publish = false
 crate-type = ["staticlib"]
 [dependencies]
 jzap-std = { path = "../.." }
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 [profile.release]
 opt-level = 3
 codegen-units = 1

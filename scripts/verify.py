@@ -181,6 +181,12 @@ def plan(area,checks,out,test_targets=None):
         elif check=='sbom':add(check,[sys.executable,'-c',SBOM,str(out/'jzap-sbom.json')],'dependency-inventory')
         elif check=='link':
             script(check,'check_link_exits.py','--output',str(out/'link'),kind='concrete-call-graph-check')
+            if area in ('all','btree'):
+                script('link-bplus-consumer','check_consumer_link.py',
+                       '--source','tools/consumer-audit/cases/bplus_pool.rs',
+                       '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
+                       '--require-success','--output',str(out/'bplus-consumer'),
+                       kind='concrete-call-graph-check')
             # The no_std fixture cannot link default std entropy; walk that root separately.
             if area in ('all','hash-map','hash-set'):script('link-seed','check_seed_link.py','--profiles','release,release-lto,release-checked','--output',str(out/'link-seed'),kind='concrete-call-graph-check')
         elif check=='certificate':

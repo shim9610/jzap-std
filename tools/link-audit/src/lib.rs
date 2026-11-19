@@ -126,12 +126,29 @@ pub extern "C" fn audit_btree(seed:usize,budget_limit:usize)->u32 {
     let local=MemoryBudget::new(budget_limit);
     let concurrent=jzap::budget::ConcurrentMemoryBudget::new(budget_limit);
     let result=(||{
+        bplus_lookup(seed)?;
         btree_operations(seed,jzap::budget::Unmetered)?;
         btree_operations(seed,Budget::Limited(&local))?;
         btree_operations(seed,jzap::budget::ConcurrentBudget(&concurrent))
     })();
     if local.occupied()!=0||local.reserved()!=0||concurrent.used()!=0{return 2}
     u32::from(result.is_err())
+}
+#[inline(never)]
+fn bplus_lookup(seed:usize)->Result<(),Error>{
+    use jzap::collections::btree_map::view::{LookupStep,bplus::{Lookup,Node}};
+    let query=black_box(seed as u64);
+    let minima=black_box([3u64,9]);
+    let edges=black_box([1usize,2]);
+    let mut lookup=Lookup::new(0,1,&query)?;
+    let branch=Node::<_,u64>::branch(&minima,&edges)?;
+    if let LookupStep::NeedNode(id)=lookup.provide(0,&branch)?{
+        let keys=if id==1{black_box([3u64,7])}else{black_box([9u64,17])};
+        let values=black_box([19u64,35]);
+        let leaf=Node::leaf(&keys,&values)?;
+        black_box(lookup.provide(id,&leaf)?);
+    }
+    Ok(())
 }
 #[inline(never)]
 fn btree_operations<P:AllocationPolicy>(seed:usize,policy:P)->Result<(),Error>{

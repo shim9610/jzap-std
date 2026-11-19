@@ -221,7 +221,7 @@ CONTROLS = [
      'super::geometry::replace_index(self.position, index)', 'super::geometry::replace_index(self.position, 0)',
      'collections::btree_map::iter::borrowed_edge_proofs::packed_cursor_methods_preserve_every_admitted_coordinate'),
     ('btree-search-count-argument', 'btree-search-cursors', 'src/collections/btree_map/view.rs',
-     'let mut high = self.keys.len();', 'let mut high = 0;',
+     'let mut high = keys.len();', 'let mut high = 0;',
      'collections::btree_map::view::search_proofs::validated_slice_search_matches_std_on_every_small_query'),
     ('shared-local-admission-argument', 'shared-numeric', 'src/shared/count.rs',
      'self.0.set(admitted_count(old)?);', 'self.0.set(admitted_count(0)?);',

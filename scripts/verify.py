@@ -145,7 +145,7 @@ def plan(area,checks,out,test_targets=None):
                     'loop:panic_proofs::box_iterator_counters_cover_every_machine_word_length',
                     'loop:boxed::slice::panic_proofs::box_iterator_preserves_every_valid_cursor_state','loop:boxed::text::panic_proofs::character_byte_cursor_preserves_every_valid_state'],
                 'vec':['proofs::vec_'],'string':['string::proofs::'],'shared':['shared::proofs::','budget::concurrent::proofs::'],
-                'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::'],
+                'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::','collections::btree_map::view::bplus::proofs::'],
                 'hash-map':['collections::hash_map::proofs::','collections::hash_map::iter::scan_proofs::'],
                 'binary-heap':['collections::binary_heap::proofs::'],'deque':['deque::proofs::'],'scratch-slice':['scratch::proofs::','slice::proofs::'],
                 'hash-set':['collections::hash_set::proofs::','collections::hash_map::proofs::hash_set_replace_preserves_slot_class_length_and_credit'],

@@ -134,6 +134,41 @@ Validation covers visited nodes. Locally valid unseen nodes are not certified.
 The caller supplies slices and chooses when to fetch another node. The library
 does not define file formats, I/O, mappings, caches, persistence or recovery.
 
+### B+ tree point lookup
+
+`view::bplus::Node` and `view::bplus::Lookup` support complete keys and values
+stored in leaves. Each branch separator is the minimum of its child, and the
+branch has one child identifier per separator. The lookup follows the last
+separator at or below the query, including an exact match. It checks the
+expected node kind, child minimum, inherited exclusive ceiling, and ancestor
+identifiers on the visited path.
+
+```rust
+use jzap::{Error, collections::btree_map::view::{LookupStep, bplus::{Lookup, Node}}};
+
+fn bplus_lookup() -> Result<(), Error> {
+    let query = 20u64;
+    let mut keys = [10, 20];
+    let mut lookup = Lookup::new(0usize, 1, &query)?;
+    let root = Node::<_, u64>::branch(&keys, &[1, 2])?;
+    assert_eq!(lookup.provide(0, &root)?, LookupStep::NeedNode(2));
+
+    keys = [20, 25];
+    let values = [200, 250];
+    let leaf = Node::leaf(&keys, &values)?;
+    assert_eq!(lookup.provide(2, &leaf)?, LookupStep::Found(&20, &200));
+    Ok(())
+}
+```
+
+Keys copied into the lookup can outlive the supplied node borrow. A key that
+contains a reference still borrows its referent. A `Found` result borrows the
+supplied leaf and a rejected node can be replaced without restarting the
+lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
+
+The B+ API covers point lookups with complete keys. The design issue tracks
+partial-key comparison and range traversal. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

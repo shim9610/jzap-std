@@ -4,6 +4,9 @@ use crate::Checked;
 use crate::Error;
 use core::marker::PhantomData;
 use core::{borrow::Borrow, ops::Bound};
+
+pub mod bplus;
+
 pub struct NodeView<'a, K, V> {
     pub(super) node: Link<K, V>,
     pub(super) height: usize,
@@ -61,6 +64,28 @@ pub struct NodeSlice<'a, K, V, I = usize> {
     children: Option<&'a [I]>,
 }
 
+fn search_index<K: Borrow<Q>, Q: ?Sized + Ord>(
+    keys: &[K],
+    query: &Q,
+) -> Result<Result<usize, usize>, Error> {
+    let mut low = 0;
+    let mut high = keys.len();
+    loop {
+        if low == high {
+            return Ok(Err(low));
+        }
+        let middle = super::geometry::middle(low, high);
+        let key = keys.get(middle).ok_or(Error::InvalidStructure)?;
+        match key.borrow().cmp(query) {
+            core::cmp::Ordering::Equal => return Ok(Ok(middle)),
+            core::cmp::Ordering::Less => low = super::geometry::advance(low, high, middle, true).0,
+            core::cmp::Ordering::Greater => {
+                high = super::geometry::advance(low, high, middle, false).1
+            }
+        }
+    }
+}
+
 #[cfg(kani)]
 mod search_proofs {
     use super::*;
@@ -73,7 +98,7 @@ mod search_proofs {
         let keys = [2u8, 4, 6, 8, 10, 12, 14, 16];
         let values = [0u8; 8];
         let view = NodeSlice::<_, _, usize>::new(&keys[..count], &values[..count], None).unwrap();
-        assert!(view.search_index(&query) == Ok(keys[..count].binary_search(&query)));
+        assert!(search_index(view.keys(), &query) == Ok(keys[..count].binary_search(&query)));
     }
 }
 impl<K, V, I> Copy for NodeSlice<'_, K, V, I> {}
@@ -110,29 +135,6 @@ impl<'a, K, V, I> NodeSlice<'a, K, V, I> {
     pub fn children(self) -> Option<&'a [I]> {
         self.children
     }
-    fn search_index<Q: ?Sized + Ord>(self, query: &Q) -> Result<Result<usize, usize>, Error>
-    where
-        K: Borrow<Q>,
-    {
-        let mut low = 0;
-        let mut high = self.keys.len();
-        loop {
-            if low == high {
-                return Ok(Err(low));
-            }
-            let middle = super::geometry::middle(low, high);
-            let key = self.keys.get(middle).ok_or(Error::InvalidStructure)?;
-            match key.borrow().cmp(query) {
-                core::cmp::Ordering::Equal => return Ok(Ok(middle)),
-                core::cmp::Ordering::Less => {
-                    low = super::geometry::advance(low, high, middle, true).0
-                }
-                core::cmp::Ordering::Greater => {
-                    high = super::geometry::advance(low, high, middle, false).1
-                }
-            }
-        }
-    }
     /// One locally validated lookup step. Only Found borrows this node's data;
     /// NeedNode carries a copied identifier. A caller can therefore consume the
     /// step, release/reuse its buffer and supply the next slice. Cross-node fence
@@ -142,7 +144,7 @@ impl<'a, K, V, I> NodeSlice<'a, K, V, I> {
         K: Borrow<Q>,
         I: Copy,
     {
-        match self.search_index(query)? {
+        match search_index(self.keys, query)? {
             Ok(i) => {
                 let (k, v) = self
                     .keys
@@ -227,7 +229,7 @@ impl<'q, 'a, K: Ord + Borrow<Q>, V, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, 'a
             return Err(Error::InvalidStructure);
         }
         node.check(self.height.get(), self.low, self.high)?;
-        let found = node.search_index(self.key)?;
+        let found = search_index(node.keys, self.key)?;
         match found {
             Ok(i) => {
                 let (k, v) = node

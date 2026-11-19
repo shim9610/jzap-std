@@ -712,6 +712,119 @@ fn local_slice_lookup_allows_reusing_the_same_caller_buffers() {
 }
 
 #[test]
+fn bplus_point_lookup_matches_std() {
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+    use std::collections::BTreeMap;
+
+    let mut random = 617_u64;
+    for fanout in [1, 2, 8, 32] {
+        let keys: Vec<u64> = (0..fanout * 8).map(|i| i as u64 * 2 + 2).collect();
+        let model: BTreeMap<_, _> = keys.iter().map(|&key| (key, key * 3)).collect();
+        let minima: Vec<_> = keys.chunks_exact(8).map(|leaf| leaf[0]).collect();
+        let children: Vec<_> = (1..=fanout).collect();
+        for _ in 0..256 {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            let query = random % (keys.len() as u64 * 2 + 4);
+            let mut lookup = Lookup::new(0, 1, &query).unwrap();
+            let root = Node::<_, u64, _>::branch(&minima, &children).unwrap();
+            let actual = match lookup.provide(0, &root).unwrap() {
+                LookupStep::Absent => None,
+                LookupStep::NeedNode(id) => {
+                    let keys = &keys[(id - 1) * 8..id * 8];
+                    let values: Vec<_> = keys.iter().map(|key| key * 3).collect();
+                    match lookup
+                        .provide(id, &Node::leaf(keys, &values).unwrap())
+                        .unwrap()
+                    {
+                        LookupStep::Found(key, value) => Some((*key, *value)),
+                        LookupStep::Absent => None,
+                        LookupStep::NeedNode(_) => unreachable!(),
+                    }
+                }
+                LookupStep::Found(_, _) => unreachable!(),
+            };
+            assert_eq!(actual, model.get_key_value(&query).map(|(&k, &v)| (k, v)));
+            assert_eq!(lookup.requested_node(), None);
+        }
+    }
+}
+
+#[test]
+fn bplus_reuses_parent_storage_and_checks_inherited_fences_on_retry() {
+    use jzap::Error;
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+
+    let query = 10;
+    let mut keys = [10, 20];
+    let mut lookup = Lookup::new(0, 2, &query).unwrap();
+    assert_eq!(
+        lookup.provide(0, &Node::<_, u32, _>::branch(&keys, &[1, 2]).unwrap()),
+        Ok(LookupStep::NeedNode(1))
+    );
+    keys = [10, 12];
+    assert_eq!(
+        lookup.provide(4, &Node::<_, u32, _>::branch(&keys[..1], &[3]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(
+        lookup.provide(1, &Node::<_, u32, _>::branch(&keys[..1], &[0]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(
+        lookup.provide(1, &Node::leaf(&keys, &[55, 56]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(lookup.requested_node(), Some(1));
+    assert_eq!(
+        lookup.provide(1, &Node::<_, u32, _>::branch(&keys[..1], &[3]).unwrap()),
+        Ok(LookupStep::NeedNode(3))
+    );
+
+    for malformed in [[9, 11], [11, 13], [10, 20], [10, 21]] {
+        keys = malformed;
+        assert_eq!(
+            lookup.provide(3, &Node::leaf(&keys, &[55, 56]).unwrap()),
+            Err(Error::InvalidStructure)
+        );
+        assert_eq!(lookup.requested_node(), Some(3));
+    }
+    assert_eq!(
+        lookup.provide(3, &Node::leaf(&[], &[] as &[u32]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+    keys = [10, 19];
+    assert_eq!(
+        lookup.provide(3, &Node::leaf(&keys, &[55, 56]).unwrap()),
+        Ok(LookupStep::Found(&10, &55))
+    );
+    assert_eq!(lookup.requested_node(), None);
+    assert_eq!(
+        lookup.provide(3, &Node::leaf(&keys, &[55, 56]).unwrap()),
+        Err(Error::InvalidStructure)
+    );
+
+    assert!(Node::<u32, (), usize>::branch(&[], &[]).is_err());
+    assert!(Node::<_, (), _>::branch(&[1, 2], &[3]).is_err());
+    assert!(Node::<_, (), _>::branch(&[2, 1], &[3, 4]).is_err());
+    assert!(Node::<_, _, usize>::leaf(&[1, 1], &[1, 2]).is_err());
+    assert!(Node::<_, _, usize>::leaf(&[1, 2], &[1]).is_err());
+    assert!(Lookup::<i32, _>::new(0, usize::BITS as usize, &query).is_err());
+    let mut empty = Lookup::<i32, _>::new(0, 0, &query).unwrap();
+    assert_eq!(
+        empty.provide(0, &Node::leaf(&[], &[] as &[u32]).unwrap()),
+        Ok(LookupStep::Absent)
+    );
+}
+
+#[test]
 fn destructors_unwind_once_and_still_release_every_node() {
     use std::cell::Cell;
     struct Item<'a>(&'a Cell<usize>, &'a Cell<bool>);

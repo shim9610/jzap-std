@@ -23,8 +23,12 @@ owned-budgets = []
 btree-memory = []
 bplus-bench = ["dep:brie-tree"]
 bplus-memory = ["bplus-bench"]
+bplus-pool = ["bplus-bench"]
 hash-map = ["jzap-std/std"]
 hash-set = ["jzap-std/std"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [profile.release]
 opt-level = 3

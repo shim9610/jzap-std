@@ -411,6 +411,62 @@ The overflow-checked no-std consumer linked and ran with and without
 link-time optimization. Both profiles detected their overflow, bounds, and
 abort controls.
 
+#### Fixed-width pool benchmark
+
+The `bplus-pool` benchmark records immutable snapshots with full, fixed-width
+nodes for the 8 / 2, 32 / 2, and 16 / 3 fixtures. Setup checks strict node key
+order, child IDs, child height, and key fences before timing. Each child must
+have a lower ID than its parent, so validation rejects forward edges and cycles.
+Subtree maxima propagate upward to check inherited upper fences. The fixed-width
+setup also checks that the leaf and branch pools contain the expected node kinds
+and record widths.
+
+The timing compares the checked lookup, a validated variable-width resident
+view, and two fixed-width pools that share the same query loop. The `split`
+case borrows per-node arrays, and `packed` embeds those same arrays directly
+in separate contiguous branch and leaf pools. The numeric IDs, topology and
+key sets match across these fixtures. Pool construction and validation occur
+before timing. This baseline is a benchmark fixture for full nodes in resident
+memory.
+
+Native and Miri tests compare all queries in their fixture ranges against the
+standard map, test a query at `u64::MAX`, and reject invalid pool boundaries,
+record widths, child edges, depths, and inherited key fences. The Miri tests
+passed on Linux x86-64 and i686. The Kani lookup harness passed for every
+`u8` query over one valid two-leaf pool. A separate Kani attempt covering pool
+construction reached its time limit. The instrumented seed recorded zero
+lookup allocations for both pool layouts in all three cases.
+
+The packed x86-64 lookup functions matched the three experimental versions
+byte for byte. The node strides are 128, 512, and 256 bytes in fixture order.
+
+The fixed baseline used Rust 1.95.0 on Linux x86-64 and CPU 2 of an AMD EPYC
+9V74. All 45 timing intervals matched operation counts and checksums for
+each case and seed. The shortest lasted 1.200 seconds. Times are call-weighted
+nanoseconds per lookup. The target gap is packed latency minus the
+`brie-tree` latency in the same run.
+
+| Fanout / height | `brie-tree` target | Packed | Packed target gap | Per-seed packed target gaps |
+| --- | ---: | ---: | ---: | --- |
+| 8 / 2 | 13.16 | 9.92 | −3.24 | −1.47, −4.36, −3.89 |
+| 32 / 2 | 32.45 | 31.73 | −0.72 | −2.07, −1.52, +1.44 |
+| 16 / 3 | 55.01 | 41.28 | −13.73 | −14.12, −13.83, −13.24 |
+
+Inspection of the `brie-tree` fixtures showed root heights of 2, 4, and 5.
+The table compares complete lookups on the same keys across the two libraries.
+The `split` and `packed` cases within jzap use identical heights and widths.
+
+```sh
+dir=target/verification/bplus-pool-baseline
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release \
+  --manifest-path tools/throughput-analysis/Cargo.toml --features bplus-pool --bin bplus \
+  --target-dir "$dir/binary"
+export BPLUS_BATCHES_8_2=32000 BPLUS_BATCHES_32_2=9800 BPLUS_BATCHES_16_3=9000
+for seed in 1 2 3; do
+  taskset -c 2 "$dir/binary/release/bplus" "$seed"
+done
+```
+
 ## Consumer checks and build tuning
 
 Use the open `TryIterator` / `TryIntoIterator` interfaces when a source may fail.

@@ -2,6 +2,9 @@
 #[cfg(feature = "bplus-memory")]
 #[path = "../string_memory.rs"]
 mod memory;
+#[cfg(feature = "bplus-pool")]
+#[path = "../bplus_pool.rs"]
+mod pool;
 
 use brie_tree::{BTree, nonmax::NonMaxU64};
 use jzap::{
@@ -176,7 +179,7 @@ fn measure(get: &dyn Fn(u64) -> Answer, queries: &[u64], batches: usize) -> (f64
     (start.elapsed().as_secs_f64(), black_box(sum))
 }
 
-fn run(seed: u64, fanout: usize, height: u32) {
+fn run<const N: usize>(seed: u64, fanout: usize, height: u32) {
     let pages = make_pages::<usize>(fanout, height);
     let views: Vec<_> = pages.iter().map(|page| page.view().unwrap()).collect();
     let pages_u32 = make_pages::<u32>(fanout, height);
@@ -199,7 +202,13 @@ fn run(seed: u64, fanout: usize, height: u32) {
         })
         .collect();
     let height = height as usize;
-    let methods: [(&str, &dyn Fn(u64) -> Answer); 7] = [
+    #[cfg(feature = "bplus-pool")]
+    let resident = pool::Resident::check(&pages, height).unwrap();
+    #[cfg(feature = "bplus-pool")]
+    let split = resident.split::<N>(fanout.pow(height as u32)).unwrap();
+    #[cfg(feature = "bplus-pool")]
+    let packed = pool::pack_pools(&split);
+    let methods: &[(&str, &dyn Fn(u64) -> Answer)] = &[
         ("jzap", &|q| {
             jzap_lookup::<false, _>(&pages, &views, height, q)
         }),
@@ -219,9 +228,15 @@ fn run(seed: u64, fanout: usize, height: u32) {
         ("jzap_u32", &|q| {
             jzap_lookup::<false, _>(&pages_u32, &views_u32, height, q)
         }),
+        #[cfg(feature = "bplus-pool")]
+        ("resident", &|q| resident.get(q)),
+        #[cfg(feature = "bplus-pool")]
+        ("split", &|q| split.get::<N>(q)),
+        #[cfg(feature = "bplus-pool")]
+        ("packed", &|q| packed.get::<N>(q)),
     ];
     for query in queries.iter().copied() {
-        for (name, method) in methods {
+        for &(name, method) in methods {
             assert_eq!(
                 method(query).unwrap(),
                 std.get(&query).copied(),
@@ -230,7 +245,7 @@ fn run(seed: u64, fanout: usize, height: u32) {
         }
     }
     #[cfg(feature = "bplus-memory")]
-    for (name, method) in methods {
+    for &(name, method) in methods {
         memory::start();
         measure(method, &queries, 1);
         let stats = memory::stop();
@@ -256,6 +271,10 @@ fn run(seed: u64, fanout: usize, height: u32) {
         for i in 0..methods.len() {
             let offset = if seed % 2 == 0 { methods.len() - i } else { i };
             let (name, method) = methods[(start + offset) % methods.len()];
+            #[cfg(feature = "bplus-pool")]
+            if !matches!(name, "jzap" | "brie" | "resident" | "split" | "packed") {
+                continue;
+            }
             let (elapsed, sum) = measure(method, &queries, batches);
             assert!(elapsed >= 1.0, "short interval for {name}");
             println!(
@@ -284,7 +303,14 @@ fn main() {
     );
     #[cfg(not(feature = "bplus-memory"))]
     println!("seed,fanout,height,implementation,seconds,operations,checksum");
+    #[cfg(feature = "bplus-pool")]
+    {
+        run::<8>(seed, 8, 2);
+        run::<32>(seed, 32, 2);
+        run::<16>(seed, 16, 3);
+    }
+    #[cfg(not(feature = "bplus-pool"))]
     for (fanout, height) in [(8, 2), (32, 2), (16, 3)] {
-        run(seed, fanout, height);
+        run::<0>(seed, fanout, height);
     }
 }

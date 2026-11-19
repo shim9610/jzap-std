@@ -1,0 +1,7 @@
+configuration,kind,length,implementation,calls,held,peak,usable_held,usable_peak,after,usable_after,handle_bytes
+default,5,4096,std,15,147464,278536,151536,282616,0,0,24
+default,5,4096,old,16,147464,278536,147464,278544,0,0,24
+default,5,4096,new,16,147464,278536,147464,278544,0,0,24
+fixed mmap threshold 131072,5,4096,std,15,147464,278536,151536,282616,0,0,24
+fixed mmap threshold 131072,5,4096,old,16,147464,278536,151536,286688,0,0,24
+fixed mmap threshold 131072,5,4096,new,16,147464,278536,151536,286688,0,0,24

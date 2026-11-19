@@ -1,0 +1,10 @@
+[package]
+name = "jzap-compile-fail"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[lib]
+doctest = true
+[dependencies]
+jzap-std = { path = "../..", features = ["std"] }

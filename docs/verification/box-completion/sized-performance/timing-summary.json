@@ -1,0 +1,302 @@
+[
+  {
+    "n": 10000,
+    "label": "std_control",
+    "metric": "create",
+    "ratio": 1.0003422296509754,
+    "low95": 0.998015754906046,
+    "high95": 1.0242583052933527,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "std_control",
+    "metric": "clone",
+    "ratio": 0.9878600801368155,
+    "low95": 0.9761745968890464,
+    "high95": 1.0036533007023674,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "std_control",
+    "metric": "drop",
+    "ratio": 0.9943033218440426,
+    "low95": 0.9898509138971258,
+    "high95": 1.00233022406532,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "std_handle16",
+    "metric": "create",
+    "ratio": 1.0294019908837957,
+    "low95": 1.027952677952678,
+    "high95": 1.0312022541024268,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "std_handle16",
+    "metric": "clone",
+    "ratio": 1.0248943858577133,
+    "low95": 1.0119414163268703,
+    "high95": 1.0321617779160979,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "std_handle16",
+    "metric": "drop",
+    "ratio": 1.0021722297218587,
+    "low95": 0.9956906317687895,
+    "high95": 1.0102626567777975,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "varlit",
+    "metric": "create",
+    "ratio": 1.0003422296509754,
+    "low95": 0.9976658787148953,
+    "high95": 1.0050226541075473,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "varlit",
+    "metric": "clone",
+    "ratio": 0.9974996751684735,
+    "low95": 0.982844744589711,
+    "high95": 1.0124445101580295,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "varlit",
+    "metric": "drop",
+    "ratio": 0.9869346435236261,
+    "low95": 0.9814616332136598,
+    "high95": 0.9969323822119283,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "unmetered",
+    "metric": "create",
+    "ratio": 0.998903873146876,
+    "low95": 0.9972690189780877,
+    "high95": 1.0008445610269863,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "unmetered",
+    "metric": "clone",
+    "ratio": 0.9955998496995747,
+    "low95": 0.9808976835656729,
+    "high95": 1.004630756262807,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "unmetered",
+    "metric": "drop",
+    "ratio": 0.9953334749508336,
+    "low95": 0.9877158239283325,
+    "high95": 1.0070143183337172,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "metered",
+    "metric": "create",
+    "ratio": 1.0564778121109617,
+    "low95": 1.0545292545292546,
+    "high95": 1.0578308232632896,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "metered",
+    "metric": "clone",
+    "ratio": 1.0515165242675488,
+    "low95": 1.034477947229625,
+    "high95": 1.0598250093719719,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 10000,
+    "label": "metered",
+    "metric": "drop",
+    "ratio": 1.0236980897626535,
+    "low95": 1.0191200052921037,
+    "high95": 1.0321110715557138,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "std_control",
+    "metric": "create",
+    "ratio": 1.011673916619641,
+    "low95": 0.981806847003446,
+    "high95": 1.0479156538262835,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "std_control",
+    "metric": "clone",
+    "ratio": 1.0538268040155034,
+    "low95": 0.9293525465819876,
+    "high95": 1.1030623854122803,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "std_control",
+    "metric": "drop",
+    "ratio": 0.9932623939547685,
+    "low95": 0.9736204251985053,
+    "high95": 1.0520079590310487,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "std_handle16",
+    "metric": "create",
+    "ratio": 0.9492996108139174,
+    "low95": 0.9134908276152932,
+    "high95": 1.0140553997407855,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "std_handle16",
+    "metric": "clone",
+    "ratio": 1.0295793764763448,
+    "low95": 0.9327455233732383,
+    "high95": 1.073735227205214,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "std_handle16",
+    "metric": "drop",
+    "ratio": 0.9812694632348389,
+    "low95": 0.9626676047136863,
+    "high95": 1.0316140301772172,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "varlit",
+    "metric": "create",
+    "ratio": 0.9985065582748375,
+    "low95": 0.9601562801427153,
+    "high95": 1.0356650981656534,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "varlit",
+    "metric": "clone",
+    "ratio": 1.0054752421707098,
+    "low95": 0.9137671082175861,
+    "high95": 1.0687813405894222,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "varlit",
+    "metric": "drop",
+    "ratio": 0.9855032319121068,
+    "low95": 0.957807244725579,
+    "high95": 1.0330137305820337,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "unmetered",
+    "metric": "create",
+    "ratio": 0.9755543663180165,
+    "low95": 0.9488168519393891,
+    "high95": 1.0068344220887426,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "unmetered",
+    "metric": "clone",
+    "ratio": 0.9761994312519198,
+    "low95": 0.8790939367611826,
+    "high95": 1.0541173584806816,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "unmetered",
+    "metric": "drop",
+    "ratio": 0.9775981332983836,
+    "low95": 0.9550382290077185,
+    "high95": 1.0251534519676355,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "metered",
+    "metric": "create",
+    "ratio": 0.9841893414238505,
+    "low95": 0.9540305696630514,
+    "high95": 1.017055909019188,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "metered",
+    "metric": "clone",
+    "ratio": 1.0474884580773391,
+    "low95": 0.930606888851494,
+    "high95": 1.1300003346766232,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "n": 100000,
+    "label": "metered",
+    "metric": "drop",
+    "ratio": 1.0157788389559785,
+    "low95": 0.9785204277679429,
+    "high95": 1.0508418209996526,
+    "status": "pass",
+    "control_valid": true
+  }
+]

@@ -1,0 +1,4 @@
+# Opt in with: cargo --config .cargo/loop-align64.toml build --release
+# This named file is not automatically loaded as Cargo's config.toml.
+[build]
+rustflags = ["-C", "llvm-args=-align-loops=64"]

@@ -1,0 +1,17 @@
+[package]
+name = "jzap-box-analysis"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[features]
+nightly = []
+memory = []
+[dependencies]
+jzap-std = { path = "../.." }
+# Analysis-only: compile the actual pinned reference source, including its error ABI.
+varlit-core = { path = "../../../reference-sources/varlit-cd7b044/crates/varlit-core", default-features = false }
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"

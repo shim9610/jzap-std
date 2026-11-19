@@ -1,0 +1,7 @@
+{
+  "binary_sha256": "8a6d1866248b5682e8bb161a1de327c4bca7f22f3f65ead61d5551e0c43d9dd5",
+  "cpu": 0,
+  "processes_per_label": 30,
+  "retained_cycles": 30,
+  "changed_product_code": false
+}

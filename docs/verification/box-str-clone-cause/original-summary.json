@@ -1,0 +1,54 @@
+[
+  {
+    "label": "std",
+    "median_ns": 905958.5,
+    "n": 4,
+    "bytes_per_payload": 1048576,
+    "processes": 30
+  },
+  {
+    "label": "std_control",
+    "median_ns": 930402.25,
+    "n": 4,
+    "bytes_per_payload": 1048576,
+    "processes": 30,
+    "kind": "str",
+    "len": 1048576,
+    "metric": "clone",
+    "ratio": 1.0269810924010316,
+    "low95": 0.9604533433215754,
+    "high95": 1.1086371532388417,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "label": "unmetered",
+    "median_ns": 963786.0,
+    "n": 4,
+    "bytes_per_payload": 1048576,
+    "processes": 30,
+    "kind": "str",
+    "len": 1048576,
+    "metric": "clone",
+    "ratio": 1.0638301864820519,
+    "low95": 0.9920220237809432,
+    "high95": 1.122398519025051,
+    "status": "pass",
+    "control_valid": true
+  },
+  {
+    "label": "metered",
+    "median_ns": 961733.25,
+    "n": 4,
+    "bytes_per_payload": 1048576,
+    "processes": 30,
+    "kind": "str",
+    "len": 1048576,
+    "metric": "clone",
+    "ratio": 1.0615643542171083,
+    "low95": 0.9773889041323864,
+    "high95": 1.1040773597940228,
+    "status": "pass",
+    "control_valid": true
+  }
+]

@@ -1,0 +1,10 @@
+[package]
+name = "jzap-kani-memory-repros"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[lib]
+path = "../reference_write_repro.rs"
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

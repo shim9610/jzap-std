@@ -1,0 +1,15 @@
+[package]
+name = "jzap-panic-inventory"
+default-run = "jzap-panic-inventory"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+# Verification-only parser. No product dependency or build-script integration.
+[dependencies]
+proc-macro2 = { version = "=1.0.107", features = ["span-locations"] }
+quote = "=1.0.45"
+serde_json = "=1.0.154"
+syn = { version = "=2.0.119", features = ["full", "visit"] }

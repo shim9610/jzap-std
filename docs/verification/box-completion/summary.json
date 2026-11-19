@@ -1,0 +1,32 @@
+{
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+  "tests": 51,
+  "properties": {
+    "count": 5,
+    "cases_each": 2048
+  },
+  "property_seed": "123456789",
+  "compile_fail": 12,
+  "kani_basic": 12,
+  "kani_extra": {
+    "passed": 3,
+    "unsupported": 3,
+    "compiler_errors": 4,
+    "timeout_60s": 2
+  },
+  "verus_verified": 19,
+  "verus_proofs": {
+    "verus-slice.log": 2,
+    "verus-array.log": 2,
+    "verus-buffer.log": 3,
+    "verus-array-reuse.log": 1,
+    "verus-budget.log": 5,
+    "verus-slot.log": 4,
+    "verus-array-slot.log": 2
+  },
+  "dynamic_time_checks": 144,
+  "dynamic_memory_checks": 360,
+  "source_commit": "3a44b0ed62daeaefaadcde66c4949a2d6f4c0e0b",
+  "status": "Box provisionally closed; broader performance measurements pending",
+  "raw_results": "Regenerate under target/verification; historical checkpoint is retained in Git history."
+}

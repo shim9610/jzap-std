@@ -1,0 +1,24 @@
+[package]
+name = "jzap-arithmetic-analysis"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+link-proof = []
+
+[dependencies]
+jzap-std = { path = "../..", default-features = false }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

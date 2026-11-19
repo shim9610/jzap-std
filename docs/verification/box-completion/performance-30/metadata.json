@@ -1,0 +1,12 @@
+{
+  "cpu": 0,
+  "processes": 30,
+  "new_processes": 15,
+  "extended_from": "docs/verification/box-completion/performance",
+  "warmup": 2,
+  "retained": 30,
+  "separate_replacement_process": true,
+  "acceptance_run": true,
+  "binary_sha256": "8a6d1866248b5682e8bb161a1de327c4bca7f22f3f65ead61d5551e0c43d9dd5",
+  "memory_binary_sha256": "9705858bd38f69435e874ab483fd21c771599e61dcf5269ddcc4de2d6bfa1b2f"
+}

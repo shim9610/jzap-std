@@ -1,0 +1,78 @@
+[package]
+name = "jzap-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+[package.metadata]
+cargo-fuzz = true
+[dependencies]
+libfuzzer-sys = "0.4"
+jzap-std = { path = ".." }
+[[bin]]
+name = "foundation"
+path = "fuzz_targets/foundation.rs"
+test = false
+doc = false
+bench = false
+[workspace]
+[[bin]]
+name = "vec"
+path = "fuzz_targets/vec.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "string"
+path = "fuzz_targets/string.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "shared"
+path = "fuzz_targets/shared.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "btree"
+path = "fuzz_targets/btree.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "btree_set"
+path = "fuzz_targets/btree_set.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "hash_map"
+path = "fuzz_targets/hash_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hash_set"
+path = "fuzz_targets/hash_set.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "binary_heap"
+path = "fuzz_targets/binary_heap.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "deque"
+path = "fuzz_targets/deque.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "scratch_slice"
+path = "fuzz_targets/scratch_slice.rs"
+test = false
+doc = false
+bench = false

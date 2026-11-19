@@ -1,0 +1,30 @@
+[package]
+name = "jzap-std"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Explicitly fallible owning containers and checked borrowed views"
+[lib]
+name = "jzap"
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc"]
+[dev-dependencies]
+proptest = "=1.12.0"
+[lints.rust]
+unused_must_use = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(jzap_loop_contracts)', 'cfg(jzap_init_loop_contracts)', 'cfg(no_global_oom_handling)', 'cfg(jzap_loom)', 'cfg(jzap_small_counts)', 'cfg(verus_keep_ghost)', 'cfg(jzap_proof_composition)'] }
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+[[example]]
+name = "compare_std"
+required-features = ["alloc"]
+[[example]]
+name = "abort_failure"
+required-features = ["alloc"]

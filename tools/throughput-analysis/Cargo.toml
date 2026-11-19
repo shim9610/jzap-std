@@ -1,0 +1,25 @@
+[package]
+name = "jzap-throughput-analysis"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+jzap-std = { path = "../.." }
+
+[features]
+deque-borrowed-consume = []
+deque-outline-action = []
+string-memory = []
+shared-memory = []
+owned-budgets = []
+btree-memory = []
+hash-map = ["jzap-std/std"]
+hash-set = ["jzap-std/std"]
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"

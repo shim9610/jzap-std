@@ -1,0 +1,19 @@
+[package]
+name = "jzap-shared-loom"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[lib]
+name = "jzap"
+path = "../../src/lib.rs"
+# Native unit tests are not Loom model entries.
+test = false
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc"]
+[dependencies]
+loom = "=0.7.2"
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(jzap_loop_contracts)', 'cfg(no_global_oom_handling)', 'cfg(jzap_loom)', 'cfg(jzap_small_counts)', 'cfg(verus_keep_ghost)'] }

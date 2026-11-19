@@ -1,0 +1,334 @@
+{
+  "source_commit": "153784073b0fdbd22f015c1cf5d9e8a32a22926a",
+  "product_checkpoint": "37beeb3598e8ac2d94756fcd77644b1adf29d3a9",
+  "status": "Stable Vec functionality implemented; acceptance open: six timing failures, one inconclusive comparison, and retained panic edges in checked/debug link fixtures",
+  "stable_inherent_methods": 46,
+  "unstable_reference_only": 22,
+  "runtime_dependencies": 0,
+  "tools": {
+    "stable": "rustc 1.95.0 (59807616e), LLVM 22.1.2",
+    "nightly": "nightly-2026-10-30 / 92b5b8c87, LLVM 23.1.4",
+    "kani": "0.68.0 / CBMC 6.11.0",
+    "verus": "0.2026.11.02.8bf68ee"
+  },
+  "verification": {
+    "vec_tests": 38,
+    "repository_deterministic_tests": 89,
+    "vec_properties": 3,
+    "repository_properties": 8,
+    "cases_per_property": 2048,
+    "property_seed": 123456789,
+    "library_doctests": 18,
+    "miri": [
+      "Stacked Borrows",
+      "Tree Borrows with strict provenance"
+    ],
+    "miri_execution": "38-test suite in both modes; final expanded unwind regression rerun separately in both modes",
+    "asan": "38-test suite passed; final expanded unwind regression rerun separately",
+    "small_stack": "64KiB stack / 256KiB array elements; debug and release",
+    "panic_abort_failure_return": "passed",
+    "fuzz_runs": 10000,
+    "fuzz_max_len": 128,
+    "kani_basic_passed": 10,
+    "kani_enhanced": {
+      "passed": 0,
+      "unsupported": 2,
+      "compiler_errors": 7,
+      "scope": "Historical nine-harness run before prefix batching; not rerun for the new ten-harness configuration."
+    },
+    "kani_diagnostic_control_outcomes_reproduced": 9,
+    "verus_verified": 7,
+    "verus_semantic_mutants_detected": 6,
+    "runtime_mutants_detected": 10,
+    "vec_runtime_mutants_detected": 6,
+    "compile_only_targets": [
+      "wasm32-unknown-unknown",
+      "thumbv7em-none-eabi"
+    ],
+    "no_global_oom_handling": "passed",
+    "advisory_license_source_audit": "Previous audit passed; runtime dependencies unchanged",
+    "sbom": "generated locally; runtime dependencies remain zero",
+    "coverage": {
+      "vec.rs": {
+        "lines": 96.47,
+        "branches": 82.0
+      },
+      "vec/convenience.rs": {
+        "lines": 90.16,
+        "branches": 68.18
+      },
+      "vec/edit.rs": {
+        "lines": 97.7,
+        "branches": 92.42
+      },
+      "vec/ownership.rs": {
+        "lines": 92.95,
+        "branches": 75.0
+      }
+    },
+    "guide_examples_passed": 2,
+    "documentation_quality": "English terminology, API/failure contracts, result counts, source/binary hashes, local links and executable examples reviewed",
+    "standard_verification_execution": "27 driver steps passed; expanded full-consumption proof timed out at 180 seconds. Restored three-element full-consumption proof and added nine-element first-extraction proof passed separately; all 29 currently configured checks covered across these runs.",
+    "coverage_scope": "Current product implementation; measured before adding unwind cases to the existing regression test.",
+    "additional_benchmark_differential_cases": 144
+  },
+  "performance": {
+    "source_sha256": "b4d72c7b949e9b1b1ea08f6ecfc59ade4910353d34488aa71bd9e187430ffef0",
+    "cpu": 0,
+    "processes": 30,
+    "warmup": 2,
+    "retained": 30,
+    "binary_sha256": "26b8b1874b7049ce970de2beb267f390367b23c47d66238fb48c1b53535db39a",
+    "memory_binary_sha256": "f630c510e22322b976f2c7d3fcdafa8a3f89610580b25a9108e4b67f7bcd3564",
+    "sizes": [
+      32,
+      4096,
+      131072
+    ],
+    "operations": [
+      "grow",
+      "reserved",
+      "copy",
+      "clone",
+      "retain",
+      "dedup",
+      "drain",
+      "extract",
+      "splice",
+      "within",
+      "splice_unknown",
+      "splice_no_hint",
+      "extract_none",
+      "extract_all",
+      "insert_remove",
+      "resize",
+      "split_off",
+      "append",
+      "shrink",
+      "pop"
+    ],
+    "platform": "Linux x86_64, AMD EPYC 9V74 KVM guest",
+    "profile": "release opt-level=3, codegen-units=1, panic=abort; no LTO",
+    "threshold_upper95": 1.15,
+    "bootstrap_resamples": 5000,
+    "comparisons": 300,
+    "passed": 293,
+    "failed": 6,
+    "inconclusive": 1,
+    "product_comparisons": 240,
+    "product_passed": 233,
+    "std_control_comparisons": 60,
+    "std_controls_passed": 60,
+    "binary_rebuild_hash_match": true,
+    "worst_by_policy": [
+      {
+        "n": 32,
+        "op": "extract_all",
+        "label": "unlimited",
+        "std_ns": 20.69317626953125,
+        "ns": 24.9832763671875,
+        "ratio": 1.207319555092807,
+        "low95": 1.1827002617068942,
+        "high95": 1.2260520905541434,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 4096,
+        "op": "retain",
+        "label": "limited",
+        "std_ns": 1641.453125,
+        "ns": 2753.9609375,
+        "ratio": 1.6777578936346416,
+        "low95": 1.6745648544123453,
+        "high95": 1.714052198161715,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 32,
+        "op": "copy",
+        "label": "metered",
+        "std_ns": 14.6689453125,
+        "ns": 16.289398193359375,
+        "ratio": 1.1104682611011252,
+        "low95": 1.089810689738556,
+        "high95": 1.114507826014464,
+        "status": "pass",
+        "control_valid": true
+      },
+      {
+        "n": 32,
+        "op": "pop",
+        "label": "limited_metered",
+        "std_ns": 27.61016845703125,
+        "ns": 36.28448486328125,
+        "ratio": 1.314171078664353,
+        "low95": 1.2888462806475682,
+        "high95": 1.3506316257220847,
+        "status": "fail",
+        "control_valid": true
+      }
+    ],
+    "interpretation": "Complete lifecycles, including clone and drop for edit operations; per-comparison intervals, not universal performance parity.",
+    "process_extensions": "90 observations for retain at all sizes and split_off at N=32; 30 elsewhere",
+    "nonpasses": [
+      {
+        "n": 32,
+        "op": "extract_all",
+        "label": "unlimited",
+        "std_ns": 20.69317626953125,
+        "ns": 24.9832763671875,
+        "ratio": 1.207319555092807,
+        "low95": 1.1827002617068942,
+        "high95": 1.2260520905541434,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 32,
+        "op": "extract_all",
+        "label": "limited",
+        "std_ns": 20.69317626953125,
+        "ns": 24.3582763671875,
+        "ratio": 1.1771163619309988,
+        "low95": 1.1683258702196078,
+        "high95": 1.1865324114395408,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 32,
+        "op": "pop",
+        "label": "limited_metered",
+        "std_ns": 27.61016845703125,
+        "ns": 36.28448486328125,
+        "ratio": 1.314171078664353,
+        "low95": 1.2888462806475682,
+        "high95": 1.3506316257220847,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 32,
+        "op": "retain",
+        "label": "limited",
+        "std_ns": 23.102142333984375,
+        "ns": 30.845794677734375,
+        "ratio": 1.335191958901522,
+        "low95": 1.2451411171339162,
+        "high95": 1.3720134521034875,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 4096,
+        "op": "retain",
+        "label": "limited",
+        "std_ns": 1641.453125,
+        "ns": 2753.9609375,
+        "ratio": 1.6777578936346416,
+        "low95": 1.6745648544123453,
+        "high95": 1.714052198161715,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 131072,
+        "op": "retain",
+        "label": "limited",
+        "std_ns": 75491.25,
+        "ns": 102390.375,
+        "ratio": 1.356321096815856,
+        "low95": 1.3267210357712726,
+        "high95": 1.4218085588599698,
+        "status": "fail",
+        "control_valid": true
+      },
+      {
+        "n": 32,
+        "op": "split_off",
+        "label": "limited_metered",
+        "std_ns": 22.446258544921875,
+        "ns": 26.072265625,
+        "ratio": 1.161541714082165,
+        "low95": 1.0933777265764455,
+        "high95": 1.2000188984168407,
+        "status": "inconclusive",
+        "control_valid": true
+      }
+    ],
+    "report": "expanded-benchmarks.md"
+  },
+  "memory": {
+    "cases": 1530,
+    "assertions": 19890,
+    "passed": true,
+    "sizes": [
+      0,
+      1,
+      3,
+      8,
+      17,
+      32,
+      65,
+      4096,
+      131072
+    ],
+    "operations": [
+      "insert_remove",
+      "resize",
+      "split_off",
+      "append",
+      "shrink",
+      "pop",
+      "grow",
+      "retain",
+      "dedup",
+      "drain",
+      "extract",
+      "splice",
+      "within",
+      "splice_unknown",
+      "splice_no_hint",
+      "extract_none",
+      "extract_all"
+    ],
+    "allocator_modes": [
+      "native System realloc",
+      "forced moving realloc"
+    ],
+    "measurements": [
+      "requested live/peak/total",
+      "glibc usable live/peak",
+      "allocation calls",
+      "final tracked bytes",
+      "handle layout"
+    ],
+    "handle_bytes": {
+      "std": 24,
+      "unlimited": 24,
+      "limited": 32,
+      "metered": 32,
+      "limited_metered": 40
+    },
+    "boundaries": "Allocator-call observations, not RSS; native realloc internal transients unavailable. Moving mode includes real old/new coexistence."
+  },
+  "artifacts": "Only maintained source/tools and compact report committed; reproducible raw outputs under ignored target/verification/.",
+  "extraction_fix": {
+    "report": "extraction-fix.md",
+    "scope": "Historical pre-expansion benchmark layout; product prefix optimization remains implemented. Current acceptance is in expanded-benchmarks.md."
+  },
+  "link_audit": {
+    "report": "../link-exits.md",
+    "source_sha256": "934326e077a09655a4349a585d934826dabaf74161a6db86003d15418d6eb191",
+    "release": "pass",
+    "release_lto": "pass",
+    "release_checked": "retained panic edges; diagnostic runtime cases passed",
+    "debug": "retained panic edges and prebuilt-core personality reference; diagnostic runtime cases passed",
+    "runtime_cases_per_profile": 2148,
+    "refusals_per_profile": 2018,
+    "negative_controls_detected": 8,
+    "scope": "Concrete Vec<u64> and Box<usize>/Box<str> fixture; not arbitrary callbacks/types or foreign allocator internals."
+  }
+}

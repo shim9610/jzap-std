@@ -1,0 +1,22 @@
+[package]
+name = "jzap-link-audit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[lib]
+crate-type = ["staticlib"]
+[dependencies]
+jzap-std = { path = "../.." }
+[features]
+panic-control = []
+bounds-control = []
+oom-control = []
+abort-control = []
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+debug = 1
+[profile.dev]
+panic = "abort"

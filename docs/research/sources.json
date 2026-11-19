@@ -1,0 +1,44 @@
+[
+  {
+    "name": "fallible_collections",
+    "version": "0.5.2",
+    "url": "https://static.crates.io/crates/fallible_collections/fallible_collections-0.5.2.crate",
+    "sha256": "dab93c7205280c4785c44517fe84d99751b81f6deb8450cb196da6be88e332bb"
+  },
+  {
+    "name": "btree-slab",
+    "version": "0.6.1",
+    "url": "https://static.crates.io/crates/btree-slab/btree-slab-0.6.1.crate",
+    "sha256": "7a2b56d3029f075c4fa892428a098425b86cef5c89ae54073137ece416aef13c"
+  },
+  {
+    "name": "generic-btree",
+    "version": "0.10.7",
+    "url": "https://static.crates.io/crates/generic-btree/generic-btree-0.10.7.crate",
+    "sha256": "a0c1bce85c110ab718fd139e0cc89c51b63bd647b14a767e24bdfc77c83df79b"
+  },
+  {
+    "name": "rkyv",
+    "version": "0.8.18",
+    "url": "https://static.crates.io/crates/rkyv/rkyv-0.8.18.crate",
+    "sha256": "d9776093b7ca170454ab1406954f7b7d97a57c51dc6c0642957fb2ef25c2d399"
+  },
+  {
+    "name": "heapless",
+    "version": "0.9.3",
+    "url": "https://static.crates.io/crates/heapless/heapless-0.9.3.crate",
+    "sha256": "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+  },
+  {
+    "name": "allocator-api2",
+    "version": "0.4.0",
+    "url": "https://static.crates.io/crates/allocator-api2/allocator-api2-0.4.0.crate",
+    "sha256": "c880a97d28a3681c0267bd29cff89621202715b065127cd445fa0f0fe0aa2880"
+  },
+  {
+    "name": "kernel-btree",
+    "version": "0.1.0",
+    "url": "https://static.crates.io/crates/kernel-btree/kernel-btree-0.1.0.crate",
+    "sha256": "a1c0d116636ed98eeaacaa3392006d0c214bfd3fc81d13cc12682a8c17452df8"
+  }
+]

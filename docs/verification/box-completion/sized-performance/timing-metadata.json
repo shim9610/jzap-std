@@ -1,0 +1,16 @@
+{
+  "barriers": "phase",
+  "cpu": 0,
+  "processes": 15,
+  "warmup_cycles": 2,
+  "retained_cycles": 30,
+  "binary_sha256": "84231c37bc8b3bb2ee563e137f283ecd71cccab1fe6ab4b6fd7a4fc7e091e9ca",
+  "sizes": {
+    "std_box": 8,
+    "jzap_box": 8,
+    "jzap_metered_box": 16,
+    "varlit_result": 56,
+    "jzap_new_result": 32,
+    "jzap_clone_result": 24
+  }
+}

@@ -1,0 +1,5 @@
+# Type-specific operator exceptions; primitive arithmetic is never exempted.
+arithmetic-side-effects-allowed-binary = [
+    ["arithmetic::checked::Checked", "arithmetic::checked::Checked"],
+    ["capacity::Capacity", "arithmetic::checked::Checked"],
+]

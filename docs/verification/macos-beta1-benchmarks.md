@@ -1216,3 +1216,225 @@ Normalized change divides the candidate jzap/brie-tree ratio by the baseline jza
 | 32,768 keys · streaming `Lookup` | 13.761–14.699 | 13.586–14.243 | 39.829–40.174 | 39.759–40.157 |
 
 Per-seed normalized changes spanned both signs in all six point conditions.
+
+## ARM64 hash-table follow-up
+
+### Conditions
+
+- Scalar baseline `665c95bba6cc3f94b2c84fbacc1192f1585bd553`. NEON candidate `10c0598f025ffc69e424a21947cca7fa85f3f144` from [PR #9](https://github.com/shim9610/jzap-std/pull/9). [Requested workloads](https://github.com/shim9610/jzap-std/pull/8#issuecomment-7029849362)
+- Measured 2026-11-20 on Apple M4 Mac16,10 with macOS 27.2 (26B123), native `aarch64-apple-darwin`, Rust 1.95.0, AC power, and Low Power Mode off. Processes ran serially under `caffeinate -i` with CPU affinity unset.
+- Both revisions were built independently at the same absolute checkout and Cargo target paths. HashMap and HashSet tests passed 43 tests per revision. The timing build command was:
+
+```sh
+cargo +1.95.0 build --locked --release \
+  --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features hash-map,hash-set,owned-budgets,bplus-pool \
+  --bin hash_map --bin hash_set --bin scenarios \
+  --target-dir target/verification/macos-hash/build
+```
+
+- Each mixed-size workload used seeds 617, 6203, and 96011. Each seed ran both revisions and three fresh processes per revision: std, unmetered jzap, and a repeat of std. Run order rotated by seed and revision. All six runs per accepted group matched epochs, input corpus digest, operation counts, and checksum.
+- The target interval was 1.2 seconds. The shortest accepted interval was 1.177765 seconds. There were 21 accepted seed groups, 126 accepted timing records, and 0 rejected timing attempts due to a short interval.
+- `hash_map_remove_cycle` counts one remove/insert pair per operation. `hash_map_fixed_get` counts each lookup and uses equal zero SipHash13 keys. Build, owned union, and scenario rows count one complete workload per operation. The mixed-size workloads use 64 generated cases per seed.
+
+| Binary | Scalar SHA-256 | NEON SHA-256 |
+| --- | --- | --- |
+| `hash_map` | `a0be0866fdc800f38b9a99866f50aca19327edb1d8de0f1f24643b40076ab36e` | `85a2b81fadebd22e9ccc4f775c60cdcf78fe321af21ea7febd6381c55fd0b021` |
+| `hash_set` | `fc60b703b8b75e1b9a1ff4934f3bf69db80ea27b561fbb02d3225c46d3fdfb3b` | `1ed0000b9e91ebc1ebf55d6d40a86563891924d156f7986b83e0ff200af587b2` |
+| `scenarios` | `d347fc5315fe4b9a8c6325dd9ceb8b5915ae6e05ffdd800adcb10ba0209c0e43` | `44e4fead5406e1fa85aa2440c3b83edd2738a4b17e78701ae60e0445efd7873f` |
+
+### NEON candidate
+
+Times are in ns/operation. Each representative time is total timed seconds divided by total matched operations. Differences use unrounded values.
+
+| Condition | std time | jzap time | jzap − std |
+| --- | ---: | ---: | ---: |
+| `hash_map_remove_cycle` | 12.939 | 15.202 | +2.263 (+17.5%) |
+| `hash_map_fixed_build` | 10164.181 | 9168.744 | -995.437 (-9.8%) |
+| `hash_map_fixed_get` | 8.444 | 5.575 | -2.869 (-34.0%) |
+| `hash_set_build` | 8820.557 | 9742.409 | +921.852 (+10.5%) |
+| `hash_set_owned_union` | 11241.174 | 10453.439 | -787.736 (-7.0%) |
+| `scenario_graph` | 35264.489 | 34521.564 | -742.926 (-2.1%) |
+| `scenario_scheduler` | 77192.352 | 76111.168 | -1081.184 (-1.4%) |
+
+### Scalar baseline rerun
+
+Times are in ns/operation. Each representative time is total timed seconds divided by total matched operations. Differences use unrounded values.
+
+| Condition | std time | jzap time | jzap − std |
+| --- | ---: | ---: | ---: |
+| `hash_map_remove_cycle` | 11.869 | 51.989 | +40.120 (+338.0%) |
+| `hash_map_fixed_build` | 10092.060 | 33997.942 | +23905.882 (+236.9%) |
+| `hash_map_fixed_get` | 8.363 | 6.707 | -1.656 (-19.8%) |
+| `hash_set_build` | 8874.830 | 36214.391 | +27339.561 (+308.1%) |
+| `hash_set_owned_union` | 11256.908 | 42860.286 | +31603.378 (+280.7%) |
+| `scenario_graph` | 34939.832 | 61045.572 | +26105.740 (+74.7%) |
+| `scenario_scheduler` | 76872.191 | 111025.909 | +34153.718 (+44.4%) |
+
+### Seed spread and A/A
+
+The span is the minimum and maximum of the three seed results in ns/operation. Max A/A is the largest absolute std repeat difference as a fraction of the corresponding std time. A row is held if A/A exceeds 10% or paired differences exceed max(2% of std, 0.1 ns) in both directions.
+
+| Condition | Revision | std span | jzap span | Paired difference span | Max A/A | Held reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `hash_map_remove_cycle` | scalar | 11.600 to 12.163 | 51.004 to 52.700 | 39.404 to 40.537 | 2.67% | — |
+| `hash_map_remove_cycle` | neon | 12.187 to 13.521 | 14.679 to 15.748 | 2.055 to 2.492 | 3.97% | — |
+| `hash_map_fixed_build` | scalar | 8485.482 to 11258.958 | 28276.582 to 37792.877 | 19791.101 to 26646.131 | 2.38% | — |
+| `hash_map_fixed_build` | neon | 8572.139 to 11323.599 | 7744.987 to 10154.295 | -1169.303 to -827.152 | 3.24% | — |
+| `hash_map_fixed_get` | scalar | 7.815 to 8.929 | 6.689 to 6.730 | -2.227 to -1.084 | 2.20% | — |
+| `hash_map_fixed_get` | neon | 7.886 to 8.897 | 5.555 to 5.588 | -3.309 to -2.305 | 6.08% | — |
+| `hash_set_build` | scalar | 7510.137 to 9797.409 | 30387.288 to 40350.524 | 22877.151 to 30553.115 | 0.30% | — |
+| `hash_set_build` | neon | 7485.068 to 9751.524 | 8256.827 to 10772.655 | 771.758 to 1021.131 | 0.65% | — |
+| `hash_set_owned_union` | scalar | 9046.436 to 13078.376 | 34765.468 to 48903.096 | 25719.032 to 36063.262 | 0.67% | — |
+| `hash_set_owned_union` | neon | 9057.863 to 13102.858 | 8196.711 to 12151.574 | -951.284 to -520.308 | 1.02% | — |
+| `scenario_graph` | scalar | 26902.714 to 47846.033 | 47259.130 to 83678.755 | 20356.416 to 35832.722 | 0.84% | — |
+| `scenario_graph` | neon | 26760.688 to 48642.367 | 26293.830 to 48090.742 | -1256.367 to -466.858 | 2.28% | — |
+| `scenario_scheduler` | scalar | 58180.769 to 108737.061 | 85175.903 to 154795.721 | 26995.134 to 46058.660 | 0.40% | — |
+| `scenario_scheduler` | neon | 58523.207 to 109096.469 | 57857.390 to 106955.855 | -2140.614 to -665.817 | 0.47% | — |
+
+| Condition | jzap change (NEON vs scalar) | std change |
+| --- | ---: | ---: |
+| `hash_map_remove_cycle` | -70.8% | +9.0% |
+| `hash_map_fixed_build` | -73.0% | +0.7% |
+| `hash_map_fixed_get` | -16.9% | +1.0% |
+| `hash_set_build` | -73.1% | -0.6% |
+| `hash_set_owned_union` | -75.6% | -0.1% |
+| `scenario_graph` | -43.4% | +0.9% |
+| `scenario_scheduler` | -31.4% | +0.4% |
+
+<details>
+<summary>Raw timing records</summary>
+
+Rows are in execution order. `unlimited` is unmetered jzap and `std_control` is the independent std repeat. Each role used the same seed, corpus and operation count within an attempt.
+
+```csv
+task,seed,attempt,accepted,variant,label,elapsed_seconds,operations,checksum,corpus_digest
+hash_map_remove_cycle,617,1,True,scalar,std,1.235427208,106503693,962396678070,5493369367503854109
+hash_map_remove_cycle,617,1,True,scalar,std_control,1.24033325,106503693,962396678070,5493369367503854109
+hash_map_remove_cycle,617,1,True,scalar,unlimited,5.4321175,106503693,962396678070,5493369367503854109
+hash_map_remove_cycle,617,1,True,neon,std_control,1.329060291,106503693,962396678070,5493369367503854109
+hash_map_remove_cycle,617,1,True,neon,unlimited,1.563315583,106503693,962396678070,5493369367503854109
+hash_map_remove_cycle,617,1,True,neon,std,1.297959667,106503693,962396678070,5493369367503854109
+hash_map_remove_cycle,6203,1,True,neon,std_control,1.339508167,100616545,916093484010,16571444928825650321
+hash_map_remove_cycle,6203,1,True,neon,std,1.324473125,100616545,916093484010,16571444928825650321
+hash_map_remove_cycle,6203,1,True,neon,unlimited,1.53120875,100616545,916093484010,16571444928825650321
+hash_map_remove_cycle,6203,1,True,scalar,std,1.1937929170000001,100616545,916093484010,16571444928825650321
+hash_map_remove_cycle,6203,1,True,scalar,unlimited,5.265582542,100616545,916093484010,16571444928825650321
+hash_map_remove_cycle,6203,1,True,scalar,std_control,1.22566225,100616545,916093484010,16571444928825650321
+hash_map_remove_cycle,96011,1,True,scalar,unlimited,5.214368792,98945070,848850712488,2647082129846269003
+hash_map_remove_cycle,96011,1,True,scalar,std,1.203423875,98945070,848850712488,2647082129846269003
+hash_map_remove_cycle,96011,1,True,scalar,std_control,1.183657042,98945070,848850712488,2647082129846269003
+hash_map_remove_cycle,96011,1,True,neon,std,1.3377905,98945070,848850712488,2647082129846269003
+hash_map_remove_cycle,96011,1,True,neon,std_control,1.390846542,98945070,848850712488,2647082129846269003
+hash_map_remove_cycle,96011,1,True,neon,unlimited,1.5581876669999999,98945070,848850712488,2647082129846269003
+hash_map_fixed_build,617,1,True,scalar,std,1.307714542,154112,64421224,5493369367503854109
+hash_map_fixed_build,617,1,True,scalar,std_control,1.287664167,154112,64421224,5493369367503854109
+hash_map_fixed_build,617,1,True,scalar,unlimited,4.357760667,154112,64421224,5493369367503854109
+hash_map_fixed_build,617,1,True,neon,std_control,1.30089275,154112,64421224,5493369367503854109
+hash_map_fixed_build,617,1,True,neon,unlimited,1.193595375,154112,64421224,5493369367503854109
+hash_map_fixed_build,617,1,True,neon,std,1.321069458,154112,64421224,5493369367503854109
+hash_map_fixed_build,6203,1,True,neon,std_control,1.390906417,118976,66446237,16571444928825650321
+hash_map_fixed_build,6203,1,True,neon,std,1.347236458,118976,66446237,16571444928825650321
+hash_map_fixed_build,6203,1,True,neon,unlimited,1.208117417,118976,66446237,16571444928825650321
+hash_map_fixed_build,6203,1,True,scalar,std,1.339545833,118976,66446237,16571444928825650321
+hash_map_fixed_build,6203,1,True,scalar,unlimited,4.496445291,118976,66446237,16571444928825650321
+hash_map_fixed_build,6203,1,True,scalar,std_control,1.371426083,118976,66446237,16571444928825650321
+hash_map_fixed_build,96011,1,True,scalar,unlimited,4.418590708,117312,66143805,2647082129846269003
+hash_map_fixed_build,96011,1,True,scalar,std,1.292679833,117312,66143805,2647082129846269003
+hash_map_fixed_build,96011,1,True,scalar,std_control,1.306754167,117312,66143805,2647082129846269003
+hash_map_fixed_build,96011,1,True,neon,std,1.299790167,117312,66143805,2647082129846269003
+hash_map_fixed_build,96011,1,True,neon,std_control,1.306383166,117312,66143805,2647082129846269003
+hash_map_fixed_build,96011,1,True,neon,unlimited,1.177764708,117312,66143805,2647082129846269003
+hash_map_fixed_get,617,1,True,scalar,std,1.8301014169999998,219428106,991406374470,5493369367503854109
+hash_map_fixed_get,617,1,True,scalar,std_control,1.789922667,219428106,991406374470,5493369367503854109
+hash_map_fixed_get,617,1,True,scalar,unlimited,1.4677537090000001,219428106,991406374470,5493369367503854109
+hash_map_fixed_get,617,1,True,neon,std_control,1.760636417,219428106,991406374470,5493369367503854109
+hash_map_fixed_get,617,1,True,neon,unlimited,1.218826833,219428106,991406374470,5493369367503854109
+hash_map_fixed_get,617,1,True,neon,std,1.874533333,219428106,991406374470,5493369367503854109
+hash_map_fixed_get,6203,1,True,neon,std_control,1.9325655830000001,215816234,982481786226,16571444928825650321
+hash_map_fixed_get,6203,1,True,neon,std,1.920224459,215816234,982481786226,16571444928825650321
+hash_map_fixed_get,6203,1,True,neon,unlimited,1.206048625,215816234,982481786226,16571444928825650321
+hash_map_fixed_get,6203,1,True,scalar,std,1.926955209,215816234,982481786226,16571444928825650321
+hash_map_fixed_get,6203,1,True,scalar,unlimited,1.446374917,215816234,982481786226,16571444928825650321
+hash_map_fixed_get,6203,1,True,scalar,std_control,1.933974209,215816234,982481786226,16571444928825650321
+hash_map_fixed_get,96011,1,True,scalar,unlimited,1.441652,214200560,918814337952,2647082129846269003
+hash_map_fixed_get,96011,1,True,scalar,std,1.673932333,214200560,918814337952,2647082129846269003
+hash_map_fixed_get,96011,1,True,scalar,std_control,1.689265667,214200560,918814337952,2647082129846269003
+hash_map_fixed_get,96011,1,True,neon,std,1.689206667,214200560,918814337952,2647082129846269003
+hash_map_fixed_get,96011,1,True,neon,std_control,1.787710125,214200560,918814337952,2647082129846269003
+hash_map_fixed_get,96011,1,True,neon,unlimited,1.195530291,214200560,918814337952,2647082129846269003
+hash_set_build,617,1,True,scalar,std,1.223731792,162944,68113138,5493369367503854109
+hash_set_build,617,1,True,scalar,std_control,1.226183375,162944,68113138,5493369367503854109
+hash_set_build,617,1,True,scalar,unlimited,4.95142625,162944,68113138,5493369367503854109
+hash_set_build,617,1,True,neon,std_control,1.21535825,162944,68113138,5493369367503854109
+hash_set_build,617,1,True,neon,unlimited,1.345400375,162944,68113138,5493369367503854109
+hash_set_build,617,1,True,neon,std,1.219646958,162944,68113138,5493369367503854109
+hash_set_build,6203,1,True,neon,std_control,1.220028625,125120,69877565,16571444928825650321
+hash_set_build,6203,1,True,neon,std,1.220110625,125120,69877565,16571444928825650321
+hash_set_build,6203,1,True,neon,unlimited,1.347874541,125120,69877565,16571444928825650321
+hash_set_build,6203,1,True,scalar,std,1.225851791,125120,69877565,16571444928825650321
+hash_set_build,6203,1,True,scalar,unlimited,5.048657542,125120,69877565,16571444928825650321
+hash_set_build,6203,1,True,scalar,std_control,1.2285888329999999,125120,69877565,16571444928825650321
+hash_set_build,96011,1,True,scalar,unlimited,4.963123041,125120,70546175,2647082129846269003
+hash_set_build,96011,1,True,scalar,std,1.217354,125120,70546175,2647082129846269003
+hash_set_build,96011,1,True,scalar,std_control,1.213719333,125120,70546175,2647082129846269003
+hash_set_build,96011,1,True,neon,std,1.2047554169999999,125120,70546175,2647082129846269003
+hash_set_build,96011,1,True,neon,std_control,1.212540875,125120,70546175,2647082129846269003
+hash_set_build,96011,1,True,neon,unlimited,1.332132584,125120,70546175,2647082129846269003
+hash_set_owned_union,617,1,True,scalar,std,1.320055917,145920,91532880,5493369367503854109
+hash_set_owned_union,617,1,True,scalar,std_control,1.328918209,145920,91532880,5493369367503854109
+hash_set_owned_union,617,1,True,scalar,unlimited,5.072977042,145920,91532880,5493369367503854109
+hash_set_owned_union,617,1,True,neon,std_control,1.324452,145920,91532880,5493369367503854109
+hash_set_owned_union,617,1,True,neon,unlimited,1.196064083,145920,91532880,5493369367503854109
+hash_set_owned_union,617,1,True,neon,std,1.321723375,145920,91532880,5493369367503854109
+hash_set_owned_union,6203,1,True,neon,std_control,1.27223875,99904,83716430,16571444928825650321
+hash_set_owned_union,6203,1,True,neon,std,1.259450084,99904,83716430,16571444928825650321
+hash_set_owned_union,6203,1,True,neon,unlimited,1.20746925,99904,83716430,16571444928825650321
+hash_set_owned_union,6203,1,True,scalar,std,1.268920541,99904,83716430,16571444928825650321
+hash_set_owned_union,6203,1,True,scalar,unlimited,4.871784625,99904,83716430,16571444928825650321
+hash_set_owned_union,6203,1,True,scalar,std_control,1.267947541,99904,83716430,16571444928825650321
+hash_set_owned_union,96011,1,True,scalar,unlimited,4.785461375,97856,82787705,2647082129846269003
+hash_set_owned_union,96011,1,True,scalar,std,1.279797541,97856,82787705,2647082129846269003
+hash_set_owned_union,96011,1,True,scalar,std_control,1.276280208,97856,82787705,2647082129846269003
+hash_set_owned_union,96011,1,True,neon,std,1.28219325,97856,82787705,2647082129846269003
+hash_set_owned_union,96011,1,True,neon,std_control,1.280289292,97856,82787705,2647082129846269003
+hash_set_owned_union,96011,1,True,neon,unlimited,1.189104416,97856,82787705,2647082129846269003
+scenario_graph,617,1,True,scalar,std,1.2251257500000001,33920,16430963293084922598,11842222284389109881
+scenario_graph,617,1,True,scalar,std_control,1.228461208,33920,16430963293084922598,11842222284389109881
+scenario_graph,617,1,True,scalar,unlimited,2.126719541,33920,16430963293084922598,11842222284389109881
+scenario_graph,617,1,True,neon,std_control,1.2170566250000001,33920,16430963293084922598,11842222284389109881
+scenario_graph,617,1,True,neon,unlimited,1.202863958,33920,16430963293084922598,11842222284389109881
+scenario_graph,617,1,True,neon,std,1.245479917,33920,16430963293084922598,11842222284389109881
+scenario_graph,6203,1,True,neon,std_control,1.221102,45568,16657302743251022112,811796717652796592
+scenario_graph,6203,1,True,neon,std,1.219431041,45568,16657302743251022112,811796717652796592
+scenario_graph,6203,1,True,neon,unlimited,1.19815725,45568,16657302743251022112,811796717652796592
+scenario_graph,6203,1,True,scalar,std,1.225902875,45568,16657302743251022112,811796717652796592
+scenario_graph,6203,1,True,scalar,unlimited,2.153504042,45568,16657302743251022112,811796717652796592
+scenario_graph,6203,1,True,scalar,std_control,1.215597834,45568,16657302743251022112,811796717652796592
+scenario_graph,96011,1,True,scalar,unlimited,2.115398917,25280,732450430288553247,14512637301797670405
+scenario_graph,96011,1,True,scalar,std,1.209547708,25280,732450430288553247,14512637301797670405
+scenario_graph,96011,1,True,scalar,std_control,1.210877417,25280,732450430288553247,14512637301797670405
+scenario_graph,96011,1,True,neon,std,1.229679041,25280,732450430288553247,14512637301797670405
+scenario_graph,96011,1,True,neon,std_control,1.209123625,25280,732450430288553247,14512637301797670405
+scenario_graph,96011,1,True,neon,unlimited,1.215733958,25280,732450430288553247,14512637301797670405
+scenario_scheduler,617,1,True,scalar,std,1.205692709,15296,2967014449476403490,11842222284389109881
+scenario_scheduler,617,1,True,scalar,std_control,1.208069042,15296,2967014449476403490,11842222284389109881
+scenario_scheduler,617,1,True,scalar,unlimited,1.7429092499999999,15296,2967014449476403490,11842222284389109881
+scenario_scheduler,617,1,True,neon,std_control,1.214969958,15296,2967014449476403490,11842222284389109881
+scenario_scheduler,617,1,True,neon,unlimited,1.196440458,15296,2967014449476403490,11842222284389109881
+scenario_scheduler,617,1,True,neon,std,1.209684459,15296,2967014449476403490,11842222284389109881
+scenario_scheduler,6203,1,True,neon,std_control,1.2214015,20800,5062920859296507522,811796717652796592
+scenario_scheduler,6203,1,True,neon,std,1.217282708,20800,5062920859296507522,811796717652796592
+scenario_scheduler,6203,1,True,neon,unlimited,1.203433709,20800,5062920859296507522,811796717652796592
+scenario_scheduler,6203,1,True,scalar,std,1.2101600000000001,20800,5062920859296507522,811796717652796592
+scenario_scheduler,6203,1,True,scalar,unlimited,1.771658792,20800,5062920859296507522,811796717652796592
+scenario_scheduler,6203,1,True,scalar,std_control,1.212475375,20800,5062920859296507522,811796717652796592
+scenario_scheduler,96011,1,True,scalar,unlimited,1.743619,11264,18032262979870618832,14512637301797670405
+scenario_scheduler,96011,1,True,scalar,std,1.22481425,11264,18032262979870618832,14512637301797670405
+scenario_scheduler,96011,1,True,scalar,std_control,1.219911417,11264,18032262979870618832,14512637301797670405
+scenario_scheduler,96011,1,True,neon,std,1.228862625,11264,18032262979870618832,14512637301797670405
+scenario_scheduler,96011,1,True,neon,std_control,1.2346045,11264,18032262979870618832,14512637301797670405
+scenario_scheduler,96011,1,True,neon,unlimited,1.20475075,11264,18032262979870618832,14512637301797670405
+```
+
+</details>

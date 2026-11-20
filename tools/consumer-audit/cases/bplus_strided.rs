@@ -8,10 +8,11 @@ use jzap::{
     },
 };
 
-struct ByteFormat;
+struct ByteFormat<const WIDTH: usize = 1>;
 
-impl StridedFormat for ByteFormat {
-    type Fence = [u8; 1];
+impl<const WIDTH: usize> StridedFormat for ByteFormat<WIDTH> {
+    const WORD_PREFIX_OFFSET: Option<usize> = Some(0);
+    type Fence = [u8; WIDTH];
     type Id = usize;
 
     fn key(field: &[u8]) -> Result<&[u8], Error> {
@@ -31,7 +32,33 @@ impl StridedFormat for ByteFormat {
     }
 }
 
+fn check_word_prefix(seed: usize) -> Result<(), Error> {
+    let page = black_box([0, 1, 2, 3, 4, 5, 6, 7, 8, 42, 1, 1, 2, 3, 4, 5, 6, 7, 8, 43]);
+    let layout = StridedLayout {
+        stride: NonZeroUsize::new(10).ok_or(Error::InvalidStructure)?,
+        key: 0..9,
+        payload: 9..10,
+    };
+    let nodes = [StridedNode::<ByteFormat<9>>::leaf(&page, 2, layout)?];
+    let snapshot = StridedTree::try_new(&nodes, Some(0), 0)?;
+    let query = [(seed as u8) % 3, 1, 2, 3, 4, 5, 6, 7, 8];
+    let expected = match query.first() {
+        Some(0) => Some(42),
+        Some(1) => Some(43),
+        _ => None,
+    };
+    if snapshot
+        .get(&query)?
+        .and_then(|value| value.first().copied())
+        != expected
+    {
+        return Err(Error::InvalidStructure);
+    }
+    Ok(())
+}
+
 pub fn run(seed: usize) -> Result<(), Error> {
+    check_word_prefix(seed)?;
     let layout = StridedLayout {
         stride: NonZeroUsize::new(3).ok_or(Error::InvalidStructure)?,
         key: 1..2,

@@ -434,12 +434,12 @@ def main():
     if collected is not None:
         for name in STAGES['bplus'][1][1:]:
             assert run(name)==0
-        for name,count in (('bplus-kani',3),('fixed-bplus-kani',3),('bplus-range-kani',2),('bplus-strided-kani',6)):
+        for name,count in (('bplus-kani',3),('fixed-bplus-kani',3),('bplus-range-kani',2),('bplus-strided-kani',7)):
             assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
         for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
             assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         for name in ('bplus-strided-miri','bplus-strided-miri-32'):
-            assert re.search(r'test result: ok\. 5 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+            assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}
         for name in ('bplus-release','bplus-strided-release'):
             summary=json.loads(evidence(out/name/'summary.json').read_text())

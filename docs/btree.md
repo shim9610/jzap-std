@@ -392,6 +392,69 @@ public constructor against arbitrary page order and malformed topology.
 The optimized link fixture also exercises allocation failure during
 construction.
 
+##### Validated word prefixes
+
+Formats with a contiguous eight-byte prefix inside the key field can set
+`StridedFormat::WORD_PREFIX_OFFSET`. The constructor checks the suggested
+offset against each decoded key in the existing order-validation pass.
+A short key or a mismatched offset disables the hint for that page. A
+lookup prepares the query word once. Unequal words settle the comparison
+without decoding the key length. Equal words still use the complete key,
+including its length and suffix. In the x86-64 benchmark binary the
+prefix word load and comparison precede the conditional key-length load.
+
+The residual-cost comparison uses the same page bytes and queries within
+each group. The dense-child control reads a fixture-only ordinal stored
+beside the raw byte offset. The fixed-width control reads the padded
+16-byte key field and pads each query once. The eight-byte control uses a
+corpus where the first eight bytes distinguish all generated keys and
+misses. It measures the cost of that restricted comparison. The hinted
+path supports the complete byte-key ordering, including shared prefixes.
+
+Before the lookup change, the fixed-width control shortened the three
+fixtures by 5.630, 2.350, and 4.556 ns/lookup. The restricted eight-byte
+control shortened them by 12.902, 11.536, and 20.727 ns/lookup. Dense child
+IDs varied from −2.390 to +22.595 ns/lookup across seeds on the large
+fixture. These are separate controls with different generated code.
+Their effects are measured independently.
+
+In the final binary, the validated prefix path was 7.546, 5.505, and
+4.165 ns/lookup shorter than the full-field decode path in the diagnostic
+group. A separate whole-index group compares the hinted snapshot with
+`brie-tree` 0.1.2. The Linux x86-64 runs used three seeds, matched counts
+and checksums, and at least 1.2 timed seconds per label and seed. Maximum
+same-path repeat differences were 1.34% for `brie-tree` and 4.12% for jzap.
+
+| Condition | brie-tree (ns/lookup) | jzap hinted snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries | 79.901 | 92.801 | +12.900 |
+| 2,048 keys · height 1 · 50/78 max entries | 77.684 | 77.583 | −0.101 |
+| 181,267 keys · height 2 · 50/78 max entries | 227.779 | 229.225 | +1.447 |
+
+The latter two differences crossed zero across seeds. All three
+height-two, 2,048-key pairs favored `brie-tree` by 9.291 to 15.921
+ns/lookup. The two 2,048-key fixtures also have different leaf and
+branch capacities, so they leave the cost of an extra level unresolved.
+
+The continuous run measured 194.522 ns/lookup for `brie-tree` and
+181.092 ns/lookup for the hinted snapshot on the 181,267-key fixture.
+The paired difference was −13.431 ns/lookup in aggregate and ranged
+from −23.540 to −4.252 across seeds. The largest repeats differed by
+5.02% for `brie-tree` and 9.27% for jzap. Snapshot repeats exceeded
+10% on both smaller fixtures, so their continuous results are held.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_strided
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --residual
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --residual-target
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --residual-steady
+  round=$((round + 1))
+done
+```
+
 #### Complete-key prototype timing
 
 The Linux x86-64 run used Rust 1.95.0, the release profile, and CPU affinity 2

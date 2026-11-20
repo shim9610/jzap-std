@@ -23,6 +23,13 @@ pub struct StridedLayout {
 /// The fence representation must preserve those bytes and their ordering.
 /// For a reusable page buffer, the fence must own its bytes.
 pub trait StridedFormat {
+    /// Offset of the first eight key bytes within the encoded key field.
+    ///
+    /// The page constructor enables this hint only if the eight bytes match
+    /// the decoded prefix of every key. Pages containing a shorter or
+    /// differently encoded key use the complete-key path.
+    const WORD_PREFIX_OFFSET: Option<usize> = None;
+
     type Fence: Copy + Ord + Borrow<[u8]>;
     type Id: Copy + Eq;
 
@@ -43,6 +50,7 @@ pub struct StridedNode<'a, F> {
     first: &'a [u8],
     last: &'a [u8],
     leaf: bool,
+    word_prefixes: bool,
     format: PhantomData<F>,
 }
 
@@ -53,15 +61,34 @@ enum KeyPosition<'a> {
 
 #[inline]
 fn compare_bytes(left: &[u8], right: &[u8]) -> Ordering {
-    if let (Some((l, l_tail)), Some((r, r_tail))) = (
-        left.split_first_chunk::<8>(),
-        right.split_first_chunk::<8>(),
-    ) {
-        u64::from_be_bytes(*l)
-            .cmp(&u64::from_be_bytes(*r))
-            .then_with(|| l_tail.cmp(r_tail))
-    } else {
-        left.cmp(right)
+    ByteQuery::new(right).compare(left)
+}
+
+struct ByteQuery<'a> {
+    bytes: &'a [u8],
+    prefix: Option<(u64, &'a [u8])>,
+}
+
+impl<'a> ByteQuery<'a> {
+    #[inline]
+    fn new(bytes: &'a [u8]) -> Self {
+        let prefix = bytes
+            .split_first_chunk::<8>()
+            .map(|(word, tail)| (u64::from_be_bytes(*word), tail));
+        Self { bytes, prefix }
+    }
+
+    #[inline]
+    fn compare(&self, key: &[u8]) -> Ordering {
+        if let (Some((right, right_tail)), Some((left, left_tail))) =
+            (self.prefix, key.split_first_chunk::<8>())
+        {
+            u64::from_be_bytes(*left)
+                .cmp(&right)
+                .then_with(|| left_tail.cmp(right_tail))
+        } else {
+            key.cmp(self.bytes)
+        }
     }
 }
 
@@ -99,17 +126,20 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
         let span = count.checked_mul(stride).ok_or(Error::InvalidStructure)?;
         let bytes = bytes.get(..span).ok_or(Error::InvalidStructure)?;
         let mut entries = bytes.chunks_exact(stride);
-        let first = entries
-            .next()
+        let first_entry = entries.next();
+        let first = first_entry
             .map(|entry| Self::read_key(entry, &layout))
             .transpose()?
             .unwrap_or_default();
+        let mut word_prefixes = F::WORD_PREFIX_OFFSET.is_some()
+            && first_entry.is_some_and(|entry| Self::prefix_matches(entry, first, &layout));
         let mut last = first;
         for entry in entries {
             let next = Self::read_key(entry, &layout)?;
             if compare_bytes(last, next).is_ge() {
                 return Err(Error::InvalidStructure);
             }
+            word_prefixes = word_prefixes && Self::prefix_matches(entry, next, &layout);
             last = next;
         }
         Ok(Self {
@@ -119,8 +149,26 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
             first,
             last,
             leaf,
+            word_prefixes,
             format: PhantomData,
         })
+    }
+
+    #[inline]
+    fn prefix_matches(entry: &[u8], key: &[u8], layout: &StridedLayout) -> bool {
+        let Some(field) = entry.get(layout.key.clone()) else {
+            return false;
+        };
+        let Some(prefix) = Self::word_prefix(field) else {
+            return false;
+        };
+        key.first_chunk::<8>().is_some_and(|word| *word == prefix)
+    }
+
+    #[inline]
+    fn word_prefix(field: &[u8]) -> Option<[u8; 8]> {
+        let offset = F::WORD_PREFIX_OFFSET?;
+        field.get(offset..)?.first_chunk().copied()
     }
 
     #[inline]
@@ -133,16 +181,22 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
     }
 
     #[inline]
-    fn entry(&self, index: usize) -> Result<&'a [u8], Error> {
-        let stride = self.layout.stride.get();
-        let offset = index.checked_mul(stride).ok_or(Error::InvalidStructure)?;
-        let end = offset.checked_add(stride).ok_or(Error::InvalidStructure)?;
-        self.bytes.get(offset..end).ok_or(Error::InvalidStructure)
+    fn field(&self, index: usize, range: Range<usize>) -> Result<&'a [u8], Error> {
+        if index >= self.count {
+            return Err(Error::InvalidStructure);
+        }
+        let offset = index
+            .checked_mul(self.layout.stride.get())
+            .ok_or(Error::InvalidStructure)?;
+        self.bytes
+            .get(offset..)
+            .and_then(|record| record.get(range))
+            .ok_or(Error::InvalidStructure)
     }
 
     #[inline]
     fn key(&self, index: usize) -> Result<&'a [u8], Error> {
-        Self::read_key(self.entry(index)?, &self.layout)
+        F::key(self.field(index, self.layout.key.clone())?)
     }
 
     #[inline]
@@ -159,19 +213,34 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
 
     #[inline]
     fn payload(&self, index: usize) -> Result<&'a [u8], Error> {
-        self.entry(index)?
-            .get(self.layout.payload.clone())
-            .ok_or(Error::InvalidStructure)
+        self.field(index, self.layout.payload.clone())
     }
 
     #[inline(always)]
-    fn search(&self, query: &[u8]) -> Result<KeyPosition<'a>, Error> {
+    fn search(&self, query: &ByteQuery<'_>) -> Result<KeyPosition<'a>, Error> {
         let mut low = 0usize;
         let mut high = self.count;
         while low < high {
             let middle = low.midpoint(high);
-            let key = self.key(middle)?;
-            match compare_bytes(key, query) {
+            let field = self.field(middle, self.layout.key.clone())?;
+            if self.word_prefixes
+                && let Some((right, _)) = query.prefix
+                && let Some(left) = Self::word_prefix(field)
+            {
+                match u64::from_be_bytes(left).cmp(&right) {
+                    Ordering::Less => {
+                        low = middle.checked_add(1).ok_or(Error::InvalidStructure)?;
+                        continue;
+                    }
+                    Ordering::Greater => {
+                        high = middle;
+                        continue;
+                    }
+                    Ordering::Equal => {}
+                }
+            }
+            let key = F::key(field)?;
+            match query.compare(key) {
                 Ordering::Less => {
                     low = middle.checked_add(1).ok_or(Error::InvalidStructure)?;
                 }
@@ -203,7 +272,7 @@ impl<K: Copy + Ord + Borrow<[u8]>, I: Copy + Eq> Lookup<'_, K, I, [u8]> {
             return Err(Error::InvalidStructure);
         }
 
-        let position = node.search(self.query)?;
+        let position = node.search(&ByteQuery::new(self.query))?;
         if node.leaf {
             if let KeyPosition::Found(index, key) = position {
                 let value = node.payload(index)?;
@@ -281,9 +350,77 @@ mod test_format {
     }
 }
 
+#[cfg(any(test, kani))]
+struct Encoded<const OFFSET: usize>;
+
+#[cfg(any(test, kani))]
+impl<const OFFSET: usize> StridedFormat for Encoded<OFFSET> {
+    const WORD_PREFIX_OFFSET: Option<usize> = Some(OFFSET);
+    type Fence = [u8; 9];
+    type Id = usize;
+
+    fn key(field: &[u8]) -> Result<&[u8], Error> {
+        let (&length, bytes) = field.split_first().ok_or(Error::InvalidStructure)?;
+        bytes
+            .get(..usize::from(length))
+            .ok_or(Error::InvalidStructure)
+    }
+
+    fn copy_fence(key: &[u8]) -> Result<Self::Fence, Error> {
+        key.try_into().map_err(|_| Error::InvalidStructure)
+    }
+
+    fn child(field: &[u8]) -> Result<usize, Error> {
+        field
+            .first()
+            .copied()
+            .map(usize::from)
+            .ok_or(Error::InvalidStructure)
+    }
+}
+
+#[cfg(any(test, kani))]
+fn encoded_layout() -> StridedLayout {
+    StridedLayout {
+        stride: NonZeroUsize::new(11).unwrap(),
+        key: 0..10,
+        payload: 10..11,
+    }
+}
+
+#[cfg(any(test, kani))]
+const ENCODED_PAGE: [u8; 22] = [
+    9, 1, 2, 3, 4, 5, 6, 7, 8, 9, 51, 9, 1, 2, 3, 4, 5, 6, 7, 8, 10, 52,
+];
+
 #[cfg(test)]
 mod tests {
     use super::{test_format::*, *};
+
+    #[test]
+    fn bplus_strided_uses_only_validated_prefixes() {
+        let node = StridedNode::<Encoded<1>>::leaf(&ENCODED_PAGE, 2, encoded_layout()).unwrap();
+        let fallback = StridedNode::<Encoded<2>>::leaf(&ENCODED_PAGE, 2, encoded_layout()).unwrap();
+        assert!(node.word_prefixes);
+        assert!(!fallback.word_prefixes);
+        let query = [1, 2, 3, 4, 5, 6, 7, 8, 10];
+        assert!(matches!(
+            node.search(&ByteQuery::new(&query)),
+            Ok(KeyPosition::Found(1, _))
+        ));
+        assert!(matches!(
+            fallback.search(&ByteQuery::new(&query)),
+            Ok(KeyPosition::Found(1, _))
+        ));
+        let mut short = ENCODED_PAGE;
+        short[0] = 7;
+        let mixed = StridedNode::<Encoded<1>>::leaf(&short, 2, encoded_layout()).unwrap();
+        assert!(!mixed.word_prefixes);
+        assert!(matches!(
+            mixed.search(&ByteQuery::new(&query[..7])),
+            Ok(KeyPosition::Found(0, _))
+        ));
+    }
 
     #[test]
     fn bplus_strided_lookup_reuses_buffer_and_rejects_damage() {
@@ -478,5 +615,29 @@ mod proofs {
     #[kani::unwind(5)]
     fn snapshot_enqueue_claims_only_unvisited_slots() {
         tree::test_format::check_enqueue(kani::any(), kani::any());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn validated_word_hint_preserves_full_key_search() {
+        let node = StridedNode::<Encoded<1>>::leaf(&ENCODED_PAGE, 2, encoded_layout()).unwrap();
+        let fallback = StridedNode::<Encoded<2>>::leaf(&ENCODED_PAGE, 2, encoded_layout()).unwrap();
+        assert!(node.word_prefixes && !fallback.word_prefixes);
+        let mut query = [1, 2, 3, 4, 5, 6, 7, 8, 0];
+        // Cover a different common-word prefix and the entire shared suffix domain.
+        query[0] = if kani::any() { 1 } else { kani::any() };
+        query[8] = kani::any();
+        let query = ByteQuery::new(&query);
+        match (
+            node.search(&query).unwrap(),
+            fallback.search(&query).unwrap(),
+        ) {
+            (KeyPosition::Found(i, key), KeyPosition::Found(j, other)) => {
+                assert_eq!(i, j);
+                assert_eq!(key, other);
+            }
+            (KeyPosition::Gap(i), KeyPosition::Gap(j)) => assert_eq!(i, j),
+            _ => panic!("validated hint changed the search result"),
+        }
     }
 }

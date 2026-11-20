@@ -55,14 +55,26 @@ impl PartialOrd for InlineKey {
     }
 }
 
-struct Format;
+struct FixtureFormat<const WIDTH: usize, const DENSE: bool, const HINT: bool = false>;
+type Format = FixtureFormat<0, false>;
+#[cfg(feature = "bplus-bench")]
+type Hinted = FixtureFormat<0, false, true>;
 
-impl StridedFormat for Format {
+impl<const WIDTH: usize, const DENSE: bool, const HINT: bool> StridedFormat
+    for FixtureFormat<WIDTH, DENSE, HINT>
+{
+    const WORD_PREFIX_OFFSET: Option<usize> = if HINT { Some(12) } else { None };
     type Fence = InlineKey;
     type Id = usize;
 
     #[inline]
     fn key(field: &[u8]) -> Result<&[u8], Error> {
+        if WIDTH != 0 {
+            return field
+                .get(12..)
+                .and_then(|prefix| prefix.get(..WIDTH))
+                .ok_or(Error::InvalidStructure);
+        }
         let len = u32::from_le_bytes(
             field
                 .get(8..12)
@@ -92,10 +104,15 @@ impl StridedFormat for Format {
 
     #[inline]
     fn child(field: &[u8]) -> Result<usize, Error> {
-        let bytes = field.first_chunk().ok_or(Error::InvalidStructure)?;
-        let offset =
+        let offset = if DENSE {
+            field.get(8..).ok_or(Error::InvalidStructure)?
+        } else {
+            field
+        };
+        let bytes = offset.first_chunk().ok_or(Error::InvalidStructure)?;
+        let value =
             usize::try_from(u64::from_le_bytes(*bytes)).map_err(|_| Error::InvalidStructure)?;
-        Ok(offset / PAGE)
+        Ok(if DENSE { value } else { value / PAGE })
     }
 }
 
@@ -174,6 +191,7 @@ fn build(total: usize, leaf_width: usize, branch_width: usize) -> Fixture {
             {
                 write_key(entry, key);
                 entry[KEY..KEY + 8].copy_from_slice(&((child * PAGE) as u64).to_le_bytes());
+                entry[KEY + 8..KEY + 16].copy_from_slice(&(child as u64).to_le_bytes());
             }
             parents.push((chunk[0].0, pages.len()));
             pages.push(page);
@@ -208,7 +226,7 @@ fn entry_count(page: &Page) -> usize {
 }
 
 #[inline]
-fn page_view(page: &Page) -> Result<StridedNode<'_, Format>, Error> {
+fn page_view<F: StridedFormat>(page: &Page) -> Result<StridedNode<'_, F>, Error> {
     let count = entry_count(page);
     if page[8] == 0 {
         StridedNode::leaf(&page[HEADER..], count, layout(LEAF_STRIDE))
@@ -224,7 +242,7 @@ fn direct(fixture: &Fixture, query: &[u8]) -> Answer {
     let mut id = root;
     loop {
         let page = fixture.pages.get(id).ok_or(Error::InvalidStructure)?;
-        let raw = page_view(page)?;
+        let raw = page_view::<Format>(page)?;
         match lookup.provide_strided(id, &raw)? {
             LookupStep::NeedNode(child) => id = child,
             LookupStep::Found(_, value) => return Ok(value.last().copied()),
@@ -367,7 +385,7 @@ fn snapshot_groups(
     let nodes: Vec<_> = fixture
         .pages
         .iter()
-        .map(|page| page_view(page).unwrap())
+        .map(|page| page_view::<Format>(page).unwrap())
         .collect();
     let (root, height) = root(fixture).unwrap();
     let tree = StridedTree::try_new(&nodes, Some(root), height).unwrap();
@@ -416,6 +434,77 @@ fn snapshot_groups(
             run_interleaved(&prepared, queries, validation, round, case),
         ),
     ]
+}
+
+#[cfg(feature = "bplus-bench")]
+fn probes(
+    fixture: &Fixture,
+    queries: &[InlineKey],
+    round: usize,
+    case: usize,
+    mode: &str,
+) -> Vec<(&'static str, Duration, u64, usize)> {
+    fn views<F: StridedFormat>(fixture: &Fixture) -> Vec<StridedNode<'_, F>> {
+        fixture
+            .pages
+            .iter()
+            .map(|page| page_view::<F>(page).unwrap())
+            .collect()
+    }
+    fn read<F: StridedFormat<Id = usize>>(tree: &StridedTree<'_, '_, F>, query: &[u8]) -> Answer {
+        Ok(tree.get(query)?.and_then(|value| value.last().copied()))
+    }
+    let raw = views::<Format>(fixture);
+    let fixed = views::<FixtureFormat<16, false>>(fixture);
+    let prefix = views::<FixtureFormat<8, false>>(fixture);
+    let dense = views::<FixtureFormat<0, true>>(fixture);
+    let hinted = views::<Hinted>(fixture);
+    let (root, height) = root(fixture).unwrap();
+    let raw = StridedTree::try_new(&raw, Some(root), height).unwrap();
+    let fixed = StridedTree::try_new(&fixed, Some(root), height).unwrap();
+    let prefix = StridedTree::try_new(&prefix, Some(root), height).unwrap();
+    let dense = StridedTree::try_new(&dense, Some(root), height).unwrap();
+    let hinted = StridedTree::try_new(&hinted, Some(root), height).unwrap();
+    let trees = (raw, fixed, prefix, dense, hinted, fixture);
+    type Trees<'a> = (
+        StridedTree<'a, 'a, Format>,
+        StridedTree<'a, 'a, FixtureFormat<16, false>>,
+        StridedTree<'a, 'a, FixtureFormat<8, false>>,
+        StridedTree<'a, 'a, FixtureFormat<0, true>>,
+        StridedTree<'a, 'a, Hinted>,
+        &'a Fixture,
+    );
+    let methods: [(&str, Read<Trees<'_>>); 6] = [
+        ("raw", |p, q| read(&p.0, q)),
+        ("raw_control", |p, q| read(&p.0, q)),
+        ("fixed16", |p, q| {
+            let key = Format::copy_fence(q)?;
+            read(&p.1, &key.bytes)
+        }),
+        ("prefix8", |p, q| {
+            read(&p.2, q.get(..8).ok_or(Error::InvalidStructure)?)
+        }),
+        ("dense_child", |p, q| read(&p.3, q)),
+        ("hinted", |p, q| read(&p.4, q)),
+    ];
+    let target: [(&str, Read<Trees<'_>>); 4] = [
+        ("brie", |p, q| brie_lookup(p.5, q)),
+        ("brie_control", |p, q| brie_lookup(p.5, q)),
+        ("hinted", |p, q| read(&p.4, q)),
+        ("hinted_control", |p, q| read(&p.4, q)),
+    ];
+    for query in queries {
+        let query = query.borrow();
+        let expected = std_lookup(fixture, query).unwrap();
+        for (_, method) in methods.into_iter().chain(target) {
+            assert_eq!(method(&trees, query).unwrap(), expected);
+        }
+    }
+    match mode {
+        "--residual-steady" => run_group(&trees, queries, &target, round, case),
+        "--residual-target" => run_interleaved(&trees, queries, target, round, case),
+        _ => run_interleaved(&trees, queries, methods, round, case),
+    }
 }
 
 fn measure<T>(
@@ -520,9 +609,10 @@ fn main() {
     let mode = args.next();
     let brie_only = match mode.as_deref() {
         None => false,
-        Some("--brie" | "--snapshot" | "--snapshot-steady") if cfg!(feature = "bplus-bench") => {
-            true
-        }
+        Some(
+            "--brie" | "--snapshot" | "--snapshot-steady" | "--residual" | "--residual-steady"
+            | "--residual-target",
+        ) if cfg!(feature = "bplus-bench") => true,
         _ => panic!("expected a brie or snapshot mode with bplus-bench enabled"),
     };
     let cases = [
@@ -562,6 +652,13 @@ fn main() {
                 );
             }
         };
+        #[cfg(feature = "bplus-bench")]
+        if let Some(mode @ ("--residual" | "--residual-steady" | "--residual-target")) =
+            mode.as_deref()
+        {
+            emit(mode, probes(&fixture, &queries, round, case, mode));
+            continue;
+        }
         #[cfg(feature = "bplus-bench")]
         if matches!(mode.as_deref(), Some("--snapshot" | "--snapshot-steady")) {
             let steady = mode.as_deref() == Some("--snapshot-steady");

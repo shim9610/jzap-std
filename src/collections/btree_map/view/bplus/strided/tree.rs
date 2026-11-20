@@ -1,6 +1,6 @@
 //! A checked snapshot over stable fixed-stride pages.
 
-use super::{KeyPosition, StridedFormat, StridedNode};
+use super::{ByteQuery, KeyPosition, StridedFormat, StridedNode};
 use crate::{Error, vec::Vec};
 
 /// An immutable B+ snapshot over borrowed strided pages.
@@ -100,11 +100,12 @@ impl<'pages, 'bytes, F: StridedFormat<Id = usize>> StridedTree<'pages, 'bytes, F
         let Some(mut id) = self.root else {
             return Ok(None);
         };
+        let query = ByteQuery::new(query);
         let mut remaining = self.height;
         while let Some(height) = remaining.checked_sub(1) {
             remaining = height;
             let node = self.nodes.get(id).ok_or(Error::InvalidStructure)?;
-            let index = match node.search(query)? {
+            let index = match node.search(&query)? {
                 KeyPosition::Found(index, _) => index,
                 KeyPosition::Gap(upper) => {
                     let Some(index) = upper.checked_sub(1) else {
@@ -116,7 +117,7 @@ impl<'pages, 'bytes, F: StridedFormat<Id = usize>> StridedTree<'pages, 'bytes, F
             id = F::child(node.payload(index)?)?;
         }
         let node = self.nodes.get(id).ok_or(Error::InvalidStructure)?;
-        match node.search(query)? {
+        match node.search(&query)? {
             KeyPosition::Found(index, _) => node.payload(index).map(Some),
             KeyPosition::Gap(_) => Ok(None),
         }

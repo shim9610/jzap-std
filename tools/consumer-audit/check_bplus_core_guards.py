@@ -10,6 +10,24 @@ import tempfile
 PINNED_SLICE = "decea260b5d73957cd573e827257d8c00d6614fb1cb10f8001d54e3c264de08d"
 PINNED_INDEX = "a0bfeaa6feb406ea78de3bbaa78f78f5ad63020b4ace4c6d85bfe570885c9f67"
 PINNED_ITER = "c309e04ca3da2fc4220ee3f93b4466c578ea7f3f2ef52cca6a3fdf8ac28e53d3"
+RANGE_CORE = {
+    "iter/adapters/zip.rs": (
+        "f7a0331d0fac0a60dd3d39adeebe7768760f60ca4653df5b281c3c9f4134dc84",
+        ("let len = cmp::min(a.size(), b.size());", "Zip { a, b, index: 0, len }",
+         "if self.index < self.len", "self.index += 1;",
+         "self.a.__iterator_get_unchecked(i), self.b.__iterator_get_unchecked(i)"),
+    ),
+    "slice/iter/macros.rs": (
+        "3d02121faa057f039d2d677829b2d8e04d1d772c6891b5b5c66514e4e7f185dc",
+        ("if_zst!($self,", "unsafe { end.offset_from_unsigned($self.ptr) }",
+         "let exact = len!(self);"),
+    ),
+    "ptr/const_ptr.rs": (
+        "c73503de1e8cba8cc409ccd56fba77a6ecd43ddede9591deedb061fba1491f11",
+        ('"ptr::offset_from_unsigned requires `self >= origin`"', "this >= origin",
+         "assert!(0 < pointee_size && pointee_size <= isize::MAX as usize);"),
+    ),
+}
 PROOF = Path(__file__).resolve().with_name("bplus_core_guards.rs")
 
 
@@ -56,6 +74,14 @@ def main():
             raise SystemExit(f"unbound pair window operation: {fragment}")
     if "let ret = self.v.first_chunk();\n        if ret.is_some() {\n            self.v = &self.v[1..];" not in iterator.decode():
         raise SystemExit("unbound pair window advance")
+    if "if T::IS_ZST { without_provenance(len) } else { ptr.as_ptr().add(len) }" not in iterator.decode():
+        raise SystemExit("unbound range iterator endpoint")
+    for name, (digest, fragments) in RANGE_CORE.items():
+        data = (source.parents[1] / name).read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest or not all(
+            fragment in data.decode() for fragment in fragments
+        ):
+            raise SystemExit(f"unbound core range operation: {name}")
 
     verus = os.environ.get("JZAP_VERUS", "verus")
     subprocess.run([verus, str(PROOF), "--no-cheating"], check=True)

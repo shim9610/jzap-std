@@ -3,6 +3,8 @@
 use super::{Node, SMALL_NODE_KEYS, child_index, leaf_index};
 use crate::{Error, vec::Vec};
 use core::borrow::Borrow;
+mod range;
+pub use range::Range;
 
 /// An immutable, prevalidated B+ tree with exactly `N` keys in each node.
 ///

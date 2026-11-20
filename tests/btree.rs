@@ -1249,3 +1249,106 @@ fn fixed_bplus_validates_a_complete_snapshot() {
         Err(jzap::Error::InvalidStructure)
     ));
 }
+
+#[test]
+fn fixed_bplus_range_matches_std_across_scrambled_leaf_ids() {
+    use core::ops::Bound::{Excluded, Included, Unbounded};
+    use jzap::{Error, collections::btree_map::view::bplus::FixedTree};
+
+    let leaves = [
+        ([17, 19], [170, 190]),
+        ([2, 3], [20, 30]),
+        ([11, 13], [110, 130]),
+        ([5, 7], [50, 70]),
+    ];
+    let branches = [([11, 17], [2, 0]), ([2, 5], [1, 3]), ([2, 11], [5, 4])];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    let expected: Model<_, _> = leaves
+        .iter()
+        .flat_map(|(keys, values)| keys.iter().copied().zip(values.iter().copied()))
+        .collect();
+    let mut bounds = vec![Unbounded];
+    for key in &[0, 2, 3, 4, 5, 7, 10, 11, 12, 13, 17, 19, 20] {
+        bounds.extend([Included(key), Excluded(key)]);
+    }
+    for start in bounds.iter().copied() {
+        for end in bounds.iter().copied() {
+            let invalid = match (start, end) {
+                (Excluded(a), Excluded(b)) => a >= b,
+                (Included(a) | Excluded(a), Included(b) | Excluded(b)) => a > b,
+                _ => false,
+            };
+            if invalid {
+                assert!(matches!(tree.range(start, end), Err(Error::Bounds)));
+                continue;
+            }
+            let (_, memory) = track(usize::MAX, || {
+                let mut cursor = tree.range(start, end).unwrap();
+                for item in expected.range::<i32, _>((start, end)) {
+                    assert_eq!(cursor.try_next(), Ok(Some(item)));
+                }
+                assert_eq!(cursor.try_next(), Ok(None));
+                assert_eq!(cursor.try_next(), Ok(None));
+            });
+            assert_eq!(memory.calls, 0);
+        }
+    }
+
+    // A mixed-radix rank also crosses parent boundaries at non-power-of-two widths.
+    let leaves: Vec<_> = (0..9)
+        .rev()
+        .map(|leaf| {
+            let keys = std::array::from_fn(|slot| 2 * (leaf * 3 + slot) as i32);
+            (keys, keys.map(|key| key * 10))
+        })
+        .collect::<Vec<([i32; 3], [i32; 3])>>();
+    let branches = [
+        ([0, 6, 12], [8, 7, 6]),
+        ([18, 24, 30], [5, 4, 3]),
+        ([36, 42, 48], [2, 1, 0]),
+        ([0, 18, 36], [9, 10, 11]),
+    ];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    let mut cursor = tree.range(Excluded(&16), Included(&48)).unwrap();
+    for key in (18..=48).step_by(2) {
+        assert_eq!(
+            cursor.try_next().unwrap().map(|(&k, &v)| (k, v)),
+            Some((key, key * 10))
+        );
+    }
+    assert_eq!(cursor.try_next(), Ok(None));
+    assert_eq!(cursor.try_next(), Ok(None));
+
+    let leaves = [([17, 19], [(); 2]), ([2, 3], [(); 2])];
+    let branches = [([2, 17], [1, 0])];
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    let mut cursor = tree.range(Excluded(&2), Included(&17)).unwrap();
+    assert_eq!(cursor.try_next(), Ok(Some((&3, &()))));
+    assert_eq!(cursor.try_next(), Ok(Some((&17, &()))));
+    assert_eq!(cursor.try_next(), Ok(None));
+    assert_eq!(cursor.try_next(), Ok(None));
+}
+
+#[test]
+fn fixed_bplus_range_handles_empty_and_deep_single_child_snapshots() {
+    use core::ops::Bound::{Excluded, Included, Unbounded};
+    use jzap::collections::btree_map::view::bplus::FixedTree;
+
+    let empty = FixedTree::<i32, i32, 1>::try_new(&[], &[]).unwrap();
+    let mut range = empty.range::<i32>(Unbounded, Unbounded).unwrap();
+    assert_eq!(range.try_next(), Ok(None));
+
+    let leaves = [([String::from("entry")], [42])];
+    let branches: Vec<_> = (0..=usize::BITS as usize)
+        .map(|child| ([String::from("entry")], [child]))
+        .collect();
+    let deep = FixedTree::try_new(&leaves, &branches).unwrap();
+    let (_, memory) = track(usize::MAX, || {
+        let mut hit = deep.range(Included("entry"), Included("entry")).unwrap();
+        assert_eq!(hit.try_next(), Ok(Some((&leaves[0].0[0], &42))));
+        assert_eq!(hit.try_next(), Ok(None));
+        let mut miss = deep.range(Excluded("entry"), Unbounded).unwrap();
+        assert_eq!(miss.try_next(), Ok(None));
+    });
+    assert_eq!(memory.calls, 0);
+}

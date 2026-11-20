@@ -1,7 +1,7 @@
 // Audits the exact benchmark pool source and the public checked B+ view.
-use core::hint::black_box;
+use core::{hint::black_box, ops::Bound};
 use jzap::{
-    Error,
+    Error, TryIterator,
     collections::btree_map::view::{
         LookupStep,
         bplus::{FixedTree, Lookup, Node},
@@ -72,6 +72,17 @@ fn check_width<const N: usize>(query: u64) -> Result<(), Error> {
         || packed.get::<N>(query)? != expected
         || fixed.get(&query)?.copied() != expected
     {
+        return Err(Error::InvalidStructure);
+    }
+    let mut range = fixed.range(Bound::Unbounded, Bound::Included(&query))?;
+    for row in &keys {
+        for key in row {
+            if *key <= query && range.try_next()? != Some((key, key)) {
+                return Err(Error::InvalidStructure);
+            }
+        }
+    }
+    if range.try_next()?.is_some() {
         return Err(Error::InvalidStructure);
     }
     Ok(())

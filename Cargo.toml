@@ -6,6 +6,23 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Explicitly fallible owning containers and checked borrowed views"
 repository = "https://github.com/shim9610/jzap-std"
+readme = "README.md"
+documentation = "https://docs.rs/jzap-std"
+keywords = ["fallible", "collections", "no-std", "memory-budget"]
+categories = ["data-structures", "memory-management", "no-std"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/examples/**",
+    "/docs/**",
+    "/README.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/clippy.toml",
+]
+[package.metadata.docs.rs]
+all-features = true
+
 [lib]
 name = "jzap"
 [features]

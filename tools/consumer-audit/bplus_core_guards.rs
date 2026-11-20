@@ -41,6 +41,27 @@ proof fn pair_window_advance(len: usize)
     requires len >= 2,
     ensures 1 <= len, 0 < len as int - 1 < len as int,
 {}
+
+// The callers create fresh Iter values over admitted slice references. For a
+// non-ZST, Iter::new computes the end from the same allocation as the start.
+// For a ZST, size_hint reads the stored length without subtracting pointers.
+proof fn range_iter_offset(start: int, len: int, size: int)
+    requires 0 <= len, 0 < size <= isize::MAX,
+        len * size <= isize::MAX, 0 <= start, start + len * size <= usize::MAX,
+    ensures
+        start <= start + len * size <= usize::MAX,
+        0 <= (start + len * size) - start <= isize::MAX,
+{
+    assert(0 <= len * size) by (nonlinear_arith)
+        requires 0 <= len, 0 < size;
+}
+
+proof fn range_zip_step(index: usize, left: usize, right: usize)
+    requires index < (if left <= right { left } else { right }),
+    ensures index < left, index < right,
+        index as int + 1 <= left, index as int + 1 <= right,
+{}
+
 // Projection of the private MaybeUninit path in Lookup. The checked slice
 // split gives history [0, depth) and the write slot at depth. The reviewed
 // implementation writes the slot before publishing depth, with every

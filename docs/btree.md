@@ -166,8 +166,8 @@ contains a reference still borrows its referent. A `Found` result borrows the
 supplied leaf and a rejected node can be replaced without restarting the
 lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
 
-The B+ API covers point lookups with complete keys. The design issue tracks
-partial-key comparison and range traversal. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
+The B+ streaming API covers point lookups with complete keys. The design issue
+tracks partial-key comparison and traversal over individually supplied pages. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
 
 The point-lookup benchmark compares the same resident node slices against a
 checked Rust reference, with and without local node validation in the timed
@@ -443,6 +443,92 @@ Lookup performs bounded descent through the borrowed pools, allocates no memory,
 and returns a value borrowed from a leaf. Use the streaming `Lookup` when the
 caller supplies pages individually during each lookup.
 
+For a range over an already validated snapshot, use
+`FixedTree::range(start, end)` and the `TryIterator` interface. The cursor
+returns borrowed key-value pairs in increasing key order.
+
+```rust
+use core::ops::Bound::{Excluded, Included};
+use jzap::{Error, TryIterator, collections::btree_map::view::bplus::FixedTree};
+
+fn scan_snapshot() -> Result<(), Error> {
+    let leaves = [([6, 8], [60, 80]), ([2, 4], [20, 40])];
+    let branches = [([2, 6], [1, 0])];
+    let tree = FixedTree::try_new(&leaves, &branches)?;
+    let mut range = tree.range(Included(&4), Excluded(&8))?;
+    assert_eq!(range.try_next()?, Some((&4, &40)));
+    assert_eq!(range.try_next()?, Some((&6, &60)));
+    assert_eq!(range.try_next()?, None);
+    Ok(())
+}
+```
+
+Either endpoint can be `Unbounded`. Reversed endpoints and equal endpoints
+that both exclude the key return `Error::Bounds`. The cursor descends to the
+first possible leaf and tracks its logical rank in separator order. Child
+zero is the fallback, so routing searches only the later child minima.
+When the first candidate or its successor determines the upper bound, the
+cursor uses that slot directly. Other partial leaves use a binary search
+for the upper slot. The cursor checks both spans when it opens a leaf and
+then yields items from the paired slice iterators. The cursor caches its
+parent's child IDs and decodes the next leaf rank from the root at a parent
+boundary. Opening and advancing the cursor allocate no heap memory.
+
+The range benchmark builds both trees before timing and checks every result
+against the same ordered key and value sequence. The timed operation opens one
+range, consumes all its entries, and checks exhaustion. The implementations
+use the same bounds, query order, call count, and checksum for each seed.
+
+```sh
+dir=target/verification/bplus-range
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_range --target-dir "$dir"
+for seed in 1 2 3; do
+  for width in 8 16 32; do
+    taskset -c 2 "$dir/release/bplus_range" "$seed" "$width"
+  done
+done
+```
+
+Repeat the seed and width if the driver rejects an interval shorter than one
+second. Divide total elapsed time by total range calls to combine the seeds.
+
+On Linux x86-64 (AMD EPYC 9V74), Rust 1.95.0 and `brie-tree` 0.1.2, the
+shortest of 216 retained intervals ran for 1.106 seconds. Two passes
+used three seeds each. The measurement build used 96 calibration batches
+and a target interval of 1.60 seconds to account for VM timing variation.
+The timed workload and one-second acceptance rule were the same.
+The condition gives jzap node width, tree height, and the number of
+returned entries. The gap is jzap time minus the paired `brie-tree` time.
+
+| Condition | `brie-tree` time (ns/range) | jzap time (ns/range) | Gap |
+| --- | ---: | ---: | ---: |
+| 8 / 2, 0 entries | 13.11 | 19.54 | +6.42 |
+| 8 / 2, 1 entry | 16.95 | 21.95 | +5.00 |
+| 8 / 2, 32 entries | 64.63 | 66.20 | +1.57 |
+| 8 / 2, 256 entries | 294.31 | 313.93 | +19.61 |
+| 16 / 3, 0 entries | 37.54 | 22.85 | −14.69 |
+| 16 / 3, 1 entry | 46.35 | 28.06 | −18.29 |
+| 16 / 3, 32 entries | 142.60 | 99.47 | −43.13 |
+| 16 / 3, 256 entries | 400.33 | 329.28 | −71.06 |
+| 32 / 2, 0 entries | 28.85 | 17.19 | −11.66 |
+| 32 / 2, 1 entry | 35.31 | 21.49 | −13.82 |
+| 32 / 2, 32 entries | 112.65 | 88.06 | −24.59 |
+| 32 / 2, 256 entries | 364.88 | 297.54 | −67.34 |
+
+At width 8 with 256 entries, the two pass gaps were +15.50 and +23.73 ns.
+Across the six seed-and-pass pairs, the gap ranged from −2.23 to +38.08 ns.
+The paired `brie-tree` control ranged from −28.64 to +19.53 ns in that
+condition. At widths 16 and 32, the jzap time was lower in all six pairs
+for each range length.
+
+The width-8 x86-64 consumer routes directly to a child slot, eliminating
+the two instructions used to saturating-subtract one from the prefix
+length. Its empty and single-entry paths can return from the first two
+candidate comparisons without calling the upper-bound binary search.
+
+#### Fixed-width point lookup and preparation benchmarks
+
 The benchmark uses Rust 1.95.0 and `brie-tree` 0.1.2 in one release binary
 on the same pinned Linux x86-64 CPU. It matches the sorted keys, values, seed,
 query order, counts, and checksums. Heights in the condition column describe
@@ -592,17 +678,19 @@ allocation-refusal cases without leaks. The fixture requires success in each
 normal case and `Err` for every allocation refusal. The overflow, bounds,
 and abort controls were detected in both profiles.
 
-The strict debug link still retains the unresolved panic sink. The diagnostic
-ELF has 18 resolved panic edges, including forwarding edges. The replay
-binds all 13 guard kinds to the exact static callers in this fixture,
-including the size-two window in node ordering, the binary-search caller
-paths, and the shared Vec and allocator paths. The ordering guard
-can only take the suffix at index 1 after obtaining a window of length 2.
-The index proofs show that each binary-search access and endpoint is in range.
-The replay pins the Rust 1.95.0 slice and iterator sources and rejects an
-unreviewed caller with an unchanged guard symbol. The debug diagnostic also
-ran all 264 normal and allocation-refusal cases. These results apply to the
-resolved edges of this concrete ELF and the reviewed source contracts.
+The strict debug link retains the unresolved panic sink. The diagnostic
+ELF has 19 resolved panic edges, including forwarding edges. The replay
+binds all 14 guard kinds to their exact static callers in this fixture.
+The ordering guard takes the suffix at index 1 after obtaining a window
+of length 2. The binary-search callers, including range endpoints, keep
+their indices in bounds. The range initializes paired iterators from
+checked subslices. For nonzero-sized elements, each iterator's end and
+start come from the same slice in address order. For zero-sized elements,
+the iterator uses the stored length. The replay pins the Rust 1.95.0 slice,
+iterator, and pointer sources and rejects an unreviewed caller with an
+unchanged guard symbol. The debug diagnostic ran all 264 normal and
+allocation-refusal cases. These results apply to the resolved edges of this
+concrete ELF and the reviewed source contracts.
 User comparisons and external allocators have their own contracts.
 
 The pool passed six Kani harnesses over the actual Rust implementation.

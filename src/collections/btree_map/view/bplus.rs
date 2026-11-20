@@ -5,7 +5,9 @@ use crate::Error;
 use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
 
 mod fixed;
+mod strided;
 pub use fixed::{FixedTree, Range};
+pub use strided::{StridedFormat, StridedLayout, StridedNode, StridedTree};
 
 const SMALL_NODE_KEYS: usize = 8;
 

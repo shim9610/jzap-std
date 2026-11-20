@@ -9,11 +9,13 @@ pub use fixed::{FixedTree, Range};
 
 const SMALL_NODE_KEYS: usize = 8;
 
+#[cfg(not(windows))]
 #[inline(always)]
 fn short_keys<K, Q: ?Sized>(query: &Q) -> bool {
     size_of::<K>() <= size_of::<u64>() && size_of_val(query) <= size_of::<u64>()
 }
 
+#[cfg(not(windows))]
 #[inline(always)]
 fn count_admitted_minima<K: Borrow<Q>, Q: ?Sized + Ord>(
     later: &[K],
@@ -168,6 +170,14 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
                 }
             }
             Contents::Branch(children) => {
+                // Keep the Windows lookup layout after the width-eight timing regression.
+                #[cfg(windows)]
+                let index = if node.keys.len() <= SMALL_NODE_KEYS {
+                    child_index::<false, _, _>(node.keys, self.query)?
+                } else {
+                    child_index::<true, _, _>(node.keys, self.query)?
+                };
+                #[cfg(not(windows))]
                 let index = if let Some(keys) =
                     node.keys.first_chunk::<SMALL_NODE_KEYS>().filter(|_| {
                         node.keys.len() == SMALL_NODE_KEYS && short_keys::<K, _>(self.query)
@@ -263,6 +273,7 @@ mod proofs {
         });
     }
 
+    #[cfg(not(windows))]
     #[kani::proof]
     #[kani::unwind(10)]
     fn width_eight_lookup_selects_the_last_admitted_child() {

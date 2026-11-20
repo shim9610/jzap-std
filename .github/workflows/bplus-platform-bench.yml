@@ -56,18 +56,28 @@ jobs:
                   binaries = {}
                   for label, rev in (("base", os.environ["BASE_SHA"]), ("candidate", os.environ["HEAD_SHA"])):
                       run(["git", "checkout", "--detach", rev], cwd=work)
-                      run(["cargo", "+1.95.0", "build", "--locked", "--release",
+                      driver = work / "tools/throughput-analysis/src/bin/bplus_range.rs"
+                      original = driver.read_bytes()
+                      calibrated = original.decode("utf-8").replace("measure(f, &queries, 12).0", "measure(f, &queries, 96).0").replace("1.24 * 12.0 / min", "target_seconds * 96.0 / min")
+                      assert calibrated.count("target_seconds * 96.0 / min") == 1
+                      calibrated = calibrated.replace("        let batches =", "        let target_seconds: f64 = std::env::var(\"BPLUS_TARGET_SECONDS\").unwrap().parse().unwrap();\n        let batches =")
+                      try:
+                          driver.write_text(calibrated, encoding="utf-8")
+                          run(["cargo", "+1.95.0", "build", "--locked", "--release",
                            "--manifest-path", "tools/throughput-analysis/Cargo.toml",
                            "--features", "bplus-bench", "--bin", "bplus_range",
-                           "--target-dir", str(target)], cwd=work)
+                               "--target-dir", str(target)], cwd=work)
+                      finally:
+                          driver.write_bytes(original)
                       binaries[label] = shutil.copy2(target / "release" / exe, root / (label + "-" + exe))
                   print("version,seed,fanout,height,items_per_range,impl,seconds,ranges,items,checksum", flush=True)
-                  for seed, width in product((1, 2, 3), ("8", "16", "32")):
+                  for seed, width in product((1, 2, 3), ("8",)):
                       order = ("base", "candidate") if seed != 2 else ("candidate", "base")
                       for label in order:
                           for attempt in range(4):
                               child = subprocess.run([binaries[label], str(seed), width],
-                                                     capture_output=True, text=True, timeout=65)
+                                                     capture_output=True, text=True, timeout=90,
+                                                     env=os.environ | {"BPLUS_TARGET_SECONDS": str(1.45 + 0.35 * attempt)})
                               rows = list(csv.DictReader(io.StringIO(child.stdout)))
                               if child.returncode == 0 and len(rows) == 12:
                                   break

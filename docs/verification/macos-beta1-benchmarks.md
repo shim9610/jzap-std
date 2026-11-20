@@ -1112,3 +1112,107 @@ The allocator control recorded 32 requested and usable bytes before and after a 
 | `item/drop/unmetered vs varlit` | 11.527 [10.972, 12.148] | 11.589 [11.365, 11.766] | +0.5% | 36.2% | Held |
 | `item/drop/metered vs std` | 11.497 [11.383, 11.644] | 12.286 [10.969, 14.658] | +6.9% | 36.2% | Held |
 | `item/drop/metered vs varlit` | 11.527 [10.972, 12.148] | 12.286 [10.969, 14.658] | +6.6% | 36.2% | Held |
+
+## B+ range and point lookup follow-up
+
+### Follow-up conditions
+
+| Item | Value |
+| --- | --- |
+| Candidate | `25f773789b0e64d2548d1776f1483dae7fc98ade` ([PR #7](https://github.com/shim9610/jzap-std/pull/7)) |
+| Point baseline | `665c95bba6cc3f94b2c84fbacc1192f1585bd553`, rebuilt and run in the same campaign |
+| Machine | Apple M4 Mac16,10, 4 performance and 6 efficiency cores, 16 GiB RAM |
+| Environment | macOS 27.2 (26B123), native arm64, Rosetta off, Rust 1.95.0, AC power, Low Power Mode off |
+| Scheduling | Serial processes under `caffeinate -i`, CPU affinity unset |
+| Builds | Cargo `+1.95.0 build --locked --release`; `bplus-bench --bin bplus_range` for range and `bplus-pool --bin bplus` for point |
+| Range executable SHA-256 | `ef8765c7373ec8ff9c6399a7bbed5fd45b88fcedd28a4b35a2cece099740a5ae` |
+| Point executable SHA-256 (both commits) | `4586dc2a7babbfc9c6b68c1eb703e8164444416bbbcb542e2923d86b3eea0cf2` |
+
+Both point binaries were built independently at the same checkout path with the same options. The two files had identical contents. The focused BTree test suite passed 24 tests at the baseline and 26 at the candidate. The candidate's all-features suite passed 433 tests.
+
+Both benchmarks used matching `u64` inputs, operations and checksums within each pair. Keys were ascending even integers starting at 2, with values equal to three times the key. Each accepted interval was at least one second. Each representative time is accepted total time divided by the total number of operations. Difference is jzap minus brie-tree, calculated before rounding.
+
+### Public `FixedTree::range`
+
+The range benchmark used fanout/height 8/2, 16/3 and 32/2, with 4,096 common queries per case and seed. Bounds were lower-inclusive and upper-exclusive. The timed interval included public range creation, consumption and the final exhaustion check. Tree construction preceded timing. Seeds 1, 2, 3 and 10 ran twice in fresh processes. Each group included brie-tree 0.1.2, jzap and `brie_control` in the same process.
+
+A total of 24 seed/fixture runs and 96 seed/fixture/return-count groups were accepted. The first width-8, seed-1 run stopped on a 0.494-second interval. The whole group was rerun successfully with the original executable. Calls, returned item counts and checksums matched in all 96 accepted groups.
+
+Times and differences are in **ns/range**.
+
+| Width/height and returned items | brie-tree time | jzap time | Difference |
+| --- | ---: | ---: | ---: |
+| 8/2 · 0 items | 4.410 | 9.686 | +5.276 |
+| 8/2 · 1 items | 9.828 | 11.145 | +1.317 |
+| 8/2 · 32 items | 46.470 | 41.872 | -4.598 |
+| 8/2 · 256 items | 168.416 | 171.143 | +2.727 |
+| 16/3 · 0 items | 14.342 | 18.228 | +3.885 |
+| 16/3 · 1 items | 25.951 | 20.454 | -5.498 |
+| 16/3 · 32 items | 97.828 | 66.155 | -31.673 |
+| 16/3 · 256 items | 283.049 | 204.435 | -78.615 |
+| 32/2 · 0 items | 10.879 | 14.173 | +3.295 |
+| 32/2 · 1 items | 20.265 | 16.207 | -4.058 |
+| 32/2 · 32 items | 85.388 | 57.761 | -27.627 |
+| 32/2 · 256 items | 262.412 | 177.590 | -84.822 |
+
+Round differences pool the four seeds in each round. In parentheses, the counts show positive and negative paired differences. Min–max covers the eight seed/round observations. A/A is the maximum absolute change between brie-tree and its same-process control. The hold rules are A/A above 10% or paired differences exceeding the greater of 2% of comparator time and 0.1 ns in both directions. No range row met either hold condition.
+
+| Width/height and returned items | Round 1 difference | Round 2 difference | brie-tree min–max | jzap min–max | Paired difference min–max | Max brie-tree A/A | Held reason |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 8/2 · 0 items | +5.213 (4+/0−) | +5.342 (4+/0−) | 4.331–4.437 | 9.345–9.878 | 5.014–5.454 | 0.27% | — |
+| 8/2 · 1 items | +1.301 (4+/0−) | +1.333 (4+/0−) | 9.510–10.080 | 10.718–11.295 | 1.208–1.454 | 0.57% | — |
+| 8/2 · 32 items | -4.591 (0+/4−) | -4.605 (0+/4−) | 45.127–46.897 | 41.168–43.156 | -5.456–-3.644 | 0.42% | — |
+| 8/2 · 256 items | +2.716 (4+/0−) | +2.739 (4+/0−) | 165.797–169.110 | 168.575–172.069 | 2.476–2.959 | 0.13% | — |
+| 16/3 · 0 items | +3.901 (4+/0−) | +3.870 (4+/0−) | 13.925–14.579 | 17.911–18.455 | 3.745–4.039 | 1.92% | — |
+| 16/3 · 1 items | -5.361 (0+/4−) | -5.635 (0+/4−) | 25.044–26.472 | 19.961–20.885 | -5.845–-5.083 | 1.15% | — |
+| 16/3 · 32 items | -31.483 (0+/4−) | -31.873 (0+/4−) | 95.931–98.876 | 65.065–66.545 | -32.546–-30.660 | 1.93% | — |
+| 16/3 · 256 items | -78.754 (0+/4−) | -78.474 (0+/4−) | 281.800–286.061 | 202.240–206.293 | -82.960–-75.668 | 2.63% | — |
+| 32/2 · 0 items | +3.225 (4+/0−) | +3.368 (4+/0−) | 10.666–10.983 | 13.916–14.397 | 3.141–3.496 | 0.70% | — |
+| 32/2 · 1 items | -3.968 (0+/4−) | -4.148 (0+/4−) | 19.548–20.658 | 15.989–16.383 | -4.379–-3.559 | 1.24% | — |
+| 32/2 · 32 items | -27.883 (0+/4−) | -27.366 (0+/4−) | 83.380–86.615 | 56.685–58.820 | -29.335–-26.060 | 2.36% | — |
+| 32/2 · 256 items | -85.040 (0+/4−) | -84.597 (0+/4−) | 260.139–264.274 | 176.169–179.133 | -87.862–-82.945 | 0.89% | — |
+
+At width 8, the paired differences for 0, 1 and 256 returned items were positive in all four seeds in each round.
+
+### Public point lookup
+
+The point runs used `BPLUS_FIXED_ONLY=1`, with 71,220, 30,442 and 26,922 batches at 512, 32,768 and 65,536 keys respectively. Each batch used 4,096 queries. The baseline and candidate alternated first position for seeds 1, 2, 3 and 10. An independent seed-1 pair supplied A/A and was excluded from the central estimates. Each result is paired with brie-tree 0.1.2 in the same process. All 30 fixture/build/process groups matched the expected query counts and checksums.
+
+Times and differences are in **ns/lookup**.
+
+| Keys, API and commit | brie-tree time | jzap time | Difference |
+| --- | ---: | ---: | ---: |
+| 512 keys · `FixedTree::get` · 665c95b | 5.691 | 7.018 | +1.327 |
+| 512 keys · `FixedTree::get` · 25f7737 | 5.650 | 6.981 | +1.331 |
+| 512 keys · streaming `Lookup` · 665c95b | 5.691 | 22.640 | +16.949 |
+| 512 keys · streaming `Lookup` · 25f7737 | 5.650 | 23.375 | +17.725 |
+| 65,536 keys · `FixedTree::get` · 665c95b | 22.003 | 16.680 | -5.323 |
+| 65,536 keys · `FixedTree::get` · 25f7737 | 21.117 | 16.609 | -4.508 |
+| 65,536 keys · streaming `Lookup` · 665c95b | 22.003 | 50.105 | +28.101 |
+| 65,536 keys · streaming `Lookup` · 25f7737 | 21.117 | 49.947 | +28.829 |
+| 32,768 keys · `FixedTree::get` · 665c95b | 14.115 | 13.020 | -1.095 |
+| 32,768 keys · `FixedTree::get` · 25f7737 | 13.903 | 12.894 | -1.009 |
+| 32,768 keys · streaming `Lookup` · 665c95b | 14.115 | 40.035 | +25.921 |
+| 32,768 keys · streaming `Lookup` · 25f7737 | 13.903 | 39.946 | +26.043 |
+
+Normalized change divides the candidate jzap/brie-tree ratio by the baseline jzap/brie-tree ratio, then subtracts one. A/A is the absolute change from the first seed-1 process to its repeat.
+
+| Keys and API | Candidate − baseline (ns/lookup) | Normalized change | Per-seed normalized min–max | brie-tree A/A (baseline / candidate) | jzap A/A (baseline / candidate) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 512 keys · `FixedTree::get` | -0.037 | +0.20% | -5.72%–+6.27% | 0.88% / 2.59% | 0.43% / 1.55% |
+| 512 keys · streaming `Lookup` | +0.735 | +4.00% | -0.11%–+8.63% | 0.88% / 2.59% | 0.33% / 0.62% |
+| 65,536 keys · `FixedTree::get` | -0.071 | +3.75% | -9.52%–+12.13% | 2.99% / 1.25% | 1.12% / 3.94% |
+| 65,536 keys · streaming `Lookup` | -0.158 | +3.87% | -0.04%–+7.56% | 2.99% / 1.25% | 0.05% / 1.92% |
+| 32,768 keys · `FixedTree::get` | -0.126 | +0.54% | -2.29%–+2.84% | 2.65% / 0.02% | 1.03% / 2.53% |
+| 32,768 keys · streaming `Lookup` | -0.090 | +1.29% | -2.54%–+3.74% | 2.65% / 0.02% | 0.09% / 0.52% |
+
+| Keys and API | brie-tree baseline min–max | brie-tree candidate min–max | jzap baseline min–max | jzap candidate min–max |
+| --- | ---: | ---: | ---: | ---: |
+| 512 keys · `FixedTree::get` | 5.641–5.750 | 5.542–5.842 | 6.715–7.231 | 6.736–7.253 |
+| 512 keys · streaming `Lookup` | 5.641–5.750 | 5.542–5.842 | 22.263–22.912 | 23.225–23.629 |
+| 65,536 keys · `FixedTree::get` | 21.031–22.885 | 20.519–21.981 | 15.069–17.738 | 15.396–17.750 |
+| 65,536 keys · streaming `Lookup` | 21.031–22.885 | 20.519–21.981 | 50.013–50.209 | 49.792–50.122 |
+| 32,768 keys · `FixedTree::get` | 13.761–14.699 | 13.586–14.243 | 12.811–13.279 | 12.745–13.180 |
+| 32,768 keys · streaming `Lookup` | 13.761–14.699 | 13.586–14.243 | 39.829–40.174 | 39.759–40.157 |
+
+Per-seed normalized changes spanned both signs in all six point conditions.

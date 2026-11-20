@@ -13,7 +13,7 @@ use jzap::{
 };
 use ordered_corpus::{Case, corpus};
 use std::{collections::HashSet as StdSet, hint::black_box, time::Instant};
-const OPS: [&str; 27] = [
+const OPS: [&str; 30] = [
     "build",
     "get",
     "replace",
@@ -41,6 +41,9 @@ const OPS: [&str; 27] = [
     "intersection_skew",
     "is_disjoint_true",
     "is_subset_true",
+    "phase_clone",
+    "phase_grow",
+    "phase_shrink",
 ];
 struct Context {
     local: MemoryBudget,
@@ -357,11 +360,56 @@ fn epoch<'a, T: Owner<'a>, const OP: usize>(
     }
     sum
 }
+fn resize_phase<'a, T: Owner<'a>, const OP: usize>(
+    cases: &[Case],
+    sources: &[(T, T)],
+    epochs: u64,
+) -> (f64, u64) {
+    let mut work = Vec::with_capacity(cases.len());
+    let mut elapsed = std::time::Duration::ZERO;
+    let mut checksum = 0u64;
+    for _ in 0..epochs {
+        if OP != 27 {
+            work.extend(sources.iter().map(|(left, _)| left.copy()));
+            if OP == 29 {
+                for (set, case) in work.iter_mut().zip(cases) {
+                    set.reserve(case.keys.len() + 1);
+                }
+            }
+        }
+        let start = Instant::now();
+        match OP {
+            27 => work.extend(sources.iter().map(|(left, _)| black_box(left).copy())),
+            28 => {
+                for (set, case) in work.iter_mut().zip(cases) {
+                    black_box(set).reserve(case.keys.len() + 1);
+                }
+            }
+            29 => {
+                for set in &mut work {
+                    black_box(set).shrink();
+                }
+            }
+            _ => unreachable!(),
+        }
+        elapsed += start.elapsed();
+        for set in &work {
+            checksum = checksum.wrapping_add(black_box(set.sum()));
+        }
+        work.clear();
+    }
+    (elapsed.as_secs_f64(), checksum)
+}
+
 fn run<'a, T: Owner<'a>, const OP: usize>(cases: &[Case], c: &'a Context, n: u64) -> (f64, u64) {
     let mut sources = cases
         .iter()
         .map(|case| populate::<T>(case, c, OP))
         .collect::<Vec<_>>();
+    if OP >= 27 {
+        black_box(resize_phase::<T, OP>(cases, &sources, 2));
+        return resize_phase::<T, OP>(cases, &sources, n);
+    }
     black_box(epoch::<T, OP>(cases, c, &mut sources, 2));
     let start = Instant::now();
     let checksum = epoch::<T, OP>(cases, c, &mut sources, n);
@@ -457,7 +505,7 @@ fn main() {
         }
         Some("describe") => {
             println!(
-                "{{\"operation_unit\":\"get counts two lookups per key; replace counts one existing-key replacement; remove_cycle counts one remove+insert pair. Other rows count a whole workload, including clone for destructive batches; reserve is clone+growth and shrink is clone+growth+shrink. Owned algebra includes result construction/drop. Sources and two warmup epochs are outside timing.\",\"inputs\":\"64 shuffled seeded u64 corpora, size 0..4096 (small: 0..32). Equal-size right sets overlap by about half; disjoint tasks use odd keys, skew intersection has at most three right keys, true subset has a right superset. Both implementations use genuine default builders; owned std operators create a default builder while product owned algebra clones the left builder/policy. OS-selected hash placements vary.\"}}"
+                "{{\"operation_unit\":\"get counts two lookups per key; replace counts one existing-key replacement; remove_cycle counts one remove+insert pair. Other rows count a whole workload, including clone for destructive batches; reserve is clone+growth and shrink is clone+growth+shrink. Owned algebra includes result construction/drop. The phase tasks time only clone, reserve, or shrink, with preparation and drop outside the timed interval. Sources and two warmup epochs are outside timing.\",\"inputs\":\"64 shuffled seeded u64 corpora, size 0..4096 (small: 0..32). Equal-size right sets overlap by about half; disjoint tasks use odd keys, skew intersection has at most three right keys, true subset has a right superset. Both implementations use genuine default builders; owned std operators create a default builder while product owned algebra clones the left builder/policy. OS-selected hash placements vary.\"}}"
             );
             return;
         }
@@ -495,7 +543,7 @@ fn main() {
     macro_rules! choose { ($($i:literal),*) => { match op { $($i=>dispatch!($i,label.as_str(),&cases,&c,n),)* _=>unreachable!() } }; }
     let (elapsed, checksum) = choose!(
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-        25, 26
+        25, 26, 27, 28, 29
     );
     assert_eq!(
         (c.local.occupied(), c.local.reserved(), c.concurrent.used()),

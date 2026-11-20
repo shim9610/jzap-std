@@ -527,6 +527,45 @@ the two instructions used to saturating-subtract one from the prefix
 length. Its empty and single-entry paths can return from the first two
 candidate comparisons without calling the upper-bound binary search.
 
+#### Width-eight branch routing across platforms
+
+On non-Windows builds, streaming point lookup and the initial fixed-range
+seek count the seven later minima at fixed offsets in a width-eight branch.
+The path is selected when the key representation and the borrowed query each
+occupy at most eight bytes. Other key sizes and node widths keep the binary
+search. Streaming lookup still checks the first minimum, node ID, height,
+key fences, and ancestors. Range and point lookup retain their existing
+leaf searches.
+
+GitHub-hosted Linux x86-64, macOS ARM64, and Windows x86-64 ran Rust 1.95.0
+with `brie-tree` 0.1.2. Each runner built both revisions at the same checkout
+path, alternated the revision order across three seeds, and timed an
+identical `brie-tree` control in each process. All 378 accepted intervals
+lasted at least one second. Counts and per-query checksums matched between
+revisions. The range campaign tested 0, 1, 32, and 256 returned entries at
+width 8 and height 2. The point campaign timed streaming lookup at widths
+8, 16, and 32. [Range runs](https://github.com/shim9610/jzap-std/actions/runs/44678610546)
+· [Point runs](https://github.com/shim9610/jzap-std/actions/runs/44679002286)
+
+The gap is jzap time minus the corresponding `brie-tree` time within each
+build. In these runs, the width-eight Linux empty-range gap changed from
++7.02 to +4.27 ns/range and the streaming gap from +45.95 to +27.98
+ns/lookup. All four Linux range counts had smaller gaps in each seed.
+The two wider Linux point fixtures had small increases in their aggregate
+gaps. The width-32 fixture's normalized timing moved in both directions
+across seeds. On macOS, the width-eight point gap changed from +40.63 to
++35.04 ns/lookup and the empty-range gap from +6.81 to +4.79 ns/range.
+Several macOS comparisons exceeded 10% variation between the identical
+`brie-tree` measurements. Their timing conclusions remain open.
+
+The Windows experimental build increased the width-eight streaming gap
+from +10.09 to +11.92 ns/lookup and the 256-entry range gap from +18.93
+to +30.77 ns/range. Both increased in all three seeds. Windows keeps its
+original routing for both operations. The release assembly comparison
+matched the baseline instructions and branch labels for both Windows
+benchmarks. Linux and macOS keep the measured candidate instruction
+sequences.
+
 #### Fixed-width point lookup and preparation benchmarks
 
 The benchmark uses Rust 1.95.0 and `brie-tree` 0.1.2 in one release binary

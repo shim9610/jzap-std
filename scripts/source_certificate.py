@@ -434,7 +434,7 @@ def main():
     if collected is not None:
         for name in STAGES['bplus'][1][1:]:
             assert run(name)==0
-        for name,count in (('bplus-kani',3),('fixed-bplus-kani',3),('bplus-range-kani',2),('bplus-strided-kani',2)):
+        for name,count in (('bplus-kani',3),('fixed-bplus-kani',3),('bplus-range-kani',2),('bplus-strided-kani',3)):
             assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
         for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
             assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())

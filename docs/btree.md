@@ -166,8 +166,7 @@ contains a reference still borrows its referent. A `Found` result borrows the
 supplied leaf and a rejected node can be replaced without restarting the
 lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
 
-The B+ streaming API covers point lookups with complete keys. The design issue
-tracks partial-key comparison and traversal over individually supplied pages. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
+The B+ streaming API covers point lookups with complete keys. [Partial-key comparison](https://github.com/shim9610/jzap-std/issues/10) · [Streaming range traversal](https://github.com/shim9610/jzap-std/issues/13)
 
 The point-lookup benchmark compares the same resident node slices against a
 checked Rust reference, with and without local node validation in the timed
@@ -186,6 +185,33 @@ done
 On Linux, build with `bplus-memory` to record lookup allocation counts and bytes
 using the instrumented system allocator. Use the uninstrumented `bplus-bench`
 build for timing. Both builds report the size of the lookup continuation.
+
+#### Fixed-stride byte pages
+
+`StridedNode::branch` and `StridedNode::leaf` borrow a page's entry region
+and take its entry count. `StridedLayout` describes the nonzero record
+stride and the key and payload byte ranges within each record. Construction
+checks the occupied span, field geometry, and strict lexical order of
+complete keys. A leaf may be empty. A branch requires at least one entry.
+
+Implement `StridedFormat` to borrow the complete key from its field, copy
+the selected fence keys, and decode a child ID from its payload. This lets
+a field carry metadata such as inline key length. The format must return
+consistent key slices and fences with the same byte ordering. Fence storage
+must own the bytes if the caller reuses the page buffer. Keys and values are
+accessed as bytes and require no typed alignment.
+
+Create a `Lookup` with the format's fence and ID types and a `&[u8]` query.
+Supply each expected ID and checked page view to `Lookup::provide_strided`.
+`NeedNode` returns the decoded child ID. `Found` borrows the matching key
+and value from the leaf page. The lookup retains height, fence, and cycle
+checks, and a rejected page leaves the request retryable. Only the selected
+child field is decoded by the lookup. The caller owns page identity,
+integrity checks, I/O, and any interpretation of the returned value bytes.
+
+The byte view handles complete keys of any length the format can represent
+and retain in a fence. Out-of-line key resolution and streaming range
+traversal are tracked separately. [Raw pages and partial keys](https://github.com/shim9610/jzap-std/issues/10) · [Streaming ranges](https://github.com/shim9610/jzap-std/issues/13)
 
 #### Complete-key prototype timing
 

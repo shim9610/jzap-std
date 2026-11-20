@@ -56,7 +56,9 @@ pub fn run(seed: usize) -> Result<(), Error> {
         _ => None,
     };
     match lookup.provide_strided(child, &leaf)? {
-        LookupStep::Found(key, value) if key == query && value.first().copied() == expected => Ok(()),
+        LookupStep::Found(key, value) if key == query && value.first().copied() == expected => {
+            Ok(())
+        }
         LookupStep::Absent if expected.is_none() => Ok(()),
         _ => Err(Error::InvalidStructure),
     }

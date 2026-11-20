@@ -302,23 +302,59 @@ fn next(seed: &mut u64) -> u64 {
     *seed
 }
 
+fn run_group(
+    fixture: &Fixture,
+    queries: &[InlineKey],
+    methods: &[(&'static str, Read)],
+    round: usize,
+    case: usize,
+) -> Vec<(&'static str, Duration, u64, usize)> {
+    let shortest = methods
+        .iter()
+        .map(|&(_, read)| measure(fixture, queries, read, 48).0.as_secs_f64())
+        .fold(f64::INFINITY, f64::min);
+    let mut batches = (48.0 * 1.2 / shortest).ceil() as usize;
+    let order = (round + case) % methods.len();
+    loop {
+        let mut rows = Vec::new();
+        for i in 0..methods.len() {
+            let index = if round.is_multiple_of(2) {
+                (order + methods.len() - i) % methods.len()
+            } else {
+                (order + i) % methods.len()
+            };
+            let (name, read) = methods[index];
+            let (elapsed, checksum) = measure(fixture, queries, read, batches);
+            rows.push((name, elapsed, checksum, queries.len() * batches));
+        }
+        if rows.iter().any(|row| row.1 < Duration::from_secs(1)) {
+            batches = (batches as f64 * 1.25).ceil() as usize;
+            continue;
+        }
+        assert!(rows.iter().all(|row| row.2 == rows[0].2));
+        return rows;
+    }
+}
+
 fn main() {
-    let seed = std::env::args()
-        .nth(1)
-        .expect("seed")
-        .parse::<u64>()
-        .unwrap();
+    let mut args = std::env::args().skip(1);
+    let seed = args.next().expect("seed").parse::<u64>().unwrap();
+    let round = args.next().expect("run order").parse::<usize>().unwrap();
     let cases = [
         (2048, 27, 40),
         (2048, LEAF_MAX, BRANCH_MAX),
         (181_267, LEAF_MAX, BRANCH_MAX),
     ];
-    let methods: [(&str, Read); 5] = [
+    let decoded_methods: [(&str, Read); 4] = [
         ("decoded_copy", decoded::<true>),
         ("decoded_borrow", decoded::<false>),
         ("direct", direct),
         ("decoded_control", decoded::<true>),
+    ];
+    let resident_methods: [(&str, Read); 3] = [
         ("std", std_lookup),
+        ("std_control", std_lookup),
+        ("direct", direct),
     ];
     for (case, (size, leaf, branch)) in cases.into_iter().enumerate() {
         let fixture = build(size, leaf, branch);
@@ -329,42 +365,25 @@ fn main() {
         for query in &queries {
             let query = query.borrow();
             let expected = std_lookup(&fixture, query).unwrap();
-            for (_, read) in methods {
+            for (_, read) in decoded_methods {
                 assert_eq!(read(&fixture, query).unwrap(), expected);
             }
         }
-        let shortest = methods
-            .iter()
-            .map(|&(_, read)| measure(&fixture, &queries, read, 48).0.as_secs_f64())
-            .fold(f64::INFINITY, f64::min);
-        let mut batches = (48.0 * 1.2 / shortest).ceil() as usize;
-        let order = (seed as usize + case) % methods.len();
-        loop {
-            let mut rows = Vec::new();
-            for i in 0..methods.len() {
-                let index = if seed % 2 == 0 {
-                    (order + methods.len() - i) % methods.len()
-                } else {
-                    (order + i) % methods.len()
-                };
-                let (name, read) = methods[index];
-                let (elapsed, checksum) = measure(&fixture, &queries, read, batches);
-                rows.push((name, elapsed, checksum));
-            }
-            if rows.iter().any(|row| row.1 < Duration::from_secs(1)) {
-                batches *= 2;
-                continue;
-            }
-            assert!(rows.iter().all(|row| row.2 == rows[0].2));
-            for (name, elapsed, checksum) in rows {
+        let mut groups: [(&str, &[(&'static str, Read)]); 2] =
+            [("page", &decoded_methods), ("resident", &resident_methods)];
+        if (round + case).is_multiple_of(2) {
+            groups.reverse();
+        }
+        for (group, methods) in groups {
+            for (name, elapsed, checksum, operations) in
+                run_group(&fixture, &queries, methods, round, case)
+            {
                 println!(
-                    "{seed},{case},{size},{leaf},{branch},{},{name},{:.9},{},{checksum}",
+                    "{seed},{case},{size},{leaf},{branch},{},{group},{name},{:.9},{operations},{checksum}",
                     fixture.pages.last().unwrap()[8],
                     elapsed.as_secs_f64(),
-                    queries.len() * batches
                 );
             }
-            break;
         }
     }
 }

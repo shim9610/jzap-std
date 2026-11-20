@@ -349,4 +349,48 @@ mod proofs {
             }
         }
     }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn branch_matches_typed_routing_and_fences() {
+        let [first, second, child_minimum, child_last, query]: [u8; 5] = kani::any();
+        kani::assume(first < second && child_minimum < child_last);
+        let page = [0, first, 1, 0, second, 2];
+        let raw = StridedNode::<Bytes>::branch(&page, 2, layout()).unwrap();
+        let keys = [[first], [second]];
+        let typed = super::super::Node::<_, (), u8>::branch(&keys, &[1, 2]).unwrap();
+        let query = [query];
+        let mut expected = Lookup::new(0u8, 1, query.as_slice()).unwrap();
+        let mut actual = Lookup::new(0u8, 1, query.as_slice()).unwrap();
+        let expected_id = match expected.provide(0, &typed).unwrap() {
+            LookupStep::Absent => None,
+            LookupStep::NeedNode(id) => Some(id),
+            LookupStep::Found(..) => panic!("branch returned a value"),
+        };
+        assert_eq!(actual.requested_node(), Some(0));
+        let result = actual.provide_strided(0, &raw);
+        assert_eq!(
+            result,
+            Ok(expected_id.map_or(LookupStep::Absent, LookupStep::NeedNode))
+        );
+        assert_eq!(actual.requested_node(), expected_id);
+        if let Some(id) = expected_id {
+            let page = [0, child_minimum, 7, 0, child_last, 9];
+            let raw_leaf = StridedNode::<Bytes>::leaf(&page, 2, layout()).unwrap();
+            let keys = [[child_minimum], [child_last]];
+            let values = [[7], [9]];
+            let typed_leaf = super::super::Node::<_, _, u8>::leaf(&keys, &values).unwrap();
+            let expected = expected.provide(id, &typed_leaf).map(|step| match step {
+                LookupStep::Found(key, value) => {
+                    LookupStep::Found(key.as_slice(), value.as_slice())
+                }
+                LookupStep::Absent => LookupStep::Absent,
+                LookupStep::NeedNode(child) => LookupStep::NeedNode(child),
+            });
+            assert_eq!(actual.provide_strided(id, &raw_leaf), expected);
+            if expected.is_err() {
+                assert_eq!(actual.requested_node(), Some(id));
+            }
+        }
+    }
 }

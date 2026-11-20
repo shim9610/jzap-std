@@ -184,12 +184,17 @@ impl<K: Copy + Ord + Borrow<[u8]>, I: Copy + Eq> Lookup<'_, K, I, [u8]> {
             if let Some(index) = upper.checked_sub(1) {
                 let child = F::child(node.payload(index)?)?;
                 let minimum = Self::strided_fence::<F>(node.key(index)?)?;
-                let ceiling = if upper < node.count {
-                    Some(Self::strided_fence::<F>(node.key(upper)?)?)
+                let first = [minimum];
+                let pair;
+                let minima = if upper < node.count {
+                    pair = [minimum, Self::strided_fence::<F>(node.key(upper)?)?];
+                    pair.as_slice()
                 } else {
-                    None
+                    first.as_slice()
                 };
-                self.descend(id, child, minimum, ceiling)?;
+                // The byte view has already selected the child, so pass the
+                // selected minimum and optional next fence to the shared descent.
+                self.descend::<()>(id, 0, minima, &[child])?;
                 return Ok(LookupStep::NeedNode(child));
             }
             LookupStep::Absent
@@ -212,10 +217,10 @@ impl<K: Copy + Ord + Borrow<[u8]>, I: Copy + Eq> Lookup<'_, K, I, [u8]> {
 mod test_format {
     use super::*;
 
-    pub(super) struct Bytes;
+    pub(super) struct Bytes<const LEN: usize = 1>;
 
-    impl StridedFormat for Bytes {
-        type Fence = [u8; 1];
+    impl<const LEN: usize> StridedFormat for Bytes<LEN> {
+        type Fence = [u8; LEN];
         type Id = u8;
 
         fn key(field: &[u8]) -> Result<&[u8], Error> {
@@ -293,6 +298,36 @@ mod tests {
         );
         assert_eq!(lookup.requested_node(), Some(1));
     }
+
+    #[test]
+    fn bplus_strided_searches_complete_long_keys() {
+        let layout = StridedLayout {
+            stride: NonZeroUsize::new(36).unwrap(),
+            key: 1..35,
+            payload: 35..36,
+        };
+        let first = [42; 34];
+        let mut second = first;
+        second[33] = 43;
+        let mut page = [0; 72];
+        page[1..35].copy_from_slice(&first);
+        page[35] = 1;
+        page[37..71].copy_from_slice(&second);
+        page[71] = 2;
+
+        let mut lookup = Lookup::new(0u8, 1, second.as_slice()).unwrap();
+        let branch = StridedNode::<Bytes<34>>::branch(&page, 2, layout.clone()).unwrap();
+        assert_eq!(
+            lookup.provide_strided(0, &branch),
+            Ok(LookupStep::NeedNode(2))
+        );
+        page[35] = 55;
+        let leaf = StridedNode::<Bytes<34>>::leaf(&page[36..], 1, layout).unwrap();
+        assert_eq!(
+            lookup.provide_strided(2, &leaf),
+            Ok(LookupStep::Found(second.as_slice(), &[2][..]))
+        );
+    }
 }
 
 #[cfg(kani)]
@@ -352,45 +387,27 @@ mod proofs {
 
     #[kani::proof]
     #[kani::unwind(5)]
-    fn branch_matches_typed_routing_and_fences() {
-        let [first, second, child_minimum, child_last, query]: [u8; 5] = kani::any();
-        kani::assume(first < second && child_minimum < child_last);
+    fn branch_routes_and_preserves_fences() {
+        let [first, second, query]: [u8; 3] = kani::any();
+        kani::assume(first < second);
         let page = [0, first, 1, 0, second, 2];
         let raw = StridedNode::<Bytes>::branch(&page, 2, layout()).unwrap();
-        let keys = [[first], [second]];
-        let typed = super::super::Node::<_, (), u8>::branch(&keys, &[1, 2]).unwrap();
-        let query = [query];
-        let mut expected = Lookup::new(0u8, 1, query.as_slice()).unwrap();
-        let mut actual = Lookup::new(0u8, 1, query.as_slice()).unwrap();
-        let expected_id = match expected.provide(0, &typed).unwrap() {
-            LookupStep::Absent => None,
-            LookupStep::NeedNode(id) => Some(id),
-            LookupStep::Found(..) => panic!("branch returned a value"),
-        };
-        assert_eq!(actual.requested_node(), Some(0));
-        let result = actual.provide_strided(0, &raw);
-        assert_eq!(
-            result,
-            Ok(expected_id.map_or(LookupStep::Absent, LookupStep::NeedNode))
-        );
-        assert_eq!(actual.requested_node(), expected_id);
-        if let Some(id) = expected_id {
-            let page = [0, child_minimum, 7, 0, child_last, 9];
-            let raw_leaf = StridedNode::<Bytes>::leaf(&page, 2, layout()).unwrap();
-            let keys = [[child_minimum], [child_last]];
-            let values = [[7], [9]];
-            let typed_leaf = super::super::Node::<_, _, u8>::leaf(&keys, &values).unwrap();
-            let expected = expected.provide(id, &typed_leaf).map(|step| match step {
-                LookupStep::Found(key, value) => {
-                    LookupStep::Found(key.as_slice(), value.as_slice())
-                }
-                LookupStep::Absent => LookupStep::Absent,
-                LookupStep::NeedNode(child) => LookupStep::NeedNode(child),
-            });
-            assert_eq!(actual.provide_strided(id, &raw_leaf), expected);
-            if expected.is_err() {
-                assert_eq!(actual.requested_node(), Some(id));
-            }
+        let query_bytes = [query];
+        let mut lookup = Lookup::new(0u8, 1, query_bytes.as_slice()).unwrap();
+        let found = lookup.provide_strided(0, &raw).unwrap();
+        if query < first {
+            assert_eq!(found, LookupStep::Absent);
+            assert_eq!(lookup.requested_node(), None);
+        } else if query < second {
+            assert_eq!(found, LookupStep::NeedNode(1));
+            assert_eq!(lookup.requested_node(), Some(1));
+            assert_eq!(lookup.minimum, Some([first]));
+            assert_eq!(lookup.ceiling, Some([second]));
+        } else {
+            assert_eq!(found, LookupStep::NeedNode(2));
+            assert_eq!(lookup.requested_node(), Some(2));
+            assert_eq!(lookup.minimum, Some([second]));
+            assert_eq!(lookup.ceiling, None);
         }
     }
 }

@@ -439,7 +439,7 @@ def main():
         for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
             assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         for name in ('bplus-strided-miri','bplus-strided-miri-32'):
-            assert re.search(r'test result: ok\. 2 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+            assert re.search(r'test result: ok\. 3 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}
         for name in ('bplus-release','bplus-strided-release'):
             summary=json.loads(evidence(out/name/'summary.json').read_text())

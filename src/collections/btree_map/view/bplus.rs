@@ -196,11 +196,7 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
                     child_index::<true, _, _>(node.keys, self.query)?
                 };
                 if let Some(index) = index {
-                    let child = *children.get(index).ok_or(Error::InvalidStructure)?;
-                    let minimum = *node.keys.get(index).ok_or(Error::InvalidStructure)?;
-                    let next = index.checked_add(1).ok_or(Error::InvalidStructure)?;
-                    self.descend(id, child, minimum, node.keys.get(next).copied())?;
-                    return Ok(LookupStep::NeedNode(child));
+                    return self.descend(id, index, node.keys, children);
                 }
                 LookupStep::Absent
             }
@@ -210,7 +206,15 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
     }
 
     #[inline(always)]
-    fn descend(&mut self, id: I, child: I, minimum: K, ceiling: Option<K>) -> Result<(), Error> {
+    fn descend<'a, V>(
+        &mut self,
+        id: I,
+        index: usize,
+        minima: &[K],
+        children: &[I],
+    ) -> Result<LookupStep<'a, K, V, I>, Error> {
+        let child = *children.get(index).ok_or(Error::InvalidStructure)?;
+        let minimum = *minima.get(index).ok_or(Error::InvalidStructure)?;
         let depth = self.depth.checked_add(1).ok_or(Error::InvalidStructure)?;
         let height = self.height.checked_sub(1).ok_or(Error::InvalidStructure)?;
         let (slot, history) = self
@@ -227,13 +231,14 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
         {
             return Err(Error::InvalidStructure);
         }
+        let next = index.checked_add(1).ok_or(Error::InvalidStructure)?;
         slot.write(id);
         self.depth = depth;
         self.height = height;
         self.minimum = Some(minimum);
-        self.ceiling = ceiling.or(self.ceiling);
+        self.ceiling = minima.get(next).copied().or(self.ceiling);
         self.pending = Some(child);
-        Ok(())
+        Ok(LookupStep::NeedNode(child))
     }
 }
 

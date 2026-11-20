@@ -1,4 +1,4 @@
-//! Strict optimized link root for strided branch and leaf lookup.
+// Strict optimized link root for strided branch and leaf lookup.
 use core::{hint::black_box, num::NonZeroUsize};
 use jzap::{
     Error,

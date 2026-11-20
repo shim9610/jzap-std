@@ -365,13 +365,15 @@ lexical byte comparison.
 The continuous campaign times each path in its own interval, using the
 same data and at least one second per interval. Two conditions exceeded
 the 10% repeat limit and are held. The shuffled results above carry the
-primary comparison.
+primary comparison. Snapshot repeats differed by 15.57% at height two with
+2,048 keys and 20.82% with 181,267 keys. The height-one fixture stayed
+within 8.27% for both implementations.
 
-| Continuous whole-index condition | brie-tree (ns/lookup) | jzap snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) | Repeat status |
-| --- | ---: | ---: | ---: | --- |
-| 2,048 keys · height 2 · 27/40 max entries | 79.123 | 83.229 | +4.106 | Held, 15.57% snapshot repeat |
-| 2,048 keys · height 1 · 50/78 max entries | 77.989 | 71.512 | −6.476 | Accepted, at most 8.27% repeat |
-| 181,267 keys · height 2 · 50/78 max entries | 201.949 | 214.141 | +12.192 | Held, 20.82% snapshot repeat |
+| Continuous whole-index condition | brie-tree (ns/lookup) | jzap snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries (held) | 79.123 | 83.229 | +4.106 |
+| 2,048 keys · height 1 · 50/78 max entries | 77.989 | 71.512 | −6.476 |
+| 181,267 keys · height 2 · 50/78 max entries (held) | 201.949 | 214.141 | +12.192 |
 
 ```sh
 cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
@@ -383,6 +385,12 @@ for seed in 617 6203 96011; do
   round=$((round + 1))
 done
 ```
+
+The focused Kani harnesses check queue claims, byte comparison, and
+lookup over a fixed valid snapshot. Native tests and Miri exercise the
+public constructor against arbitrary page order and malformed topology.
+The optimized link fixture also exercises allocation failure during
+construction.
 
 #### Complete-key prototype timing
 

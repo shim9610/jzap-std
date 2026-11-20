@@ -459,11 +459,10 @@ mod proofs {
     }
 
     #[kani::proof]
-    // The fixture visits three pages and each branch has two entries.
-    #[kani::unwind(4)]
+    #[kani::unwind(5)]
     fn snapshot_lookup_matches_known_arbitrary_page_order() {
         let nodes = tree::test_format::arbitrary_ids();
-        let snapshot = StridedTree::try_new(&nodes, Some(0), 1).unwrap();
+        let snapshot = tree::test_format::known_snapshot(&nodes);
         let query: u8 = kani::any();
         let expected = match query {
             5 => Some(&[51][..]),
@@ -473,5 +472,11 @@ mod proofs {
             _ => None,
         };
         assert_eq!(snapshot.get(&[query]), Ok(expected));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn snapshot_enqueue_claims_only_unvisited_slots() {
+        tree::test_format::check_enqueue(kani::any(), kani::any());
     }
 }

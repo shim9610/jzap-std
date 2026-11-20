@@ -189,6 +189,41 @@ pub(in super::super) mod test_format {
             leaf(&[5, 51, 10, 52], 2),
         ]
     }
+
+    #[cfg(kani)]
+    pub(in super::super) fn known_snapshot<'p>(
+        nodes: &'p [StridedNode<'static, Index>; 3],
+    ) -> StridedTree<'p, 'static, Index> {
+        // Fixed valid fixture. The native and Miri scenarios exercise its
+        // public constructor; this harness isolates the read-side invariant.
+        StridedTree {
+            nodes,
+            root: Some(0),
+            height: 1,
+        }
+    }
+
+    #[cfg(kani)]
+    pub(in super::super) fn check_enqueue(id: usize, first_seen: bool) {
+        let mut seen = [first_seen, true];
+        let mut pending = Vec::try_with_capacity(1).unwrap();
+        let visit = Visit {
+            id,
+            height: 0,
+            minimum: None,
+            ceiling: None,
+        };
+        let result = enqueue(&mut pending, &mut seen, visit);
+        if id == 0 && !first_seen {
+            assert_eq!(result, Ok(()));
+            assert_eq!(seen, [true, true]);
+            assert_eq!(pending.pop().map(|row| row.id), Some(id));
+        } else {
+            assert_eq!(result, Err(Error::InvalidStructure));
+            assert_eq!(seen, [first_seen, true]);
+            assert!(pending.pop().is_none());
+        }
+    }
 }
 
 #[cfg(test)]

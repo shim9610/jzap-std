@@ -61,12 +61,7 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
                 height = next;
                 let (keys, children) = branch(self, id)?;
                 let slot = match start {
-                    Bound::Included(query) | Bound::Excluded(query) => {
-                        // Child zero is the fallback. Only later minima
-                        // can advance the slot.
-                        let later = keys.get(1..).ok_or(Error::InvalidStructure)?;
-                        prefix_len(later, query, true)
-                    }
+                    Bound::Included(query) | Bound::Excluded(query) => branch_slot(keys, query)?,
                     Bound::Unbounded => 0,
                 };
                 cursor.rank = cursor
@@ -80,6 +75,24 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             cursor.open_leaf(id, start)?;
         }
         Ok(cursor)
+    }
+}
+
+#[inline(always)]
+fn branch_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
+    keys: &[K; N],
+    query: &Q,
+) -> Result<usize, Error> {
+    // Child zero is the fallback. Only later minima can advance the slot.
+    let later = keys.get(1..).ok_or(Error::InvalidStructure)?;
+    if N == 8 && size_of::<K>() <= size_of::<u64>() && size_of_val(query) <= size_of::<u64>() {
+        // For short keys, compare seven fixed offsets to avoid dependent reads.
+        Iterator::try_fold(&mut later.iter(), 0usize, |count, key| {
+            count.checked_add(usize::from(key.borrow().cmp(query).is_le()))
+        })
+        .ok_or(Error::InvalidStructure)
+    } else {
+        Ok(prefix_len(later, query, true))
     }
 }
 
@@ -224,6 +237,18 @@ impl<'a, K: Borrow<Q> + 'a, V: 'a, Q: ?Sized + Ord, const N: usize> TryIterator
 #[cfg(kani)]
 mod proofs {
     use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn width_eight_branch_slot_matches_binary_search() {
+        let keys: [u8; 8] = kani::any();
+        let query: u8 = kani::any();
+        kani::assume(keys.is_sorted());
+        let later = keys.get(1..).unwrap();
+        let slot = branch_slot(&keys, &query).unwrap();
+        assert!(slot < keys.len());
+        assert_eq!(slot, prefix_len(later, &query, true));
+    }
 
     #[kani::proof]
     #[kani::unwind(5)]

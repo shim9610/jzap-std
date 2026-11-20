@@ -1,4 +1,6 @@
 //! Compare complete inline keys using Varlit's fixed-stride reuse-page geometry.
+#[cfg(feature = "bplus-bench")]
+use brie_tree::{BTree, nonmax::NonMaxU128};
 use jzap::{
     Error,
     collections::btree_map::view::{
@@ -102,6 +104,8 @@ type Read = fn(&Fixture, &[u8]) -> Answer;
 struct Fixture {
     pages: Vec<Page>,
     oracle: BTreeMap<InlineKey, u8>,
+    #[cfg(feature = "bplus-bench")]
+    brie: BTree<NonMaxU128, [u8; LEAF_PAYLOAD]>,
 }
 
 fn layout(stride: usize) -> StridedLayout {
@@ -174,7 +178,26 @@ fn build(total: usize, leaf_width: usize, branch_width: usize) -> Fixture {
         }
         layer = parents;
     }
-    Fixture { pages, oracle }
+    #[cfg(feature = "bplus-bench")]
+    let brie = {
+        // The complete generated hit/miss domain must retain its byte order
+        // and distinctness in the integer representation.
+        assert!(
+            (0..2 * total)
+                .map(|n| brie_key(key_at(n).borrow()).unwrap().get())
+                .is_sorted_by(|a, b| a < b)
+        );
+        oracle
+            .iter()
+            .map(|(key, &value)| (brie_key(key.borrow()).unwrap(), [value; LEAF_PAYLOAD]))
+            .collect()
+    };
+    Fixture {
+        pages,
+        oracle,
+        #[cfg(feature = "bplus-bench")]
+        brie,
+    }
 }
 
 #[inline]
@@ -275,6 +298,24 @@ fn std_lookup(fixture: &Fixture, query: &[u8]) -> Answer {
     Ok(fixture.oracle.get(query).copied())
 }
 
+#[cfg(feature = "bplus-bench")]
+#[inline]
+fn brie_key(bytes: &[u8]) -> Option<NonMaxU128> {
+    let mut key = [0; 16];
+    key.get_mut(..bytes.len())?.copy_from_slice(bytes);
+    NonMaxU128::new(u128::from_be_bytes(key))
+}
+
+#[cfg(feature = "bplus-bench")]
+#[inline(never)]
+fn brie_lookup(fixture: &Fixture, query: &[u8]) -> Answer {
+    let key = brie_key(query).ok_or(Error::InvalidStructure)?;
+    Ok(fixture
+        .brie
+        .get(key)
+        .and_then(|value| value.last().copied()))
+}
+
 fn measure(
     fixture: &Fixture,
     queries: &[InlineKey],
@@ -340,6 +381,11 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let seed = args.next().expect("seed").parse::<u64>().unwrap();
     let round = args.next().expect("run order").parse::<usize>().unwrap();
+    let brie_only = match args.next().as_deref() {
+        None => false,
+        Some("--brie") if cfg!(feature = "bplus-bench") => true,
+        _ => panic!("expected --brie with the bplus-bench feature enabled"),
+    };
     let cases = [
         (2048, 27, 40),
         (2048, LEAF_MAX, BRANCH_MAX),
@@ -356,6 +402,12 @@ fn main() {
         ("std_control", std_lookup),
         ("direct", direct),
     ];
+    #[cfg(feature = "bplus-bench")]
+    let brie_methods: [(&str, Read); 3] = [
+        ("brie", brie_lookup),
+        ("brie_control", brie_lookup),
+        ("direct", direct),
+    ];
     for (case, (size, leaf, branch)) in cases.into_iter().enumerate() {
         let fixture = build(size, leaf, branch);
         let mut random = seed;
@@ -365,6 +417,8 @@ fn main() {
         for query in &queries {
             let query = query.borrow();
             let expected = std_lookup(&fixture, query).unwrap();
+            #[cfg(feature = "bplus-bench")]
+            assert_eq!(brie_lookup(&fixture, query).unwrap(), expected);
             for (_, read) in decoded_methods {
                 assert_eq!(read(&fixture, query).unwrap(), expected);
             }
@@ -374,7 +428,16 @@ fn main() {
         if (round + case).is_multiple_of(2) {
             groups.reverse();
         }
-        for (group, methods) in groups {
+        #[cfg(feature = "bplus-bench")]
+        let brie_group: [(&str, &[(&'static str, Read)]); 1] = [("brie", &brie_methods)];
+        #[cfg(not(feature = "bplus-bench"))]
+        let brie_group = [];
+        let groups = if brie_only {
+            brie_group.as_slice()
+        } else {
+            groups.as_slice()
+        };
+        for &(group, methods) in groups {
             for (name, elapsed, checksum, operations) in
                 run_group(&fixture, &queries, methods, round, case)
             {

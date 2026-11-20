@@ -267,6 +267,48 @@ for seed in 617 6203 96011; do
 done
 ```
 
+##### Whole-index reference against brie-tree
+
+The `brie-tree` 0.1.2 comparison uses the same resident fixtures, byte
+queries, and 52-byte values as the fixed-stride page benchmark. It builds
+an integer index before timing. The adapter pads each query to 16 bytes
+on the right and interprets it as a big-endian `NonMaxU128`. The harness
+checks that this encoding preserves strict order across the complete
+generated hit and miss domain, including every stored key. Each timed
+`brie-tree` call includes that conversion. [Integer key contract](https://docs.rs/brie-tree/0.1.2/brie_tree/trait.BTreeKey.html)
+
+`brie-tree` searches its own prebuilt index. The jzap path uses the
+original page bytes and checks local key order and the visited path
+during the lookup. The leaf and branch capacities in the table refer
+to the jzap fixture.
+
+The Linux x86-64 virtual machine ran all three seeds on CPU 2 with Rust
+1.95.0. The 27 matched intervals each lasted at least 1.130 s. Lookup
+counts and checksums matched within each condition and seed. Repeating
+the same `brie-tree` path gave at most 9.40% variation. Times use total
+elapsed time divided by total lookups.
+
+| Condition | brie-tree (ns/lookup) | jzap direct (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max leaf/branch entries | 80.021 | 479.893 | +399.873 |
+| 2,048 keys · height 1 · 50/78 max leaf/branch entries | 78.944 | 463.802 | +384.858 |
+| 181,267 keys · height 2 · 50/78 max leaf/branch entries | 213.894 | 1,090.463 | +876.570 |
+
+The paired gaps across seeds were +391.971 to +412.954, +377.748 to
++388.377, and +766.361 to +1,052.305 ns/lookup in table order.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_strided
+mkdir -p target/verification/bplus-strided/brie
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --brie \
+    > "target/verification/bplus-strided/brie/seed-$seed.csv"
+  round=$((round + 1))
+done
+```
+
 #### Complete-key prototype timing
 
 The Linux x86-64 run used Rust 1.95.0, the release profile, and CPU affinity 2

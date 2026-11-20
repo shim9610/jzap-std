@@ -34,7 +34,8 @@ STAGES={
     'native-policy': ('kani clippy', ('utf8-native','arithmetic-policy')),
     'link': ('link-audit', ('link',)),
     'bplus': ('verus kani miri consumer-audit', ('bplus-debug','bplus-kani',
-              'fixed-bplus-kani','bplus-range-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release')),
+              'fixed-bplus-kani','bplus-range-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release',
+              'bplus-strided-kani','bplus-strided-miri','bplus-strided-miri-32','bplus-strided-release')),
 }
 BPLUS='collections::btree_map::view::bplus::'
 
@@ -166,7 +167,7 @@ class Campaign:
     def receipt_paths(self,name):
         paths=[self.root/p for p in RECEIPTS.get(name,[])]
         if name=='link':paths+=self.link_receipts()
-        if name=='bplus-release':paths.append(self.out/'bplus-release/summary.json')
+        if name in ('bplus-release','bplus-strided-release'):paths.append(self.out/name/'summary.json')
         return paths
     def receipts(self,name):
         return {str(p):digest(p) for p in self.receipt_paths(name)}
@@ -238,6 +239,14 @@ def commands(out,profiles):
                              '--test','btree','bplus'],miri_env),
         'fixed-bplus-miri-32': ([*miri,'--target','i686-unknown-linux-gnu',
                                 '--test','btree','bplus'],miri_env),
+        'bplus-strided-kani': (['cargo','kani','--lib','--harness',BPLUS+'strided::proofs::'],{}),
+        'bplus-strided-miri': ([*miri,'--target','x86_64-unknown-linux-gnu',
+                               '--lib','bplus_strided'],miri_env),
+        'bplus-strided-miri-32': ([*miri,'--target','i686-unknown-linux-gnu',
+                                  '--lib','bplus_strided'],miri_env),
+        'bplus-strided-release': (['python3','scripts/check_consumer_link.py',
+                                  '--source','tools/consumer-audit/cases/bplus_strided.rs',
+                                  '--require-success','--output',str(out/'bplus-strided-release')],{}),
         'bplus-release': (['python3','scripts/check_consumer_link.py',
                            '--source','tools/consumer-audit/cases/bplus_pool.rs',
                            '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
@@ -425,16 +434,21 @@ def main():
     if collected is not None:
         for name in STAGES['bplus'][1][1:]:
             assert run(name)==0
-        for name,count in (('bplus-kani',3),('fixed-bplus-kani',3),('bplus-range-kani',2)):
+        for name,count in (('bplus-kani',3),('fixed-bplus-kani',3),('bplus-range-kani',2),('bplus-strided-kani',2)):
             assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
         for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
             assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
-        bplus=json.loads(evidence(out/'bplus-release/summary.json').read_text())
-        for profile in ('release-checked','release-lto-checked'):
-            outcomes={r['name']:r['status'] for r in bplus['results'] if r['profile']==profile}
-            assert outcomes=={'positive':'pass','consumer':'pass','overflow-control':'control-detected',
-                              'bounds-control':'control-detected','abort-control':'control-detected'}
-        assert len(bplus['results'])==10
+        for name in ('bplus-strided-miri','bplus-strided-miri-32'):
+            assert re.search(r'test result: ok\. 2 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+        bplus={}
+        for name in ('bplus-release','bplus-strided-release'):
+            summary=json.loads(evidence(out/name/'summary.json').read_text())
+            for profile in ('release-checked','release-lto-checked'):
+                outcomes={r['name']:r['status'] for r in summary['results'] if r['profile']==profile}
+                assert outcomes=={'positive':'pass','consumer':'pass','overflow-control':'control-detected',
+                                  'bounds-control':'control-detected','abort-control':'control-detected'}
+            assert len(summary['results'])==10
+            bplus[name]=summary
     link_code=run('link')
     assert link_code in (0,1)
     link=json.loads(evidence(out/'link/summary.json').read_text());branches=[];forward=[]

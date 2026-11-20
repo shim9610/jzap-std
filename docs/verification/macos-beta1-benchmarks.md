@@ -1438,3 +1438,921 @@ scenario_scheduler,96011,1,True,neon,unlimited,1.20475075,11264,1803226297987061
 ```
 
 </details>
+
+## Apple M4 optimization follow-up
+
+### Conditions
+
+| Suite | Previous revision | Candidate |
+| --- | --- | --- |
+| HashMap and HashSet | `10c0598f025ffc69e424a21947cca7fa85f3f144` | `f79bf47ffd2a32b7042572406434175f9ea7ca31` ([PR #9](https://github.com/shim9610/jzap-std/pull/9)) |
+| B+ point lookup | `665c95bba6cc3f94b2c84fbacc1192f1585bd553` | `c4ccb0d220a5b0832b0073dc8ca2f39c4ad48984` ([PR #11](https://github.com/shim9610/jzap-std/pull/11)) |
+| B+ range | `25f773789b0e64d2548d1776f1483dae7fc98ade` | `c4ccb0d220a5b0832b0073dc8ca2f39c4ad48984` |
+
+[Requested test matrix](https://github.com/shim9610/jzap-std/pull/8#issuecomment-7038316438)
+
+All runs used Apple M4 Mac16,10, macOS 27.2 (26B123), native `aarch64-apple-darwin`, Rust 1.95.0 (`59807616e`), AC power, and Low Power Mode off. The benchmark processes ran serially under `caffeinate -i`, with CPU affinity unset and compilation idle. Main-suite revisions were built sequentially at the same checkout and Cargo target paths with `--locked --release`. Hash builds used `hash-map,hash-set,owned-budgets,bplus-pool`. B+ point and range used `bplus-pool` and `bplus-bench`, respectively. All seeds were 617, 6203, and 96011.
+
+The native matrix used fresh processes and rotated revision order. Work, corpus digests where available, and checksums matched within each accepted seed group. Each accepted native interval was at least one second. Central times divide total accepted seconds by total operations. Differences use the unrounded times. A/A is the maximum absolute comparator repeat change across the available repeats. The status is **Held** when A/A exceeds 10% or the paired differences cross both directions by more than max(2% of comparator time, 0.1 ns).
+
+The focused HashMap and HashSet suites passed 43 tests per revision. The focused BTree suite passed 24 tests at the point baseline, 26 at the range baseline, and 26 at the B+ candidate.
+
+<details>
+<summary>Binary SHA-256</summary>
+
+| Binary snapshot | SHA-256 |
+| --- | --- |
+| `bin/10c0598f025ffc69e424a21947cca7fa85f3f144-phase/hash_set` | `1ed1702415a74ca4878dd8450058bbf455ca56ed568c9a905caa43f4e093d8b5` |
+| `bin/10c0598f025ffc69e424a21947cca7fa85f3f144/hash_map` | `2c875d3f7436c55388c299e0066a98e50a47988b5c36dd322640e420ec692c37` |
+| `bin/10c0598f025ffc69e424a21947cca7fa85f3f144/hash_set` | `faf7cbefc57d3d87972040ce0c1311bed6f50469aa037645b2ebd7e09ffa4e81` |
+| `bin/10c0598f025ffc69e424a21947cca7fa85f3f144/scenarios` | `38ec7907925fa637fd7abaa4d2f541902e49aa5d6b5cfc94d780bd94f811681e` |
+| `bin/25f773789b0e64d2548d1776f1483dae7fc98ade-paired/bplus_range` | `d8b0ef82b20f5f6bee860d0a80515ad972f69d1fb4cb6107e21e69037cccf305` |
+| `bin/25f773789b0e64d2548d1776f1483dae7fc98ade-range/bplus_range` | `cacb7d63ad711251f55c5cc455034d4c2b31ab0b6d6a99ceb04e00cc5a8b1324` |
+| `bin/665c95bba6cc3f94b2c84fbacc1192f1585bd553-point/bplus` | `fdec4b49768a413a21084dba24182fc1f186b23e9a91fe40be5b2b1bea70e973` |
+| `bin/c4ccb0d220a5b0832b0073dc8ca2f39c4ad48984-paired/bplus_range` | `0c0d629ab8eaa9215dc89fad4b796b829a9ce2d49586f77a6c7b2b0514463bfb` |
+| `bin/c4ccb0d220a5b0832b0073dc8ca2f39c4ad48984-point/bplus` | `26898e2c2e2989e898e5fd24e0eb6e03e771a1d1e9cbc4cc7bcaf2326f8beb89` |
+| `bin/c4ccb0d220a5b0832b0073dc8ca2f39c4ad48984-range/bplus_range` | `26306e78b8e7d81a19ad251eee2b47b5d12479d61f793dddd802ef732f1a9fc4` |
+| `bin/f79bf47ffd2a32b7042572406434175f9ea7ca31/hash_map` | `b48814cc9b1a303f6bae916a129acfedcc0a16849d7006e510f67d2464f2bb64` |
+| `bin/f79bf47ffd2a32b7042572406434175f9ea7ca31/hash_set` | `5d9e52abb0b5c7f4b39a7ad4fab57db370b239424f40d6c472c8578da673c662` |
+| `bin/f79bf47ffd2a32b7042572406434175f9ea7ca31/scenarios` | `30156ce6ef89fab3235f954195d56956d88268709abae3a3a2626436871a47f2` |
+| `hosted/target/release/hash-probe-pair` | `a5fedab7e76bd33af17908d47b3c3a8fea276e0ecef77e7119c612bdf0a2dc94` |
+
+</details>
+
+### Hash tables on Apple M4
+
+Mixed workloads use the default hash builders except the two explicitly named `fixed_*` controls. Those two controls preserve the previous report's equal SipHash13 keys. `hash_map_build` and `hash_map_get` are their default-builder counterparts. jzap is unmetered throughout. Remove/reinsert counts one remove plus one insert. Get counts individual lookups. Other rows count a complete workload or one named isolated phase.
+
+The combined `hash_set_shrink` workload times clone, reserve, shrink and drop. Its isolated phases time clone, reserve, and shrink individually, with setup and teardown outside the timer. The previous revision's separate phase binary uses the candidate's benchmark-only phase harness so that both revisions execute the same phase definitions.
+
+Comparator is Rust std. Times and differences are in **ns/op**.
+
+#### Candidate
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `hash_map_remove_cycle` | 13.425 | 14.734 | +1.309 (+9.8%) |
+| `hash_map_build` | 12354.825 | 9201.220 | -3153.605 (-25.5%) |
+| `hash_map_get` | 4.786 | 5.610 | +0.824 (+17.2%) |
+| `hash_map_fixed_build` | 10094.431 | 8417.462 | -1676.969 (-16.6%) |
+| `hash_map_fixed_get` | 8.405 | 5.676 | -2.729 (-32.5%) |
+| `hash_set_build` | 8978.148 | 8968.806 | -9.342 (-0.1%) |
+| `hash_set_owned_union` | 11128.630 | 10714.682 | -413.948 (-3.7%) |
+| `hash_set_shrink` | 5688.252 | 5952.767 | +264.515 (+4.7%) |
+| `hash_set_phase_clone` | 131.358 | 132.163 | +0.805 (+0.6%) |
+| `hash_set_phase_grow` | 2721.677 | 2917.041 | +195.363 (+7.2%) |
+| `hash_set_phase_shrink` | 2739.925 | 2945.388 | +205.463 (+7.5%) |
+| `scenario_graph` | 34830.100 | 33961.775 | -868.325 (-2.5%) |
+| `scenario_scheduler` | 78270.550 | 76395.665 | -1874.885 (-2.4%) |
+
+#### Previous revision rerun
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `hash_map_remove_cycle` | 12.305 | 15.573 | +3.268 (+26.6%) |
+| `hash_map_build` | 12362.408 | 10059.399 | -2303.009 (-18.6%) |
+| `hash_map_get` | 4.764 | 5.619 | +0.855 (+18.0%) |
+| `hash_map_fixed_build` | 10324.219 | 9319.594 | -1004.625 (-9.7%) |
+| `hash_map_fixed_get` | 8.488 | 5.668 | -2.820 (-33.2%) |
+| `hash_set_build` | 8952.157 | 9792.107 | +839.950 (+9.4%) |
+| `hash_set_owned_union` | 11093.485 | 10650.517 | -442.968 (-4.0%) |
+| `hash_set_shrink` | 5555.331 | 6474.846 | +919.515 (+16.6%) |
+| `hash_set_phase_clone` | 130.985 | 132.586 | +1.600 (+1.2%) |
+| `hash_set_phase_grow` | 2732.254 | 3163.996 | +431.742 (+15.8%) |
+| `hash_set_phase_shrink` | 2727.740 | 3217.532 | +489.792 (+18.0%) |
+| `scenario_graph` | 35400.149 | 35133.406 | -266.743 (-0.8%) |
+| `scenario_scheduler` | 78801.499 | 76530.590 | -2270.909 (-2.9%) |
+
+#### Seed spread and comparator repeats
+
+| Condition | Revision | Comparator min–max | jzap min–max | Paired difference min–max | Max A/A | Held reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `hash_map_remove_cycle` | candidate | 12.778 to 14.020 | 14.570 to 14.826 | 0.806 to 1.792 | 6.23% | — |
+| `hash_map_build` | candidate | 10307.121 to 13866.926 | 7805.763 to 10143.798 | -3723.127 to -2501.358 | 1.23% | — |
+| `hash_map_get` | candidate | 4.764 to 4.798 | 5.587 to 5.650 | 0.789 to 0.854 | 0.58% | — |
+| `hash_map_fixed_build` | candidate | 8417.451 to 11266.237 | 7125.140 to 9321.633 | -1944.604 to -1292.310 | 2.21% | — |
+| `hash_map_fixed_get` | candidate | 7.535 to 9.081 | 5.656 to 5.697 | -3.384 to -1.860 | 5.30% | — |
+| `hash_set_build` | candidate | 7598.251 to 9929.965 | 7613.942 to 9894.147 | -35.818 to 15.691 | 0.17% | — |
+| `hash_set_owned_union` | candidate | 9014.193 to 12930.717 | 8432.533 to 12572.136 | -581.660 to -217.888 | 0.31% | — |
+| `hash_set_shrink` | candidate | 4627.046 to 6434.370 | 4919.497 to 6675.377 | 241.007 to 292.451 | 1.14% | — |
+| `hash_set_phase_clone` | candidate | 116.678 to 141.628 | 117.348 to 142.726 | 0.669 to 1.098 | 1.09% | — |
+| `hash_set_phase_grow` | candidate | 2257.187 to 3047.542 | 2415.939 to 3252.741 | 158.752 to 234.101 | 0.71% | — |
+| `hash_set_phase_shrink` | candidate | 2255.568 to 3081.825 | 2433.338 to 3322.727 | 177.771 to 240.902 | 0.19% | — |
+| `scenario_graph` | candidate | 26615.358 to 48360.873 | 25758.751 to 47912.453 | -1212.267 to -448.419 | 0.38% | — |
+| `scenario_scheduler` | candidate | 59235.378 to 109963.354 | 57657.972 to 107650.364 | -2312.989 to -1577.406 | 0.77% | — |
+| `hash_map_remove_cycle` | previous | 12.037 to 12.679 | 15.111 to 16.223 | 2.741 to 4.016 | 2.12% | — |
+| `hash_map_build` | previous | 10669.792 to 13524.552 | 8531.825 to 11096.093 | -2428.459 to -2137.967 | 0.20% | — |
+| `hash_map_get` | previous | 4.737 to 4.781 | 5.577 to 5.671 | 0.829 to 0.897 | 0.72% | — |
+| `hash_map_fixed_build` | previous | 8694.830 to 11735.846 | 7908.212 to 10307.624 | -1428.222 to -786.617 | 3.51% | — |
+| `hash_map_fixed_get` | previous | 8.149 to 9.160 | 5.615 to 5.720 | -3.490 to -2.438 | 3.65% | — |
+| `hash_set_build` | previous | 7590.668 to 9911.704 | 8304.878 to 10791.757 | 714.210 to 962.773 | 0.37% | — |
+| `hash_set_owned_union` | previous | 8997.023 to 12869.895 | 8564.701 to 12384.260 | -804.835 to -107.582 | 0.30% | — |
+| `hash_set_shrink` | previous | 4614.261 to 6199.670 | 5339.541 to 7272.109 | 725.280 to 1072.439 | 1.18% | — |
+| `hash_set_phase_clone` | previous | 115.099 to 141.290 | 116.424 to 142.633 | 1.325 to 2.178 | 1.52% | — |
+| `hash_set_phase_grow` | previous | 2255.254 to 3051.792 | 2611.042 to 3563.756 | 355.788 to 511.964 | 0.44% | — |
+| `hash_set_phase_shrink` | previous | 2256.136 to 3062.976 | 2649.660 to 3635.102 | 393.523 to 572.125 | 0.33% | — |
+| `scenario_graph` | previous | 27000.174 to 49301.510 | 26828.916 to 48750.626 | -550.884 to -171.258 | 1.89% | — |
+| `scenario_scheduler` | previous | 59926.645 to 110634.988 | 57886.263 to 108362.378 | -2575.753 to -2040.381 | 0.52% | — |
+
+### B+ point lookup on Apple M4
+
+Each batch used 4,096 queries with the report's existing xorshift generator, hit/miss policy and 512, 32,768 and 65,536-key fixtures. `BPLUS_FIXED_ONLY=1` was used for both revisions with common per-fixture batch counts. Independent seed-617 brie-tree repeats, one per revision, provide A/A and are excluded from the central estimates.
+
+Comparator is brie-tree 0.1.2. Times and differences are in **ns/lookup**.
+
+#### Candidate
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `8/2, FixedTree::get` | 5.810 | 7.010 | +1.200 (+20.7%) |
+| `8/2, streaming Lookup` | 5.810 | 19.853 | +14.043 (+241.7%) |
+| `16/3, FixedTree::get` | 20.258 | 17.636 | -2.621 (-12.9%) |
+| `16/3, streaming Lookup` | 20.258 | 51.332 | +31.074 (+153.4%) |
+| `32/2, FixedTree::get` | 13.950 | 13.292 | -0.658 (-4.7%) |
+| `32/2, streaming Lookup` | 13.950 | 40.981 | +27.031 (+193.8%) |
+
+#### Previous revision rerun
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `8/2, FixedTree::get` | 5.666 | 6.968 | +1.302 (+23.0%) |
+| `8/2, streaming Lookup` | 5.666 | 22.715 | +17.048 (+300.9%) |
+| `16/3, FixedTree::get` | 19.552 | 18.289 | -1.262 (-6.5%) |
+| `16/3, streaming Lookup` | 19.552 | 50.611 | +31.059 (+158.9%) |
+| `32/2, FixedTree::get` | 13.451 | 12.937 | -0.513 (-3.8%) |
+| `32/2, streaming Lookup` | 13.451 | 40.596 | +27.145 (+201.8%) |
+
+#### Seed spread and comparator repeats
+
+| Condition | Revision | Comparator min–max | jzap min–max | Paired difference min–max | Max A/A | Held reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `8/2, FixedTree::get` | candidate | 5.776 to 5.875 | 6.912 to 7.097 | 1.037 to 1.322 | 3.87% | — |
+| `8/2, streaming Lookup` | candidate | 5.776 to 5.875 | 19.320 to 20.409 | 13.541 to 14.534 | 3.87% | — |
+| `16/3, FixedTree::get` | candidate | 20.113 to 20.462 | 17.283 to 18.029 | -2.914 to -2.433 | 2.45% | — |
+| `16/3, streaming Lookup` | candidate | 20.113 to 20.462 | 50.966 to 51.570 | 30.504 to 31.457 | 2.45% | — |
+| `32/2, FixedTree::get` | candidate | 13.621 to 14.116 | 13.142 to 13.461 | -0.975 to -0.348 | 4.11% | — |
+| `32/2, streaming Lookup` | candidate | 13.621 to 14.116 | 40.709 to 41.299 | 26.818 to 27.187 | 4.11% | — |
+| `8/2, FixedTree::get` | previous | 5.602 to 5.700 | 6.795 to 7.190 | 1.097 to 1.490 | 1.75% | — |
+| `8/2, streaming Lookup` | previous | 5.602 to 5.700 | 22.549 to 22.975 | 16.920 to 17.278 | 1.75% | — |
+| `16/3, FixedTree::get` | previous | 18.875 to 20.024 | 17.858 to 19.009 | -1.897 to -0.875 | 0.79% | — |
+| `16/3, streaming Lookup` | previous | 18.875 to 20.024 | 49.945 to 50.967 | 30.190 to 32.092 | 0.79% | — |
+| `32/2, FixedTree::get` | previous | 13.188 to 13.641 | 12.734 to 13.091 | -0.654 to -0.431 | 1.25% | — |
+| `32/2, streaming Lookup` | previous | 13.188 to 13.641 | 40.375 to 40.805 | 26.966 to 27.282 | 1.25% | — |
+
+### B+ fixed range on Apple M4
+
+The existing bounds, query generator and 4,096-query batches were retained. Timing includes range creation, all returned items, and the exhaustion check. Fixtures were built before timing. A benchmark-only environment override set the same batch counts across both revisions for each paired seed and condition. Each process includes the brie-tree A/A control.
+
+Comparator is brie-tree 0.1.2. Times and differences are in **ns/range**.
+
+#### Candidate
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `8/2, 0 returned` | 4.435 | 7.641 | +3.206 (+72.3%) |
+| `8/2, 1 returned` | 10.046 | 9.422 | -0.624 (-6.2%) |
+| `8/2, 32 returned` | 47.557 | 38.994 | -8.563 (-18.0%) |
+| `8/2, 256 returned` | 169.243 | 167.975 | -1.267 (-0.7%) |
+| `16/3, 0 returned` | 14.743 | 18.617 | +3.874 (+26.3%) |
+| `16/3, 1 returned` | 26.574 | 20.743 | -5.831 (-21.9%) |
+| `16/3, 32 returned` | 100.772 | 67.906 | -32.866 (-32.6%) |
+| `16/3, 256 returned` | 289.509 | 204.489 | -85.020 (-29.4%) |
+| `32/2, 0 returned` | 11.083 | 14.506 | +3.423 (+30.9%) |
+| `32/2, 1 returned` | 20.844 | 16.878 | -3.965 (-19.0%) |
+| `32/2, 32 returned` | 88.049 | 59.286 | -28.763 (-32.7%) |
+| `32/2, 256 returned` | 267.475 | 181.940 | -85.535 (-32.0%) |
+
+#### Previous revision rerun
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `8/2, 0 returned` | 4.440 | 9.896 | +5.456 (+122.9%) |
+| `8/2, 1 returned` | 10.042 | 11.395 | +1.353 (+13.5%) |
+| `8/2, 32 returned` | 47.592 | 41.502 | -6.090 (-12.8%) |
+| `8/2, 256 returned` | 169.260 | 170.781 | +1.521 (+0.9%) |
+| `16/3, 0 returned` | 14.770 | 18.581 | +3.811 (+25.8%) |
+| `16/3, 1 returned` | 26.597 | 21.204 | -5.393 (-20.3%) |
+| `16/3, 32 returned` | 101.081 | 67.900 | -33.181 (-32.8%) |
+| `16/3, 256 returned` | 289.732 | 207.277 | -82.455 (-28.5%) |
+| `32/2, 0 returned` | 11.113 | 14.653 | +3.540 (+31.9%) |
+| `32/2, 1 returned` | 20.836 | 16.836 | -4.000 (-19.2%) |
+| `32/2, 32 returned` | 88.292 | 59.564 | -28.728 (-32.5%) |
+| `32/2, 256 returned` | 265.496 | 182.153 | -83.343 (-31.4%) |
+
+#### Seed spread and comparator repeats
+
+| Condition | Revision | Comparator min–max | jzap min–max | Paired difference min–max | Max A/A | Held reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `8/2, 0 returned` | candidate | 4.432 to 4.438 | 7.629 to 7.661 | 3.191 to 3.230 | 1.99% | — |
+| `8/2, 1 returned` | candidate | 9.968 to 10.112 | 9.369 to 9.487 | -0.744 to -0.481 | 0.29% | — |
+| `8/2, 32 returned` | candidate | 47.359 to 47.682 | 38.833 to 39.114 | -8.797 to -8.323 | 0.13% | — |
+| `8/2, 256 returned` | candidate | 169.152 to 169.302 | 167.876 to 168.031 | -1.283 to -1.243 | 0.10% | — |
+| `16/3, 0 returned` | candidate | 14.660 to 14.798 | 18.577 to 18.648 | 3.805 to 3.966 | 1.20% | — |
+| `16/3, 1 returned` | candidate | 26.400 to 26.699 | 20.646 to 20.832 | -5.874 to -5.754 | 0.95% | — |
+| `16/3, 32 returned` | candidate | 100.394 to 101.147 | 67.419 to 68.185 | -33.729 to -32.278 | 1.21% | — |
+| `16/3, 256 returned` | candidate | 287.766 to 290.940 | 204.183 to 205.075 | -85.865 to -83.558 | 0.91% | — |
+| `32/2, 0 returned` | candidate | 11.047 to 11.108 | 14.485 to 14.523 | 3.415 to 3.438 | 0.52% | — |
+| `32/2, 1 returned` | candidate | 20.787 to 20.910 | 16.848 to 16.896 | -4.019 to -3.891 | 0.36% | — |
+| `32/2, 32 returned` | candidate | 87.454 to 88.449 | 58.446 to 60.406 | -30.003 to -27.837 | 1.46% | — |
+| `32/2, 256 returned` | candidate | 266.124 to 269.973 | 181.465 to 182.843 | -87.130 to -84.659 | 1.79% | — |
+| `8/2, 0 returned` | previous | 4.435 to 4.446 | 9.866 to 9.954 | 5.428 to 5.509 | 1.83% | — |
+| `8/2, 1 returned` | previous | 9.971 to 10.094 | 11.361 to 11.426 | 1.267 to 1.455 | 6.17% | — |
+| `8/2, 32 returned` | previous | 47.380 to 47.710 | 40.956 to 41.957 | -6.425 to -5.728 | 0.35% | — |
+| `8/2, 256 returned` | previous | 169.133 to 169.417 | 170.656 to 170.942 | 1.328 to 1.711 | 0.08% | — |
+| `16/3, 0 returned` | previous | 14.765 to 14.779 | 18.520 to 18.649 | 3.741 to 3.884 | 0.58% | — |
+| `16/3, 1 returned` | previous | 26.427 to 26.686 | 21.079 to 21.398 | -5.552 to -5.280 | 1.01% | — |
+| `16/3, 32 returned` | previous | 100.537 to 102.078 | 67.745 to 68.076 | -34.333 to -32.460 | 1.46% | — |
+| `16/3, 256 returned` | previous | 289.129 to 290.198 | 206.219 to 208.322 | -82.910 to -81.547 | 1.05% | — |
+| `32/2, 0 returned` | previous | 11.083 to 11.131 | 14.550 to 14.715 | 3.424 to 3.611 | 0.64% | — |
+| `32/2, 1 returned` | previous | 20.754 to 20.899 | 16.813 to 16.853 | -4.055 to -3.941 | 0.49% | — |
+| `32/2, 32 returned` | previous | 88.040 to 88.656 | 59.284 to 59.908 | -28.896 to -28.539 | 2.28% | — |
+| `32/2, 256 returned` | previous | 264.144 to 267.609 | 181.794 to 182.367 | -85.815 to -81.846 | 1.00% | — |
+
+### Fixed-key hosted protocol on Apple M4
+
+This separate comparison uses the harness from the [hosted macOS run](https://github.com/shim9610/jzap-std/actions/runs/44704153767) with the pinned revisions above. It uses one native process per seed, the same zero-key builder for all implementations, and shuffled/interleaved batches. Each path accumulated at least 1.12 timed seconds per seed and workload. Batch samples and the default-builder campaign use separate protocols.
+
+Comparator is Rust std with the same fixed-key builder. Times and differences are in **ns/op**.
+
+#### Candidate
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `remove_cycle` | 20.548 | 16.464 | -4.084 (-19.9%) |
+| `shrink_lifecycle` | 24321.430 | 25309.458 | +988.028 (+4.1%) |
+| `clone` | 495.084 | 449.139 | -45.945 (-9.3%) |
+| `grow` | 11702.415 | 12216.668 | +514.253 (+4.4%) |
+| `shrink` | 11812.485 | 12534.780 | +722.295 (+6.1%) |
+
+#### Previous revision rerun
+
+| Condition | Comparator time | jzap time | jzap − comparator |
+| --- | ---: | ---: | ---: |
+| `remove_cycle` | 20.548 | 17.851 | -2.697 (-13.1%) |
+| `shrink_lifecycle` | 24321.430 | 27928.479 | +3607.049 (+14.8%) |
+| `clone` | 495.084 | 450.391 | -44.693 (-9.0%) |
+| `grow` | 11702.415 | 13525.289 | +1822.875 (+15.6%) |
+| `shrink` | 11812.485 | 13836.355 | +2023.870 (+17.1%) |
+
+#### Seed spread and comparator repeats
+
+| Condition | Revision | Comparator min–max | jzap min–max | Paired difference min–max | Max A/A | Held reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `remove_cycle` | candidate | 19.936 to 20.903 | 15.763 to 16.990 | -4.172 to -3.913 | 0.17% | — |
+| `shrink_lifecycle` | candidate | 21838.598 to 26578.956 | 22727.664 to 27665.031 | 889.066 to 1086.075 | 0.12% | — |
+| `clone` | candidate | 461.476 to 535.126 | 416.200 to 483.558 | -51.569 to -41.414 | 0.79% | — |
+| `grow` | candidate | 10581.484 to 12746.478 | 11013.203 to 13316.982 | 431.719 to 570.504 | 0.10% | — |
+| `shrink` | candidate | 10624.617 to 12911.272 | 11264.637 to 13725.173 | 640.020 to 813.901 | 0.10% | — |
+| `remove_cycle` | previous | 19.936 to 20.903 | 17.113 to 18.454 | -2.823 to -2.449 | 0.17% | — |
+| `shrink_lifecycle` | previous | 21838.598 to 26578.956 | 25081.827 to 30506.480 | 3243.229 to 3927.524 | 0.12% | — |
+| `clone` | previous | 461.476 to 535.126 | 418.764 to 485.155 | -49.971 to -41.910 | 0.79% | — |
+| `grow` | previous | 10581.484 to 12746.478 | 12194.408 to 14745.510 | 1612.925 to 1999.032 | 0.10% | — |
+| `shrink` | previous | 10624.617 to 12911.272 | 12408.626 to 15144.903 | 1784.009 to 2233.631 | 0.10% | — |
+
+### Timing records
+
+Native records include both builds and all recorded timing attempts. `accepted=false` identifies intervals from rejected attempts. Point group 4 is the independent A/A pair. The fixed-key file reports accumulated seed totals from the interleaved batches.
+
+The native matrix has 546 accepted intervals across the two builds, including comparator repeats and the packed point control.
+
+<details>
+<summary>Hash-table timing records</summary>
+
+```csv
+condition,seed,attempt,accepted,revision,implementation,seconds,operations,checksum,corpus_digest
+hash_map_remove_cycle,617,1,True,previous,std,1.238479792,102892038,929760769620,5493369367503854109
+hash_map_remove_cycle,617,1,True,previous,std_control,1.236901042,102892038,929760769620,5493369367503854109
+hash_map_remove_cycle,617,1,True,previous,unlimited,1.554852625,102892038,929760769620,5493369367503854109
+hash_map_remove_cycle,617,1,True,candidate,std_control,1.232868542,102892038,929760769620,5493369367503854109
+hash_map_remove_cycle,617,1,True,candidate,unlimited,1.499136958,102892038,929760769620,5493369367503854109
+hash_map_remove_cycle,617,1,True,candidate,std,1.314709416,102892038,929760769620,5493369367503854109
+hash_map_remove_cycle,6203,1,True,candidate,std_control,1.2728975,99329797,904377901266,16571444928825650321
+hash_map_remove_cycle,6203,1,True,candidate,std,1.342654834,99329797,904377901266,16571444928825650321
+hash_map_remove_cycle,6203,1,True,candidate,unlimited,1.471483417,99329797,904377901266,16571444928825650321
+hash_map_remove_cycle,6203,1,True,previous,std,1.25943125,99329797,904377901266,16571444928825650321
+hash_map_remove_cycle,6203,1,True,previous,unlimited,1.531688167,99329797,904377901266,16571444928825650321
+hash_map_remove_cycle,6203,1,True,previous,std_control,1.236589458,99329797,904377901266,16571444928825650321
+hash_map_remove_cycle,96011,1,True,previous,unlimited,1.564193125,96419120,827180563008,2647082129846269003
+hash_map_remove_cycle,96011,1,True,previous,std,1.1769325,96419120,827180563008,2647082129846269003
+hash_map_remove_cycle,96011,1,True,previous,std_control,1.201857833,96419120,827180563008,2647082129846269003
+hash_map_remove_cycle,96011,1,True,candidate,std,1.351758083,96419120,827180563008,2647082129846269003
+hash_map_remove_cycle,96011,1,True,candidate,std_control,1.395693125,96419120,827180563008,2647082129846269003
+hash_map_remove_cycle,96011,1,True,candidate,unlimited,1.429519,96419120,827180563008,2647082129846269003
+hash_map_build,617,1,True,previous,std,1.623857,152192,63618634,5493369367503854109
+hash_map_build,617,1,True,previous,std_control,1.623829834,152192,63618634,5493369367503854109
+hash_map_build,617,1,True,previous,unlimited,1.298475584,152192,63618634,5493369367503854109
+hash_map_build,617,1,True,candidate,std_control,1.564889875,152192,63618634,5493369367503854109
+hash_map_build,617,1,True,candidate,unlimited,1.1879746660000001,152192,63618634,5493369367503854109
+hash_map_build,617,1,True,candidate,std,1.568661333,152192,63618634,5493369367503854109
+hash_map_build,6203,1,True,candidate,std_control,1.6059255000000001,117248,65481176,16571444928825650321
+hash_map_build,6203,1,True,candidate,std,1.625869292,117248,65481176,16571444928825650321
+hash_map_build,6203,1,True,candidate,unlimited,1.189340042,117248,65481176,16571444928825650321
+hash_map_build,6203,1,True,previous,std,1.5857267080000002,117248,65481176,16571444928825650321
+hash_map_build,6203,1,True,previous,unlimited,1.30099475,117248,65481176,16571444928825650321
+hash_map_build,6203,1,True,previous,std_control,1.5888315419999999,117248,65481176,16571444928825650321
+hash_map_build,96011,1,True,previous,unlimited,1.3038985410000001,118592,66865505,2647082129846269003
+hash_map_build,96011,1,True,previous,std,1.5874262080000001,118592,66865505,2647082129846269003
+hash_map_build,96011,1,True,previous,std_control,1.589290458,118592,66865505,2647082129846269003
+hash_map_build,96011,1,True,candidate,std,1.599536834,118592,66865505,2647082129846269003
+hash_map_build,96011,1,True,candidate,std_control,1.60441425,118592,66865505,2647082129846269003
+hash_map_build,96011,1,True,candidate,unlimited,1.19305325,118592,66865505,2647082129846269003
+hash_map_get,617,1,True,previous,std,1.217600708,257042824,1161354845880,5493369367503854109
+hash_map_get,617,1,True,previous,std_control,1.220885583,257042824,1161354845880,5493369367503854109
+hash_map_get,617,1,True,previous,unlimited,1.433653458,257042824,1161354845880,5493369367503854109
+hash_map_get,617,1,True,candidate,std_control,1.217368458,257042824,1161354845880,5493369367503854109
+hash_map_get,617,1,True,candidate,unlimited,1.437775959,257042824,1161354845880,5493369367503854109
+hash_map_get,617,1,True,candidate,std,1.22448725,257042824,1161354845880,5493369367503854109
+hash_map_get,6203,1,True,candidate,std_control,1.243165292,258922292,1178717797188,16571444928825650321
+hash_map_get,6203,1,True,candidate,std,1.242431,258922292,1178717797188,16571444928825650321
+hash_map_get,6203,1,True,candidate,unlimited,1.446651375,258922292,1178717797188,16571444928825650321
+hash_map_get,6203,1,True,previous,std,1.237815083,258922292,1178717797188,16571444928825650321
+hash_map_get,6203,1,True,previous,unlimited,1.452482583,258922292,1178717797188,16571444928825650321
+hash_map_get,6203,1,True,previous,std_control,1.238498625,258922292,1178717797188,16571444928825650321
+hash_map_get,96011,1,True,previous,unlimited,1.434513125,252955850,1085055341820,2647082129846269003
+hash_map_get,96011,1,True,previous,std,1.20769975,252955850,1085055341820,2647082129846269003
+hash_map_get,96011,1,True,previous,std_control,1.216360916,252955850,1085055341820,2647082129846269003
+hash_map_get,96011,1,True,candidate,std,1.21319925,252955850,1085055341820,2647082129846269003
+hash_map_get,96011,1,True,candidate,std_control,1.212272709,252955850,1085055341820,2647082129846269003
+hash_map_get,96011,1,True,candidate,unlimited,1.429254833,252955850,1085055341820,2647082129846269003
+hash_map_fixed_build,617,1,True,previous,std,1.475756041,169728,70948956,5493369367503854109
+hash_map_fixed_build,617,1,True,previous,std_control,1.477600375,169728,70948956,5493369367503854109
+hash_map_fixed_build,617,1,True,previous,unlimited,1.342245042,169728,70948956,5493369367503854109
+hash_map_fixed_build,617,1,True,candidate,std_control,1.46021325,169728,70948956,5493369367503854109
+hash_map_fixed_build,617,1,True,candidate,unlimited,1.209335791,169728,70948956,5493369367503854109
+hash_map_fixed_build,617,1,True,candidate,std,1.428677042,169728,70948956,5493369367503854109
+hash_map_fixed_build,6203,1,True,candidate,std_control,1.469739125,129152,72129374,16571444928825650321
+hash_map_fixed_build,6203,1,True,candidate,std,1.455057083,129152,72129374,16571444928825650321
+hash_map_fixed_build,6203,1,True,candidate,unlimited,1.203907583,129152,72129374,16571444928825650321
+hash_map_fixed_build,6203,1,True,previous,std,1.515708,129152,72129374,16571444928825650321
+hash_map_fixed_build,6203,1,True,previous,unlimited,1.33125025,129152,72129374,16571444928825650321
+hash_map_fixed_build,6203,1,True,previous,std_control,1.500571625,129152,72129374,16571444928825650321
+hash_map_fixed_build,96011,1,True,previous,unlimited,1.340640208,131840,74335100,2647082129846269003
+hash_map_fixed_build,96011,1,True,previous,std,1.4553835,131840,74335100,2647082129846269003
+hash_map_fixed_build,96011,1,True,previous,std_control,1.506401083,131840,74335100,2647082129846269003
+hash_map_fixed_build,96011,1,True,candidate,std,1.464139167,131840,74335100,2647082129846269003
+hash_map_fixed_build,96011,1,True,candidate,std_control,1.466385542,131840,74335100,2647082129846269003
+hash_map_fixed_build,96011,1,True,candidate,unlimited,1.212325917,131840,74335100,2647082129846269003
+hash_map_fixed_get,617,1,True,previous,std,1.724052792,211562724,955869496380,5493369367503854109
+hash_map_fixed_get,617,1,True,previous,std_control,1.7059940839999999,211562724,955869496380,5493369367503854109
+hash_map_fixed_get,617,1,True,previous,unlimited,1.187940791,211562724,955869496380,5493369367503854109
+hash_map_fixed_get,617,1,True,candidate,std_control,1.770258375,211562724,955869496380,5493369367503854109
+hash_map_fixed_get,617,1,True,candidate,unlimited,1.196519334,211562724,955869496380,5493369367503854109
+hash_map_fixed_get,617,1,True,candidate,std,1.820495958,211562724,955869496380,5493369367503854109
+hash_map_fixed_get,6203,1,True,candidate,std_control,1.833139208,210955186,960352352154,16571444928825650321
+hash_map_fixed_get,6203,1,True,candidate,std,1.915631125,210955186,960352352154,16571444928825650321
+hash_map_fixed_get,6203,1,True,candidate,unlimited,1.201738834,210955186,960352352154,16571444928825650321
+hash_map_fixed_get,6203,1,True,previous,std,1.932366875,210955186,960352352154,16571444928825650321
+hash_map_fixed_get,6203,1,True,previous,unlimited,1.19604525,210955186,960352352154,16571444928825650321
+hash_map_fixed_get,6203,1,True,previous,std_control,1.954959375,210955186,960352352154,16571444928825650321
+hash_map_fixed_get,96011,1,True,previous,unlimited,1.215660958,212540650,911694145980,2647082129846269003
+hash_map_fixed_get,96011,1,True,previous,std,1.733788833,212540650,911694145980,2647082129846269003
+hash_map_fixed_get,96011,1,True,previous,std_control,1.6704945420000001,212540650,911694145980,2647082129846269003
+hash_map_fixed_get,96011,1,True,candidate,std,1.601423958,212540650,911694145980,2647082129846269003
+hash_map_fixed_get,96011,1,True,candidate,std_control,1.6862775,212540650,911694145980,2647082129846269003
+hash_map_fixed_get,96011,1,True,candidate,unlimited,1.206101167,212540650,911694145980,2647082129846269003
+hash_set_build,617,1,True,previous,std,1.212563666,159744,66775488,5493369367503854109
+hash_set_build,617,1,True,previous,std_control,1.210316416,159744,66775488,5493369367503854109
+hash_set_build,617,1,True,previous,unlimited,1.3266544169999999,159744,66775488,5493369367503854109
+hash_set_build,617,1,True,candidate,std_control,1.213338958,159744,66775488,5493369367503854109
+hash_set_build,617,1,True,candidate,unlimited,1.216281625,159744,66775488,5493369367503854109
+hash_set_build,617,1,True,candidate,std,1.2137750409999999,159744,66775488,5493369367503854109
+hash_set_build,6203,1,True,candidate,std_control,1.213025042,122368,68340616,16571444928825650321
+hash_set_build,6203,1,True,candidate,std,1.215109916,122368,68340616,16571444928825650321
+hash_set_build,6203,1,True,candidate,unlimited,1.210726958,122368,68340616,16571444928825650321
+hash_set_build,6203,1,True,previous,std,1.212875417,122368,68340616,16571444928825650321
+hash_set_build,6203,1,True,previous,unlimited,1.320565708,122368,68340616,16571444928825650321
+hash_set_build,6203,1,True,previous,std_control,1.214793,122368,68340616,16571444928825650321
+hash_set_build,96011,1,True,previous,unlimited,1.325398542,123584,69680135,2647082129846269003
+hash_set_build,96011,1,True,previous,std,1.206415167,123584,69680135,2647082129846269003
+hash_set_build,96011,1,True,previous,std_control,1.210914875,123584,69680135,2647082129846269003
+hash_set_build,96011,1,True,candidate,std,1.213513875,123584,69680135,2647082129846269003
+hash_set_build,96011,1,True,candidate,std_control,1.211587416,123584,69680135,2647082129846269003
+hash_set_build,96011,1,True,candidate,unlimited,1.211600041,123584,69680135,2647082129846269003
+hash_set_owned_union,617,1,True,previous,std,1.34393925,149376,93700764,5493369367503854109
+hash_set_owned_union,617,1,True,previous,std_control,1.339953625,149376,93700764,5493369367503854109
+hash_set_owned_union,617,1,True,previous,unlimited,1.279360709,149376,93700764,5493369367503854109
+hash_set_owned_union,617,1,True,candidate,std_control,1.3423734999999999,149376,93700764,5493369367503854109
+hash_set_owned_union,617,1,True,candidate,unlimited,1.259618041,149376,93700764,5493369367503854109
+hash_set_owned_union,617,1,True,candidate,std,1.346504125,149376,93700764,5493369367503854109
+hash_set_owned_union,6203,1,True,candidate,std_control,1.253034959,100288,84038210,16571444928825650321
+hash_set_owned_union,6203,1,True,candidate,std,1.256491792,100288,84038210,16571444928825650321
+hash_set_owned_union,6203,1,True,candidate,unlimited,1.23464025,100288,84038210,16571444928825650321
+hash_set_owned_union,6203,1,True,previous,std,1.252781833,100288,84038210,16571444928825650321
+hash_set_owned_union,6203,1,True,previous,unlimited,1.2419926669999999,100288,84038210,16571444928825650321
+hash_set_owned_union,6203,1,True,previous,std_control,1.25164,100288,84038210,16571444928825650321
+hash_set_owned_union,96011,1,True,previous,unlimited,1.174461208,97344,82354545,2647082129846269003
+hash_set_owned_union,96011,1,True,previous,std,1.252807084,97344,82354545,2647082129846269003
+hash_set_owned_union,96011,1,True,previous,std_control,1.255933792,97344,82354545,2647082129846269003
+hash_set_owned_union,96011,1,True,candidate,std,1.258727708,97344,82354545,2647082129846269003
+hash_set_owned_union,96011,1,True,candidate,std_control,1.2577975000000001,97344,82354545,2647082129846269003
+hash_set_owned_union,96011,1,True,candidate,unlimited,1.223822,97344,82354545,2647082129846269003
+hash_set_shrink,617,1,True,previous,std,1.190700917,258048,107868096,5493369367503854109
+hash_set_shrink,617,1,True,previous,std_control,1.186130791,258048,107868096,5493369367503854109
+hash_set_shrink,617,1,True,previous,unlimited,1.377858,258048,107868096,5493369367503854109
+hash_set_shrink,617,1,True,candidate,std_control,1.207557,258048,107868096,5493369367503854109
+hash_set_shrink,617,1,True,candidate,unlimited,1.269466459,258048,107868096,5493369367503854109
+hash_set_shrink,617,1,True,candidate,std,1.194,258048,107868096,5493369367503854109
+hash_set_shrink,6203,1,True,candidate,std_control,1.243097292,197120,110088440,16571444928825650321
+hash_set_shrink,6203,1,True,candidate,std,1.251330125,197120,110088440,16571444928825650321
+hash_set_shrink,6203,1,True,candidate,unlimited,1.30079275,197120,110088440,16571444928825650321
+hash_set_shrink,6203,1,True,previous,std,1.213741,197120,110088440,16571444928825650321
+hash_set_shrink,6203,1,True,previous,unlimited,1.4156486670000001,197120,110088440,16571444928825650321
+hash_set_shrink,6203,1,True,previous,std_control,1.217011916,197120,110088440,16571444928825650321
+hash_set_shrink,96011,1,True,previous,unlimited,1.4013645000000001,192704,108651935,2647082129846269003
+hash_set_shrink,96011,1,True,previous,std,1.194701292,192704,108651935,2647082129846269003
+hash_set_shrink,96011,1,True,previous,std_control,1.208853875,192704,108651935,2647082129846269003
+hash_set_shrink,96011,1,True,candidate,std,1.239928833,192704,108651935,2647082129846269003
+hash_set_shrink,96011,1,True,candidate,std_control,1.232504292,192704,108651935,2647082129846269003
+hash_set_shrink,96011,1,True,candidate,unlimited,1.286371833,192704,108651935,2647082129846269003
+hash_set_phase_clone,617,1,True,previous,std,1.211874368,10528960,13257028342350,5493369367503854109
+hash_set_phase_clone,617,1,True,previous,std_control,1.213662956,10528960,13257028342350,5493369367503854109
+hash_set_phase_clone,617,1,True,previous,unlimited,1.225827622,10528960,13257028342350,5493369367503854109
+hash_set_phase_clone,617,1,True,candidate,std_control,1.215169288,10528960,13257028342350,5493369367503854109
+hash_set_phase_clone,617,1,True,candidate,unlimited,1.235548602,10528960,13257028342350,5493369367503854109
+hash_set_phase_clone,617,1,True,candidate,std,1.228501734,10528960,13257028342350,5493369367503854109
+hash_set_phase_clone,6203,1,True,candidate,std_control,1.200487603,8447488,14318177755056,16571444928825650321
+hash_set_phase_clone,6203,1,True,candidate,std,1.196400215,8447488,14318177755056,16571444928825650321
+hash_set_phase_clone,6203,1,True,candidate,unlimited,1.205675577,8447488,14318177755056,16571444928825650321
+hash_set_phase_clone,6203,1,True,previous,std,1.193544821,8447488,14318177755056,16571444928825650321
+hash_set_phase_clone,6203,1,True,previous,unlimited,1.204886596,8447488,14318177755056,16571444928825650321
+hash_set_phase_clone,6203,1,True,previous,std_control,1.2116868219999999,8447488,14318177755056,16571444928825650321
+hash_set_phase_clone,96011,1,True,previous,unlimited,1.249760367,8782720,14160926729240,2647082129846269003
+hash_set_phase_clone,96011,1,True,previous,std,1.230629038,8782720,14160926729240,2647082129846269003
+hash_set_phase_clone,96011,1,True,previous,std_control,1.23576261,8782720,14160926729240,2647082129846269003
+hash_set_phase_clone,96011,1,True,candidate,std,1.22149329,8782720,14160926729240,2647082129846269003
+hash_set_phase_clone,96011,1,True,candidate,std_control,1.23028448,8782720,14160926729240,2647082129846269003
+hash_set_phase_clone,96011,1,True,candidate,unlimited,1.227522974,8782720,14160926729240,2647082129846269003
+hash_set_phase_grow,617,1,True,previous,std,1.190196624,527744,664483212540,5493369367503854109
+hash_set_phase_grow,617,1,True,previous,std_control,1.194372358,527744,664483212540,5493369367503854109
+hash_set_phase_grow,617,1,True,previous,unlimited,1.377961718,527744,664483212540,5493369367503854109
+hash_set_phase_grow,617,1,True,candidate,std_control,1.1929989029999999,527744,664483212540,5493369367503854109
+hash_set_phase_grow,617,1,True,candidate,unlimited,1.2749970529999999,527744,664483212540,5493369367503854109
+hash_set_phase_grow,617,1,True,candidate,std,1.191216723,527744,664483212540,5493369367503854109
+hash_set_phase_grow,6203,1,True,candidate,std_control,1.207373077,397952,674513828724,16571444928825650321
+hash_set_phase_grow,6203,1,True,candidate,std,1.1988216600000001,397952,674513828724,16571444928825650321
+hash_set_phase_grow,6203,1,True,candidate,unlimited,1.291982427,397952,674513828724,16571444928825650321
+hash_set_phase_grow,6203,1,True,previous,std,1.212145163,397952,674513828724,16571444928825650321
+hash_set_phase_grow,6203,1,True,previous,unlimited,1.39218417,397952,674513828724,16571444928825650321
+hash_set_phase_grow,6203,1,True,previous,std_control,1.206770546,397952,674513828724,16571444928825650321
+hash_set_phase_grow,96011,1,True,previous,unlimited,1.41523868,397120,640301321540,2647082129846269003
+hash_set_phase_grow,96011,1,True,previous,std,1.2119277290000001,397120,640301321540,2647082129846269003
+hash_set_phase_grow,96011,1,True,previous,std_control,1.214840154,397120,640301321540,2647082129846269003
+hash_set_phase_grow,96011,1,True,candidate,std,1.210240017,397120,640301321540,2647082129846269003
+hash_set_phase_grow,96011,1,True,candidate,std_control,1.21005731,397120,640301321540,2647082129846269003
+hash_set_phase_grow,96011,1,True,candidate,unlimited,1.291728515,397120,640301321540,2647082129846269003
+hash_set_phase_shrink,617,1,True,previous,std,1.208278408,535552,674314276320,5493369367503854109
+hash_set_phase_shrink,617,1,True,previous,std_control,1.20429422,535552,674314276320,5493369367503854109
+hash_set_phase_shrink,617,1,True,previous,unlimited,1.419030466,535552,674314276320,5493369367503854109
+hash_set_phase_shrink,617,1,True,candidate,std_control,1.210308504,535552,674314276320,5493369367503854109
+hash_set_phase_shrink,617,1,True,candidate,unlimited,1.30317924,535552,674314276320,5493369367503854109
+hash_set_phase_shrink,617,1,True,candidate,std,1.20797369,535552,674314276320,5493369367503854109
+hash_set_phase_shrink,6203,1,True,candidate,std_control,1.208756929,395328,670066246386,16571444928825650321
+hash_set_phase_shrink,6203,1,True,candidate,std,1.208586648,395328,670066246386,16571444928825650321
+hash_set_phase_shrink,6203,1,True,candidate,unlimited,1.290754871,395328,670066246386,16571444928825650321
+hash_set_phase_shrink,6203,1,True,previous,std,1.1995506009999999,395328,670066246386,16571444928825650321
+hash_set_phase_shrink,6203,1,True,previous,unlimited,1.412472156,395328,670066246386,16571444928825650321
+hash_set_phase_shrink,6203,1,True,previous,std_control,1.19565034,395328,670066246386,16571444928825650321
+hash_set_phase_shrink,96011,1,True,previous,unlimited,1.424494536,391872,631839644124,2647082129846269003
+hash_set_phase_shrink,96011,1,True,previous,std,1.20029463,391872,631839644124,2647082129846269003
+hash_set_phase_shrink,96011,1,True,previous,std_control,1.199398806,391872,631839644124,2647082129846269003
+hash_set_phase_shrink,96011,1,True,candidate,std,1.207681106,391872,631839644124,2647082129846269003
+hash_set_phase_shrink,96011,1,True,candidate,std_control,1.209739747,391872,631839644124,2647082129846269003
+hash_set_phase_shrink,96011,1,True,candidate,unlimited,1.30208368,391872,631839644124,2647082129846269003
+scenario_graph,617,1,True,previous,std,1.152763583,31680,3512139330218470069,11842222284389109881
+scenario_graph,617,1,True,previous,std_control,1.148905708,31680,3512139330218470069,11842222284389109881
+scenario_graph,617,1,True,previous,unlimited,1.1470732080000001,31680,3512139330218470069,11842222284389109881
+scenario_graph,617,1,True,candidate,std_control,1.131235875,31680,3512139330218470069,11842222284389109881
+scenario_graph,617,1,True,candidate,unlimited,1.0971919589999999,31680,3512139330218470069,11842222284389109881
+scenario_graph,617,1,True,candidate,std,1.1355965829999999,31680,3512139330218470069,11842222284389109881
+scenario_graph,6203,1,True,candidate,std_control,1.188361416,44608,7937979882356428708,811796717652796592
+scenario_graph,6203,1,True,candidate,std,1.187257875,44608,7937979882356428708,811796717652796592
+scenario_graph,6203,1,True,candidate,unlimited,1.149046375,44608,7937979882356428708,811796717652796592
+scenario_graph,6203,1,True,previous,std,1.20442375,44608,7937979882356428708,811796717652796592
+scenario_graph,6203,1,True,previous,unlimited,1.196784292,44608,7937979882356428708,811796717652796592
+scenario_graph,6203,1,True,previous,std_control,1.227141833,44608,7937979882356428708,811796717652796592
+scenario_graph,96011,1,True,previous,unlimited,1.204335459,24704,13465030375225542138,14512637301797670405
+scenario_graph,96011,1,True,previous,std,1.2179445,24704,13465030375225542138,14512637301797670405
+scenario_graph,96011,1,True,previous,std_control,1.223992041,24704,13465030375225542138,14512637301797670405
+scenario_graph,96011,1,True,candidate,std,1.194707,24704,13465030375225542138,14512637301797670405
+scenario_graph,96011,1,True,candidate,std_control,1.19730075,24704,13465030375225542138,14512637301797670405
+scenario_graph,96011,1,True,candidate,unlimited,1.18362925,24704,13465030375225542138,14512637301797670405
+scenario_scheduler,617,1,True,previous,std,1.229569125,15232,15226701869017584676,11842222284389109881
+scenario_scheduler,617,1,True,previous,std_control,1.231588542,15232,15226701869017584676,11842222284389109881
+scenario_scheduler,617,1,True,previous,unlimited,1.19033525,15232,15226701869017584676,11842222284389109881
+scenario_scheduler,617,1,True,candidate,std_control,1.2243699160000001,15232,15226701869017584676,11842222284389109881
+scenario_scheduler,617,1,True,candidate,unlimited,1.196557833,15232,15226701869017584676,11842222284389109881
+scenario_scheduler,617,1,True,candidate,std,1.226281625,15232,15226701869017584676,11842222284389109881
+scenario_scheduler,6203,1,True,candidate,std_control,1.202464875,20224,15025856728178450968,811796717652796592
+scenario_scheduler,6203,1,True,candidate,std,1.1979762919999999,20224,15025856728178450968,811796717652796592
+scenario_scheduler,6203,1,True,candidate,unlimited,1.166074833,20224,15025856728178450968,811796717652796592
+scenario_scheduler,6203,1,True,previous,std,1.211956459,20224,15025856728178450968,811796717652796592
+scenario_scheduler,6203,1,True,previous,unlimited,1.170691791,20224,15025856728178450968,811796717652796592
+scenario_scheduler,6203,1,True,previous,std_control,1.208426917,20224,15025856728178450968,811796717652796592
+scenario_scheduler,96011,1,True,previous,unlimited,1.1997882500000001,11072,12484342567228065211,14512637301797670405
+scenario_scheduler,96011,1,True,previous,std,1.224950583,11072,12484342567228065211,14512637301797670405
+scenario_scheduler,96011,1,True,previous,std_control,1.231360583,11072,12484342567228065211,14512637301797670405
+scenario_scheduler,96011,1,True,candidate,std,1.21751425,11072,12484342567228065211,14512637301797670405
+scenario_scheduler,96011,1,True,candidate,std_control,1.226913291,11072,12484342567228065211,14512637301797670405
+scenario_scheduler,96011,1,True,candidate,unlimited,1.191904833,11072,12484342567228065211,14512637301797670405
+```
+
+</details>
+
+<details>
+<summary>B+ point timing records</summary>
+
+```csv
+group,seed,attempt,accepted,revision,width,height,implementation,seconds,lookups,checksum
+1,617,1,True,previous,8,2,packed,1.718870333,291717120,230339581560
+1,617,1,True,previous,8,2,fixed,2.097537458,291717120,230339581560
+1,617,1,True,previous,8,2,jzap,6.598536709,291717120,230339581560
+1,617,1,True,previous,8,2,brie,1.662739917,291717120,230339581560
+1,617,1,True,previous,32,2,jzap,5.034391792,124690432,6239030303736
+1,617,1,True,previous,32,2,brie,1.644457167,124690432,6239030303736
+1,617,1,True,previous,32,2,packed,1.578732417,124690432,6239030303736
+1,617,1,True,previous,32,2,fixed,1.587776541,124690432,6239030303736
+1,617,1,True,previous,16,3,packed,1.945436958,110272512,10799376930720
+1,617,1,True,previous,16,3,fixed,2.096164041,110272512,10799376930720
+1,617,1,True,previous,16,3,jzap,5.615018709,110272512,10799376930720
+1,617,1,True,previous,16,3,brie,2.208127500,110272512,10799376930720
+1,617,1,True,candidate,8,2,packed,1.676264959,291717120,230339581560
+1,617,1,True,candidate,8,2,fixed,2.016385334,291717120,230339581560
+1,617,1,True,candidate,8,2,jzap,5.953735333,291717120,230339581560
+1,617,1,True,candidate,8,2,brie,1.713821958,291717120,230339581560
+1,617,1,True,candidate,32,2,jzap,5.104086792,124690432,6239030303736
+1,617,1,True,candidate,32,2,brie,1.760164792,124690432,6239030303736
+1,617,1,True,candidate,32,2,packed,1.559025958,124690432,6239030303736
+1,617,1,True,candidate,32,2,fixed,1.638626208,124690432,6239030303736
+1,617,1,True,candidate,16,3,packed,1.710756541,110272512,10799376930720
+1,617,1,True,candidate,16,3,fixed,1.940380083,110272512,10799376930720
+1,617,1,True,candidate,16,3,jzap,5.686719292,110272512,10799376930720
+1,617,1,True,candidate,16,3,brie,2.217913292,110272512,10799376930720
+2,6203,1,True,candidate,8,2,packed,1.712768667,291717120,217991315520
+2,6203,1,True,candidate,8,2,fixed,2.048167916,291717120,217991315520
+2,6203,1,True,candidate,8,2,jzap,5.636112125,291717120,217991315520
+2,6203,1,True,candidate,8,2,brie,1.686088125,291717120,217991315520
+2,6203,1,True,candidate,32,2,packed,1.555693292,124690432,6195521318772
+2,6203,1,True,candidate,32,2,fixed,1.654967000,124690432,6195521318772
+2,6203,1,True,candidate,32,2,jzap,5.075962834,124690432,6195521318772
+2,6203,1,True,candidate,32,2,brie,1.698395625,124690432,6195521318772
+2,6203,1,True,candidate,16,3,brie,2.256411000,110272512,10741305369060
+2,6203,1,True,candidate,16,3,packed,1.723148333,110272512,10741305369060
+2,6203,1,True,candidate,16,3,fixed,1.988120500,110272512,10741305369060
+2,6203,1,True,candidate,16,3,jzap,5.620171834,110272512,10741305369060
+2,6203,1,True,previous,8,2,packed,1.691403250,291717120,217991315520
+2,6203,1,True,previous,8,2,fixed,1.982122667,291717120,217991315520
+2,6203,1,True,previous,8,2,jzap,6.702250500,291717120,217991315520
+2,6203,1,True,previous,8,2,brie,1.662078292,291717120,217991315520
+2,6203,1,True,previous,32,2,packed,1.549180500,124690432,6195521318772
+2,6203,1,True,previous,32,2,fixed,1.619389541,124690432,6195521318772
+2,6203,1,True,previous,32,2,jzap,5.063316791,124690432,6195521318772
+2,6203,1,True,previous,32,2,brie,1.700920125,124690432,6195521318772
+2,6203,1,True,previous,16,3,brie,2.178449375,110272512,10741305369060
+2,6203,1,True,previous,16,3,packed,1.854273125,110272512,10741305369060
+2,6203,1,True,previous,16,3,fixed,1.969267083,110272512,10741305369060
+2,6203,1,True,previous,16,3,jzap,5.507601667,110272512,10741305369060
+3,96011,1,True,previous,8,2,jzap,6.577971250,291717120,222567485400
+3,96011,1,True,previous,8,2,brie,1.634072417,291717120,222567485400
+3,96011,1,True,previous,8,2,packed,1.652735750,291717120,222567485400
+3,96011,1,True,previous,8,2,fixed,2.018451042,291717120,222567485400
+3,96011,1,True,previous,32,2,brie,1.686154500,124690432,6157506505968
+3,96011,1,True,previous,32,2,packed,1.539150417,124690432,6157506505968
+3,96011,1,True,previous,32,2,fixed,1.632358292,124690432,6157506505968
+3,96011,1,True,previous,32,2,jzap,5.087939042,124690432,6157506505968
+3,96011,1,True,previous,16,3,packed,1.642420000,110272512,10698634914408
+3,96011,1,True,previous,16,3,fixed,1.984912417,110272512,10698634914408
+3,96011,1,True,previous,16,3,jzap,5.620223334,110272512,10698634914408
+3,96011,1,True,previous,16,3,brie,2.081406958,110272512,10698634914408
+3,96011,1,True,candidate,8,2,jzap,5.784966667,291717120,222567485400
+3,96011,1,True,candidate,8,2,brie,1.684815208,291717120,222567485400
+3,96011,1,True,candidate,8,2,packed,1.717626916,291717120,222567485400
+3,96011,1,True,candidate,8,2,fixed,2.070428458,291717120,222567485400
+3,96011,1,True,candidate,32,2,brie,1.759690167,124690432,6157506505968
+3,96011,1,True,candidate,32,2,packed,1.607000458,124690432,6157506505968
+3,96011,1,True,candidate,32,2,fixed,1.678404292,124690432,6157506505968
+3,96011,1,True,candidate,32,2,jzap,5.149587291,124690432,6157506505968
+3,96011,1,True,candidate,16,3,packed,1.793730125,110272512,10698634914408
+3,96011,1,True,candidate,16,3,fixed,1.905886083,110272512,10698634914408
+3,96011,1,True,candidate,16,3,jzap,5.674614750,110272512,10698634914408
+3,96011,1,True,candidate,16,3,brie,2.227268333,110272512,10698634914408
+4,617,1,True,candidate,8,2,packed,1.699307459,291717120,230339581560
+4,617,1,True,candidate,8,2,fixed,2.005684916,291717120,230339581560
+4,617,1,True,candidate,8,2,jzap,6.011198541,291717120,230339581560
+4,617,1,True,candidate,8,2,brie,1.647577875,291717120,230339581560
+4,617,1,True,candidate,32,2,jzap,5.051941459,124690432,6239030303736
+4,617,1,True,candidate,32,2,brie,1.687856417,124690432,6239030303736
+4,617,1,True,candidate,32,2,packed,1.537089875,124690432,6239030303736
+4,617,1,True,candidate,32,2,fixed,1.649258542,124690432,6239030303736
+4,617,1,True,candidate,16,3,packed,1.852236000,110272512,10799376930720
+4,617,1,True,candidate,16,3,fixed,1.881714333,110272512,10799376930720
+4,617,1,True,candidate,16,3,jzap,5.715410500,110272512,10799376930720
+4,617,1,True,candidate,16,3,brie,2.272245292,110272512,10799376930720
+4,617,1,True,previous,8,2,packed,1.832120041,291717120,230339581560
+4,617,1,True,previous,8,2,fixed,2.016061875,291717120,230339581560
+4,617,1,True,previous,8,2,jzap,6.565349042,291717120,230339581560
+4,617,1,True,previous,8,2,brie,1.633569500,291717120,230339581560
+4,617,1,True,previous,32,2,jzap,5.027979291,124690432,6239030303736
+4,617,1,True,previous,32,2,brie,1.664958000,124690432,6239030303736
+4,617,1,True,previous,32,2,packed,1.609055584,124690432,6239030303736
+4,617,1,True,previous,32,2,fixed,1.716224375,124690432,6239030303736
+4,617,1,True,previous,16,3,packed,1.819319583,110272512,10799376930720
+4,617,1,True,previous,16,3,fixed,1.972824250,110272512,10799376930720
+4,617,1,True,previous,16,3,jzap,5.615173417,110272512,10799376930720
+4,617,1,True,previous,16,3,brie,2.190746584,110272512,10799376930720
+```
+
+</details>
+
+<details>
+<summary>B+ range timing records</summary>
+
+```csv
+group,seed,attempt,accepted,revision,width,height,items_per_range,total_items,implementation,seconds,ranges,checksum
+1,617,1,True,previous,8,2,0,0,brie_control,1.511762875,334725120,0
+1,617,1,True,previous,8,2,0,0,brie,1.484643167,334725120,0
+1,617,1,True,previous,8,2,0,0,jzap,3.302641416,334725120,0
+1,617,1,True,previous,8,2,1,139984896,brie,1.395803542,139984896,191059834368
+1,617,1,True,previous,8,2,1,139984896,jzap,1.599489750,139984896,191059834368
+1,617,1,True,previous,8,2,1,139984896,brie_control,1.481920709,139984896,191059834368
+1,617,1,True,previous,8,2,32,1012924416,jzap,1.296410250,31653888,1393294350336
+1,617,1,True,previous,8,2,32,1012924416,brie_control,1.503828458,31653888,1393294350336
+1,617,1,True,previous,8,2,32,1012924416,brie,1.499774417,31653888,1393294350336
+1,617,1,True,previous,8,2,256,2060451840,brie_control,1.361664375,8048640,2810023695360
+1,617,1,True,previous,8,2,256,2060451840,brie,1.362072958,8048640,2810023695360
+1,617,1,True,previous,8,2,256,2060451840,jzap,1.375847833,8048640,2810023695360
+1,617,1,True,candidate,8,2,0,0,brie_control,1.515141834,334725120,0
+1,617,1,True,candidate,8,2,0,0,brie,1.485541375,334725120,0
+1,617,1,True,candidate,8,2,0,0,jzap,2.553784708,334725120,0
+1,617,1,True,candidate,8,2,1,139984896,brie,1.395331542,139984896,191059834368
+1,617,1,True,candidate,8,2,1,139984896,jzap,1.327971583,139984896,191059834368
+1,617,1,True,candidate,8,2,1,139984896,brie_control,1.396322625,139984896,191059834368
+1,617,1,True,candidate,8,2,32,1012924416,jzap,1.235640792,31653888,1393294350336
+1,617,1,True,candidate,8,2,32,1012924416,brie_control,1.499846791,31653888,1393294350336
+1,617,1,True,candidate,8,2,32,1012924416,brie,1.499084875,31653888,1393294350336
+1,617,1,True,candidate,8,2,256,2060451840,brie_control,1.362450542,8048640,2810023695360
+1,617,1,True,candidate,8,2,256,2060451840,brie,1.362424500,8048640,2810023695360
+1,617,1,True,candidate,8,2,256,2060451840,jzap,1.352420500,8048640,2810023695360
+1,617,1,True,previous,16,3,0,0,brie_control,1.485230500,100376576,0
+1,617,1,True,previous,16,3,0,0,brie,1.482068042,100376576,0
+1,617,1,True,previous,16,3,0,0,jzap,1.871961375,100376576,0
+1,617,1,True,previous,16,3,1,64921600,brie,1.715676542,64921600,11170044361000
+1,617,1,True,previous,16,3,1,64921600,jzap,1.368477417,64921600,11170044361000
+1,617,1,True,previous,16,3,1,64921600,brie_control,1.732960000,64921600,11170044361000
+1,617,1,True,previous,16,3,32,663355392,jzap,1.411210542,20729856,118495220315136
+1,617,1,True,previous,16,3,32,663355392,brie_control,2.076116833,20729856,118495220315136
+1,617,1,True,previous,16,3,32,663355392,brie,2.084111666,20729856,118495220315136
+1,617,1,True,previous,16,3,256,1724907520,brie_control,1.936457958,6737920,299414625413120
+1,617,1,True,previous,16,3,256,1724907520,brie,1.953116250,6737920,299414625413120
+1,617,1,True,previous,16,3,256,1724907520,jzap,1.403658500,6737920,299414625413120
+1,617,1,True,candidate,16,3,0,0,brie_control,1.472176083,100376576,0
+1,617,1,True,candidate,16,3,0,0,brie,1.485395666,100376576,0
+1,617,1,True,candidate,16,3,0,0,jzap,1.871777083,100376576,0
+1,617,1,True,candidate,16,3,1,64921600,brie,1.713899333,64921600,11170044361000
+1,617,1,True,candidate,16,3,1,64921600,jzap,1.340364875,64921600,11170044361000
+1,617,1,True,candidate,16,3,1,64921600,brie_control,1.730186667,64921600,11170044361000
+1,617,1,True,candidate,16,3,32,663355392,jzap,1.412030250,20729856,118495220315136
+1,617,1,True,candidate,16,3,32,663355392,brie_control,2.106318625,20729856,118495220315136
+1,617,1,True,candidate,16,3,32,663355392,brie,2.081147083,20729856,118495220315136
+1,617,1,True,candidate,16,3,256,1724907520,brie_control,1.958093333,6737920,299414625413120
+1,617,1,True,candidate,16,3,256,1724907520,brie,1.952787500,6737920,299414625413120
+1,617,1,True,candidate,16,3,256,1724907520,jzap,1.375766208,6737920,299414625413120
+1,617,1,True,previous,32,2,0,0,brie_control,1.536593375,138514432,0
+1,617,1,True,previous,32,2,0,0,brie,1.535155500,138514432,0
+1,617,1,True,previous,32,2,0,0,jzap,2.035367542,138514432,0
+1,617,1,True,previous,32,2,1,83976192,brie,1.742837792,83976192,7359535775448
+1,617,1,True,previous,32,2,1,83976192,jzap,1.411853916,83976192,7359535775448
+1,617,1,True,previous,32,2,1,83976192,brie_control,1.737741167,83976192,7359535775448
+1,617,1,True,previous,32,2,32,748552192,jzap,1.386788292,23392256,64217734792576
+1,617,1,True,previous,32,2,32,748552192,brie_control,2.048711334,23392256,64217734792576
+1,617,1,True,previous,32,2,32,748552192,brie,2.062727542,23392256,64217734792576
+1,617,1,True,previous,32,2,256,2014314496,brie_control,2.092304709,7868416,174974662069248
+1,617,1,True,previous,32,2,256,2014314496,brie,2.078398250,7868416,174974662069248
+1,617,1,True,previous,32,2,256,2014314496,jzap,1.434397125,7868416,174974662069248
+1,617,1,True,candidate,32,2,0,0,brie_control,1.539938542,138514432,0
+1,617,1,True,candidate,32,2,0,0,brie,1.536600750,138514432,0
+1,617,1,True,candidate,32,2,0,0,jzap,2.009950250,138514432,0
+1,617,1,True,candidate,32,2,1,83976192,brie,1.745636459,83976192,7359535775448
+1,617,1,True,candidate,32,2,1,83976192,jzap,1.418895916,83976192,7359535775448
+1,617,1,True,candidate,32,2,1,83976192,brie_control,1.739374500,83976192,7359535775448
+1,617,1,True,candidate,32,2,32,748552192,jzap,1.413028459,23392256,64217734792576
+1,617,1,True,candidate,32,2,32,748552192,brie_control,2.034062542,23392256,64217734792576
+1,617,1,True,candidate,32,2,32,748552192,brie,2.064204459,23392256,64217734792576
+1,617,1,True,candidate,32,2,256,2014314496,brie_control,2.095457750,7868416,174974662069248
+1,617,1,True,candidate,32,2,256,2014314496,brie,2.095584916,7868416,174974662069248
+1,617,1,True,candidate,32,2,256,2014314496,jzap,1.428221333,7868416,174974662069248
+2,6203,1,True,candidate,16,3,0,0,brie_control,1.489242250,100376576,0
+2,6203,1,True,candidate,16,3,0,0,brie,1.471560375,100376576,0
+2,6203,1,True,candidate,16,3,0,0,jzap,1.869653166,100376576,0
+2,6203,1,True,candidate,16,3,1,64921600,brie,1.728497792,64921600,11420490401200
+2,6203,1,True,candidate,16,3,1,64921600,jzap,1.347167500,64921600,11420490401200
+2,6203,1,True,candidate,16,3,1,64921600,brie_control,1.729676875,64921600,11420490401200
+2,6203,1,True,candidate,16,3,32,663355392,jzap,1.397578250,20729856,116247796215936
+2,6203,1,True,candidate,16,3,32,663355392,brie_control,2.111120917,20729856,116247796215936
+2,6203,1,True,candidate,16,3,32,663355392,brie,2.096770166,20729856,116247796215936
+2,6203,1,True,candidate,16,3,256,1724907520,brie_control,1.939386250,6737920,303549818306560
+2,6203,1,True,candidate,16,3,256,1724907520,brie,1.938943083,6737920,303549818306560
+2,6203,1,True,candidate,16,3,256,1724907520,jzap,1.375935916,6737920,303549818306560
+2,6203,1,True,previous,16,3,0,0,brie_control,1.486577750,100376576,0
+2,6203,1,True,previous,16,3,0,0,brie,1.482212167,100376576,0
+2,6203,1,True,previous,16,3,0,0,jzap,1.864432375,100376576,0
+2,6203,1,True,previous,16,3,1,64921600,brie,1.732518083,64921600,11420490401200
+2,6203,1,True,previous,16,3,1,64921600,jzap,1.372094125,64921600,11420490401200
+2,6203,1,True,previous,16,3,1,64921600,brie_control,1.737386875,64921600,11420490401200
+2,6203,1,True,previous,16,3,32,663355392,jzap,1.404340250,20729856,116247796215936
+2,6203,1,True,previous,16,3,32,663355392,brie_control,2.085231458,20729856,116247796215936
+2,6203,1,True,previous,16,3,32,663355392,brie,2.116053166,20729856,116247796215936
+2,6203,1,True,previous,16,3,256,1724907520,brie_control,1.934776666,6737920,303549818306560
+2,6203,1,True,previous,16,3,256,1724907520,brie,1.955328000,6737920,303549818306560
+2,6203,1,True,previous,16,3,256,1724907520,jzap,1.396709375,6737920,303549818306560
+2,6203,1,True,candidate,32,2,0,0,brie_control,1.538120917,138514432,0
+2,6203,1,True,candidate,32,2,0,0,brie,1.530207333,138514432,0
+2,6203,1,True,candidate,32,2,0,0,jzap,2.006410917,138514432,0
+2,6203,1,True,candidate,32,2,1,83976192,brie,1.749496917,83976192,7393266403920
+2,6203,1,True,candidate,32,2,1,83976192,jzap,1.414804625,83976192,7393266403920
+2,6203,1,True,candidate,32,2,1,83976192,brie_control,1.753307042,83976192,7393266403920
+2,6203,1,True,candidate,32,2,32,748552192,jzap,1.380264375,23392256,64927085218560
+2,6203,1,True,candidate,32,2,32,748552192,brie_control,2.065997125,23392256,64927085218560
+2,6203,1,True,candidate,32,2,32,748552192,brie,2.045756000,23392256,64927085218560
+2,6203,1,True,candidate,32,2,256,2014314496,brie_control,2.102123542,7868416,175974322683904
+2,6203,1,True,candidate,32,2,256,2014314496,brie,2.093975750,7868416,175974322683904
+2,6203,1,True,candidate,32,2,256,2014314496,jzap,1.427845583,7868416,175974322683904
+2,6203,1,True,previous,32,2,0,0,brie_control,1.538045459,138514432,0
+2,6203,1,True,previous,32,2,0,0,brie,1.541755375,138514432,0
+2,6203,1,True,previous,32,2,0,0,jzap,2.038278667,138514432,0
+2,6203,1,True,previous,32,2,1,83976192,brie,1.751433541,83976192,7393266403920
+2,6203,1,True,previous,32,2,1,83976192,jzap,1.415223333,83976192,7393266403920
+2,6203,1,True,previous,32,2,1,83976192,brie_control,1.757754208,83976192,7393266403920
+2,6203,1,True,previous,32,2,32,748552192,jzap,1.391864958,23392256,64927085218560
+2,6203,1,True,previous,32,2,32,748552192,brie_control,2.055166958,23392256,64927085218560
+2,6203,1,True,previous,32,2,32,748552192,brie,2.059459292,23392256,64927085218560
+2,6203,1,True,previous,32,2,256,2014314496,brie_control,2.084530250,7868416,175974322683904
+2,6203,1,True,previous,32,2,256,2014314496,brie,2.105657833,7868416,175974322683904
+2,6203,1,True,previous,32,2,256,2014314496,jzap,1.430432000,7868416,175974322683904
+2,6203,1,True,candidate,8,2,0,0,brie_control,1.484499750,334725120,0
+2,6203,1,True,candidate,8,2,0,0,brie,1.483446208,334725120,0
+2,6203,1,True,candidate,8,2,0,0,jzap,2.564446875,334725120,0
+2,6203,1,True,candidate,8,2,1,139984896,brie,1.407907834,139984896,192063378432
+2,6203,1,True,candidate,8,2,1,139984896,jzap,1.317442875,139984896,192063378432
+2,6203,1,True,candidate,8,2,1,139984896,brie_control,1.411921125,139984896,192063378432
+2,6203,1,True,candidate,8,2,32,1012924416,jzap,1.229208333,31653888,1404457291776
+2,6203,1,True,candidate,8,2,32,1012924416,brie_control,1.507945959,31653888,1404457291776
+2,6203,1,True,candidate,8,2,32,1012924416,brie,1.507659083,31653888,1404457291776
+2,6203,1,True,candidate,8,2,256,2060451840,brie_control,1.361324042,8048640,2803940935680
+2,6203,1,True,candidate,8,2,256,2060451840,brie,1.362650708,8048640,2803940935680
+2,6203,1,True,candidate,8,2,256,2060451840,jzap,1.352321541,8048640,2803940935680
+2,6203,1,True,previous,8,2,0,0,brie_control,1.483618334,334725120,0
+2,6203,1,True,previous,8,2,0,0,brie,1.485310583,334725120,0
+2,6203,1,True,previous,8,2,0,0,jzap,3.302338375,334725120,0
+2,6203,1,True,previous,8,2,1,139984896,brie,1.408202000,139984896,192063378432
+2,6203,1,True,previous,8,2,1,139984896,jzap,1.595589375,139984896,192063378432
+2,6203,1,True,previous,8,2,1,139984896,brie_control,1.407045583,139984896,192063378432
+2,6203,1,True,previous,8,2,32,1012924416,jzap,1.328097333,31653888,1404457291776
+2,6203,1,True,previous,8,2,32,1012924416,brie_control,1.504182792,31653888,1404457291776
+2,6203,1,True,previous,8,2,32,1012924416,brie,1.509404834,31653888,1404457291776
+2,6203,1,True,previous,8,2,256,2060451840,brie_control,1.362455208,8048640,2803940935680
+2,6203,1,True,previous,8,2,256,2060451840,brie,1.363576166,8048640,2803940935680
+2,6203,1,True,previous,8,2,256,2060451840,jzap,1.374266667,8048640,2803940935680
+3,96011,1,True,previous,32,2,0,0,brie_control,1.531278041,138514432,0
+3,96011,1,True,previous,32,2,0,0,brie,1.541195416,138514432,0
+3,96011,1,True,previous,32,2,0,0,jzap,2.015431625,138514432,0
+3,96011,1,True,previous,32,2,1,83976192,brie,1.755002250,83976192,7336027280160
+3,96011,1,True,previous,32,2,1,83976192,jzap,1.414455209,83976192,7336027280160
+3,96011,1,True,previous,32,2,1,83976192,brie_control,1.763514292,83976192,7336027280160
+3,96011,1,True,previous,32,2,32,748552192,jzap,1.401374792,23392256,65996315268992
+3,96011,1,True,previous,32,2,32,748552192,brie_control,2.026675417,23392256,65996315268992
+3,96011,1,True,previous,32,2,32,748552192,brie,2.073874583,23392256,65996315268992
+3,96011,1,True,previous,32,2,256,2014314496,brie_control,2.102091542,7868416,178999044083712
+3,96011,1,True,previous,32,2,256,2014314496,brie,2.083046000,7868416,178999044083712
+3,96011,1,True,previous,32,2,256,2014314496,jzap,1.434937416,7868416,178999044083712
+3,96011,1,True,candidate,32,2,0,0,brie_control,1.533091041,138514432,0
+3,96011,1,True,candidate,32,2,0,0,brie,1.538603500,138514432,0
+3,96011,1,True,candidate,32,2,0,0,jzap,2.011583833,138514432,0
+3,96011,1,True,candidate,32,2,1,83976192,brie,1.755980083,83976192,7336027280160
+3,96011,1,True,candidate,32,2,1,83976192,jzap,1.418457667,83976192,7336027280160
+3,96011,1,True,candidate,32,2,1,83976192,brie_control,1.750581917,83976192,7336027280160
+3,96011,1,True,candidate,32,2,32,748552192,jzap,1.367183208,23392256,65996315268992
+3,96011,1,True,candidate,32,2,32,748552192,brie_control,2.055616667,23392256,65996315268992
+3,96011,1,True,candidate,32,2,32,748552192,brie,2.069024083,23392256,65996315268992
+3,96011,1,True,candidate,32,2,256,2014314496,brie_control,2.086209750,7868416,178999044083712
+3,96011,1,True,candidate,32,2,256,2014314496,brie,2.124258541,7868416,178999044083712
+3,96011,1,True,candidate,32,2,256,2014314496,jzap,1.438683375,7868416,178999044083712
+3,96011,1,True,previous,8,2,0,0,brie_control,1.486974125,334725120,0
+3,96011,1,True,previous,8,2,0,0,brie,1.488109708,334725120,0
+3,96011,1,True,previous,8,2,0,0,jzap,3.332012125,334725120,0
+3,96011,1,True,previous,8,2,1,139984896,brie,1.413035458,139984896,193447643136
+3,96011,1,True,previous,8,2,1,139984896,jzap,1.590363916,139984896,193447643136
+3,96011,1,True,previous,8,2,1,139984896,brie_control,1.411854042,139984896,193447643136
+3,96011,1,True,previous,8,2,32,1012924416,jzap,1.316605125,31653888,1373140715520
+3,96011,1,True,previous,8,2,32,1012924416,brie_control,1.510119916,31653888,1373140715520
+3,96011,1,True,previous,8,2,32,1012924416,brie,1.510211041,31653888,1373140715520
+3,96011,1,True,previous,8,2,256,2060451840,brie_control,1.360506167,8048640,2798584565760
+3,96011,1,True,previous,8,2,256,2060451840,brie,1.361286625,8048640,2798584565760
+3,96011,1,True,previous,8,2,256,2060451840,jzap,1.373550125,8048640,2798584565760
+3,96011,1,True,candidate,8,2,0,0,brie_control,1.485339792,334725120,0
+3,96011,1,True,candidate,8,2,0,0,brie,1.484870291,334725120,0
+3,96011,1,True,candidate,8,2,0,0,jzap,2.554526542,334725120,0
+3,96011,1,True,candidate,8,2,1,139984896,brie,1.415562041,139984896,193447643136
+3,96011,1,True,candidate,8,2,1,139984896,jzap,1.311459333,139984896,193447643136
+3,96011,1,True,candidate,8,2,1,139984896,brie_control,1.414742416,139984896,193447643136
+3,96011,1,True,candidate,8,2,32,1012924416,jzap,1.238095334,31653888,1373140715520
+3,96011,1,True,candidate,8,2,32,1012924416,brie_control,1.511247375,31653888,1373140715520
+3,96011,1,True,candidate,8,2,32,1012924416,brie,1.509326917,31653888,1373140715520
+3,96011,1,True,candidate,8,2,256,2060451840,brie_control,1.362345042,8048640,2798584565760
+3,96011,1,True,candidate,8,2,256,2060451840,brie,1.361443042,8048640,2798584565760
+3,96011,1,True,candidate,8,2,256,2060451840,jzap,1.351174208,8048640,2798584565760
+3,96011,1,True,previous,16,3,0,0,brie_control,1.474777875,100376576,0
+3,96011,1,True,previous,16,3,0,0,brie,1.483434209,100376576,0
+3,96011,1,True,previous,16,3,0,0,jzap,1.858956209,100376576,0
+3,96011,1,True,previous,16,3,1,64921600,brie,1.731971208,64921600,11392859032800
+3,96011,1,True,previous,16,3,1,64921600,jzap,1.389213958,64921600,11392859032800
+3,96011,1,True,previous,16,3,1,64921600,brie_control,1.730873417,64921600,11392859032800
+3,96011,1,True,previous,16,3,32,663355392,jzap,1.407102833,20729856,116344970007168
+3,96011,1,True,previous,16,3,32,663355392,brie_control,2.107581875,20729856,116344970007168
+3,96011,1,True,previous,16,3,32,663355392,brie,2.086021125,20729856,116344970007168
+3,96011,1,True,previous,16,3,256,1724907520,brie_control,1.955643708,6737920,299714696995840
+3,96011,1,True,previous,16,3,256,1724907520,brie,1.948129416,6737920,299714696995840
+3,96011,1,True,previous,16,3,256,1724907520,jzap,1.389485708,6737920,299714696995840
+3,96011,1,True,candidate,16,3,0,0,brie_control,1.475774292,100376576,0
+3,96011,1,True,candidate,16,3,0,0,brie,1.482723375,100376576,0
+3,96011,1,True,candidate,16,3,0,0,jzap,1.864703500,100376576,0
+3,96011,1,True,candidate,16,3,1,64921600,brie,1.733329917,64921600,11392859032800
+3,96011,1,True,candidate,16,3,1,64921600,jzap,1.352447000,64921600,11392859032800
+3,96011,1,True,candidate,16,3,1,64921600,brie_control,1.746431000,64921600,11392859032800
+3,96011,1,True,candidate,16,3,32,663355392,jzap,1.413456333,20729856,116344970007168
+3,96011,1,True,candidate,16,3,32,663355392,brie_control,2.086043042,20729856,116344970007168
+3,96011,1,True,candidate,16,3,32,663355392,brie,2.089054750,20729856,116344970007168
+3,96011,1,True,candidate,16,3,256,1724907520,brie_control,1.942417791,6737920,299714696995840
+3,96011,1,True,candidate,16,3,256,1724907520,brie,1.960332791,6737920,299714696995840
+3,96011,1,True,candidate,16,3,256,1724907520,jzap,1.381781500,6737920,299714696995840
+```
+
+</details>
+
+<details>
+<summary>Fixed-key hosted protocol seed totals</summary>
+
+```csv
+condition,seed,implementation,timed_batches,total_seconds,operations
+remove_cycle,617,std,294,1.418988171,71178576
+remove_cycle,617,old,294,1.218049136,71178576
+remove_cycle,617,jzap,294,1.121999577,71178576
+remove_cycle,617,std_control,294,1.419768666,71178576
+shrink_lifecycle,617,std,51,1.140498942,52224
+shrink_lifecycle,617,old,51,1.309873327,52224
+shrink_lifecycle,617,jzap,51,1.186929503,52224
+shrink_lifecycle,617,std_control,51,1.141747628,52224
+clone,617,std,2628,1.241864834,2691072
+clone,617,old,2628,1.126925232,2691072
+clone,617,jzap,2628,1.120024327,2691072
+clone,617,std_control,2628,1.232070009,2691072
+grow,617,std,104,1.126885667,106496
+grow,617,old,104,1.298655721,106496
+grow,617,jzap,104,1.172862038,106496
+grow,617,std_control,104,1.127494379,106496
+shrink,617,std,103,1.120599591,105472
+shrink,617,old,103,1.308762619,105472
+shrink,617,jzap,103,1.188103807,105472
+shrink,617,std_control,103,1.121714607,105472
+remove_cycle,6203,std,230,1.404740051,67377120
+remove_cycle,6203,old,230,1.215550790,67377120
+remove_cycle,6203,jzap,230,1.124617746,67377120
+remove_cycle,6203,std_control,230,1.407078456,67377120
+shrink_lifecycle,6203,std,42,1.143107753,43008
+shrink_lifecycle,6203,old,42,1.312022711,43008
+shrink_lifecycle,6203,jzap,42,1.189817666,43008
+shrink_lifecycle,6203,std_control,42,1.142650971,43008
+clone,6203,std,2262,1.239506737,2316288
+clone,6203,old,2262,1.123759235,2316288
+clone,6203,jzap,2262,1.120058527,2316288
+clone,6203,std_control,2262,1.237717616,2316288
+grow,6203,std,86,1.122505822,88064
+grow,6203,old,86,1.298548594,88064
+grow,6203,jzap,86,1.172746725,88064
+grow,6203,std_control,86,1.121361854,88064
+shrink,6203,std,85,1.123797124,87040
+shrink,6203,old,85,1.318212342,87040
+shrink,6203,jzap,85,1.194639028,87040
+shrink,6203,std_control,85,1.123472670,87040
+remove_cycle,96011,std,239,1.378121242,65929106
+remove_cycle,96011,old,239,1.216680962,65929106
+remove_cycle,96011,jzap,239,1.120113028,65929106
+remove_cycle,96011,std_control,239,1.376099499,65929106
+shrink_lifecycle,96011,std,44,1.128398097,45056
+shrink_lifecycle,96011,old,44,1.296134453,45056
+shrink_lifecycle,96011,jzap,44,1.173866126,45056
+shrink_lifecycle,96011,std_control,44,1.127091985,45056
+clone,96011,std,2419,1.224045083,2477056
+clone,96011,old,2419,1.120231530,2477056
+clone,96011,jzap,2419,1.121461056,2477056
+clone,96011,std_control,2419,1.221791824,2477056
+grow,96011,std,92,1.129891344,94208
+grow,96011,old,92,1.308466459,94208
+grow,96011,jzap,92,1.182173951,94208
+grow,96011,std_control,92,1.130114653,94208
+shrink,96011,std,91,1.130382951,93184
+shrink,96011,old,91,1.326016332,93184
+shrink,96011,jzap,91,1.198393570,93184
+shrink,96011,std_control,91,1.131223933,93184
+```
+
+</details>

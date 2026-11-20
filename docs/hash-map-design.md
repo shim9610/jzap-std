@@ -147,13 +147,74 @@ pinned core source protocol. Deliberate defects must produce solver failures.
 
 Phase models and reviewed correspondence checks are separate from direct Rust
 proofs. Kani uses the product's scalar group fallback; the native SIMD path is
-exercised by differential tests, Miri and AddressSanitizer. Pointer provenance,
+exercised by differential tests. Pointer provenance,
 aliasing, initialization and destructor paths use Miri, AddressSanitizer,
 compiler boundaries and failure-injection scenarios.
 Allocator, foreign entropy and user hasher/Hash/Eq/Drop/iterator contracts remain
 the execution boundary. The fresh source/link composition includes this module
 in all four registered Linux x86-64 profiles, with zero open source obligations
 or unproved linked exit edges. Consumers can apply the same linker check to their concrete roots.
+
+### ARM64 control groups
+
+On little-endian AArch64 targets built with NEON, HashMap and HashSet
+load 16 control bytes together. The equality and vacancy comparisons
+produce byte lanes of zero or all ones. Each half assigns one distinct
+bit to each byte and sums the lanes into an eight-bit mask. Bit zero
+still selects the first control byte. Both loads use the existing
+16-byte readable-span contract. The SSE2 implementation serves x86-64.
+The scalar implementation serves other targets and the ARM64 Miri and
+Kani builds.
+
+The ARM64 regression test exercises every 16-bit mask at an unaligned
+address and every tag on a mixed control group. The source-bound Verus
+model checks the weighted sum and its byte bound.
+
+Probing on ARM64 checks for an empty control byte with a horizontal
+maximum. To find the first vacant lane, it narrows the sign comparisons
+to four bits per lane and divides the trailing-zero count by four.
+A group with no vacant lane yields 16. These operations read the same
+control span as the full mask. The x86-64 probe still tests its mask
+before selecting a lane. The release benchmark machine instructions
+match the preceding revision on Linux and Windows x86-64.
+
+The original 16-lane NEON implementation was measured on Apple M4 in the
+[ARM64 follow-up](https://github.com/shim9610/jzap-std/blob/386dc212f76114d42ce7aa14379fa89b6385cebe/docs/verification/macos-beta1-benchmarks.md#arm64-hash-table-follow-up).
+The standard library in that comparison and the jzap implementation used
+their genuine default builders except in the fixed-key control.
+
+#### Specialized control queries
+
+The fixed-seed hash-table benchmark interleaved std, the preceding NEON
+revision, the specialized queries, and a repeat of std in each process.
+It used three corpora on a GitHub-hosted macOS ARM64 runner with Rust
+1.95.0. All implementations used the same SipHash13 seeds. Each seed
+accumulated at least 1.12 seconds per implementation and workload with
+matching work counts and checksums. The largest per-seed median std
+repeat difference was 7.1%.
+[Paired run](https://github.com/shim9610/jzap-std/actions/runs/44704153767)
+
+| Workload | std ns/op | jzap ns/op | jzap − std |
+| --- | ---: | ---: | ---: |
+| HashMap remove and reinsert | 50.982 | 38.873 | −12.109 |
+| HashSet clone, grow, shrink, and drop | 58754.040 | 56111.942 | −2642.097 |
+| HashSet clone only | 2632.398 | 2469.334 | −163.064 |
+| HashSet grow only | 33644.463 | 30980.677 | −2663.786 |
+| HashSet shrink only | 31364.996 | 29643.411 | −1721.585 |
+
+The corresponding gaps on the preceding NEON revision were −11.060 ns
+for remove/reinsert, +2806.262 ns for the combined HashSet lifecycle, and
++331.285 ns for the isolated shrink. Each seed had a smaller
+remove/reinsert and shrink gap with the specialized controls. The phase
+times use prepared inputs and exclude work outside the named operation.
+The combined workload prepares and drops its temporary sets in the timed
+interval.
+
+The separate default-builder comparison on the hosted macOS runner exceeded
+10% std repeat variation. Its timing conclusions remain open. The initial
+x86-64 candidate also changed the vacancy branch order. The final x86-64
+benchmark instructions match the preceding NEON revision.
+[Separate-process run](https://github.com/shim9610/jzap-std/actions/runs/44702547141)
 
 
 ## Performance reproduction
@@ -220,6 +281,11 @@ workloads include cloning the prepared source; `reserve` includes clone and
 growth, and `shrink` includes clone, growth and shrinking. `default_new` measures
 one cached empty constructor and drop. Initial OS entropy acquisition is outside
 these warm recordings.
+
+The HashSet `phase_clone`, `phase_grow`, and `phase_shrink` workloads each time
+only the named phase. Preparation and disposal of the result happen outside
+the timed interval. Each phase uses the same corpus as the combined workload
+and checks the resulting sets outside the timed interval.
 
 The timing CSV retains each accepted seed interval with call counts, elapsed
 seconds and matched std/control seconds. A row of the table is recomputed as

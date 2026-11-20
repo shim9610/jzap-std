@@ -242,7 +242,7 @@ impl<K, V> RawTable<K, V> {
                     }
                     bits = group::clear_first(bits);
                 }
-                if group::matching(address, EMPTY) != 0 {
+                if group::any_empty(address) {
                     return None;
                 }
             }
@@ -281,21 +281,21 @@ impl<K, V> RawTable<K, V> {
                     bits = group::clear_first(bits);
                 }
                 if vacant.is_none() {
-                    let bits = group::vacant(address);
-                    if bits != 0 {
-                        let index = add(pos, group::first(bits)) & self.mask;
+                    let slots = group::Vacancy::load(address);
+                    if slots.found() {
+                        let index = add(pos, slots.lane()) & self.mask;
                         if self.control(index) & 0x80 != 0 {
                             vacant = Some(index);
                         } else {
                             // Small-table EMPTY padding can wrap onto FULL.
-                            let index = group::first(group::vacant(self.ctrl.as_ptr()));
+                            let index = group::first_vacant(self.ctrl.as_ptr());
                             if index < self.buckets() {
                                 vacant = Some(index);
                             }
                         }
                     }
                 }
-                if group::matching(address, EMPTY) != 0 {
+                if group::any_empty(address) {
                     return vacant.map(InsertSlot::Vacant);
                 }
             }
@@ -320,15 +320,15 @@ impl<K, V> RawTable<K, V> {
         while groups > 0 {
             // SAFETY: allocated initialized ctrl and masked pos.
             unsafe {
-                let bits = group::vacant(self.ctrl.as_ptr().add(pos));
-                if bits != 0 {
-                    let index = add(pos, group::first(bits)) & self.mask;
+                let slots = group::Vacancy::load(self.ctrl.as_ptr().add(pos));
+                if slots.found() {
+                    let index = add(pos, slots.lane()) & self.mask;
                     if self.control(index) & 0x80 != 0 {
                         return Some(index);
                     }
                     // Small-table padding can name an occupied wrapped slot.
                     // The aligned group contains every real slot before padding.
-                    let index = group::first(group::vacant(self.ctrl.as_ptr()));
+                    let index = group::first_vacant(self.ctrl.as_ptr());
                     return (index < self.buckets()).then_some(index);
                 }
             }

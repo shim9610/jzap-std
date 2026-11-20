@@ -1,5 +1,7 @@
 //! Ordered scans of an already validated snapshot.
 
+#[cfg(not(windows))]
+use super::super::{SMALL_NODE_KEYS, count_admitted_minima, short_keys};
 use super::FixedTree;
 use crate::{Error, TryIterator};
 use core::{borrow::Borrow, iter::Zip, ops::Bound, slice::Iter};
@@ -61,12 +63,14 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
                 height = next;
                 let (keys, children) = branch(self, id)?;
                 let slot = match start {
+                    // Keep Windows' original scan layout for long ranges.
+                    #[cfg(windows)]
                     Bound::Included(query) | Bound::Excluded(query) => {
-                        // Child zero is the fallback. Only later minima
-                        // can advance the slot.
                         let later = keys.get(1..).ok_or(Error::InvalidStructure)?;
                         prefix_len(later, query, true)
                     }
+                    #[cfg(not(windows))]
+                    Bound::Included(query) | Bound::Excluded(query) => branch_slot(keys, query)?,
                     Bound::Unbounded => 0,
                 };
                 cursor.rank = cursor
@@ -80,6 +84,21 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             cursor.open_leaf(id, start)?;
         }
         Ok(cursor)
+    }
+}
+
+#[cfg(not(windows))]
+#[inline(always)]
+fn branch_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
+    keys: &[K; N],
+    query: &Q,
+) -> Result<usize, Error> {
+    // Child zero is the fallback. Only later minima can advance the slot.
+    let later = keys.get(1..).ok_or(Error::InvalidStructure)?;
+    if N == SMALL_NODE_KEYS && short_keys::<K, _>(query) {
+        count_admitted_minima(later, query)
+    } else {
+        Ok(prefix_len(later, query, true))
     }
 }
 
@@ -224,6 +243,19 @@ impl<'a, K: Borrow<Q> + 'a, V: 'a, Q: ?Sized + Ord, const N: usize> TryIterator
 #[cfg(kani)]
 mod proofs {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn width_eight_branch_slot_matches_binary_search() {
+        let keys: [u8; 8] = kani::any();
+        let query: u8 = kani::any();
+        kani::assume(keys.is_sorted());
+        let later = keys.get(1..).unwrap();
+        let slot = branch_slot(&keys, &query).unwrap();
+        assert!(slot < keys.len());
+        assert_eq!(slot, prefix_len(later, &query, true));
+    }
 
     #[kani::proof]
     #[kani::unwind(5)]

@@ -459,7 +459,8 @@ mod proofs {
     }
 
     #[kani::proof]
-    #[kani::unwind(8)]
+    // The fixture visits three pages and each branch has two entries.
+    #[kani::unwind(4)]
     fn snapshot_lookup_matches_known_arbitrary_page_order() {
         let nodes = tree::test_format::arbitrary_ids();
         let snapshot = StridedTree::try_new(&nodes, Some(0), 1).unwrap();

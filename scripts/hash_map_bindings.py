@@ -14,13 +14,14 @@ def is_copy_capability_site(row):
      row['context'].split('<')[0].strip()=='CopyWitness' and row['kind']=='field' and
      d.get('constructor') in ('Self','CopyWitness') and d.get('field')=='marker' and
      ''.join(d.get('value','').split())=='core::marker::PhantomData')
-REVIEWED={'src/collections/hash_map/entropy.rs': '7e9b67ebd9570ce03a519651ca288ed6fef887303451497c946ba330a192f1b5', 'src/collections/hash_map.rs': 'e716aec2b177e9871e5f9a7690e9f6b0c564626f40f411515bae744e53fbc8de', 'src/collections/hash_map/entry.rs': 'fe8ebb8355e09961fdf316689d8727ff7fa88f1129c6437c74cc397f4b5e5bef', 'src/collections/hash_map/geometry.rs': 'a9c60a1831f2c3a35d9c06e292bc58f807f75baf28f8bba4e42f9bfd77304dbe', 'src/collections/hash_map/group.rs': 'fa560eb3f229c7473524a5d8001d2a2d238c72a83daca3bdd00cf7c7237d0031', 'src/collections/hash_map/hash.rs': '115669968d99257578fea88fcdd1db51430557403b5fcbea5ab6014b5ca3a11d', 'src/collections/hash_map/iter.rs': '1fe28417666310b6324f33ac09be3fedcb8c79a5e431399238aacb32e8bd85c5', 'src/collections/hash_map/raw.rs': 'd7479b2b0e924e8686bb173665b09d6931f80c6550f8affca8d9be4db0e4d2c6'}
+REVIEWED={'src/collections/hash_map/entropy.rs': '7e9b67ebd9570ce03a519651ca288ed6fef887303451497c946ba330a192f1b5', 'src/collections/hash_map.rs': 'e716aec2b177e9871e5f9a7690e9f6b0c564626f40f411515bae744e53fbc8de', 'src/collections/hash_map/entry.rs': 'fe8ebb8355e09961fdf316689d8727ff7fa88f1129c6437c74cc397f4b5e5bef', 'src/collections/hash_map/geometry.rs': 'a9c60a1831f2c3a35d9c06e292bc58f807f75baf28f8bba4e42f9bfd77304dbe', 'src/collections/hash_map/group.rs': '94a2d8b8d6b425b4b9052c576aa6e14b2bb37d05e113bec17eea3e76fb260688', 'src/collections/hash_map/hash.rs': '115669968d99257578fea88fcdd1db51430557403b5fcbea5ab6014b5ca3a11d', 'src/collections/hash_map/iter.rs': '1fe28417666310b6324f33ac09be3fedcb8c79a5e431399238aacb32e8bd85c5', 'src/collections/hash_map/raw.rs': '7e44f632463a703a1e909bf19121851fca9c829b8373bb909e5a6cfb7f713b37'}
 # Product function -> maintained caller in tools/memory-proof/hash-map.verus.rs.
 RAW={'allocate':'hash_allocate_caller','try_clone_copy':'hash_allocation_caller','allocation':'hash_allocation_caller',
  ('drop','metadata_init'):'hash_allocation_caller',('drop','unsafe_block','Owner'):'hash_allocation_caller',('drop','unsafe_block','Storage'):'hash_allocation_caller',
  'slot':'hash_slot_caller','control':'hash_set_control_caller','set_control':'hash_set_control_caller',
  'find':'hash_probe_caller','vacant':'hash_probe_caller','matching':'hash_probe_caller','find_insert':'hash_find_insert_caller',
- 'neon_mask':'hash_neon_mask_octet',
+ 'neon_mask':'hash_neon_mask_octet','neon_nibbles':'hash_neon_nibble_pair',
+ 'any_empty':'hash_probe_caller','first_vacant':'hash_probe_caller',
  'insert_at':'hash_insert_at_caller','erase':'hash_erase_caller','clear':'hash_reset_caller',('run','unsafe_block'):'hash_clear_run_caller'}
 # Position sites outside the table kernel: (file, function, context) -> maintained caller.
 POSITION={('hash_map.rs','try_retain','HashMap'):'hash_slot_caller',('hash_map.rs','get','HashMap'):'hash_slot_caller',
@@ -115,8 +116,10 @@ PRODUCT={'allocate':['checked_layout(mem::size_of::<(K,V)>(),mem::align_of::<(K,
  'slot':['self.ctrl.as_ptr().cast::<(K,V)>().sub(add(index,1))'],
  'set_control':['letmirror=mirror(index,add(self.mask,1));','self.ctrl.as_ptr().add(index).write(value);self.ctrl.as_ptr().add(mirror).write(value)'],
  'find':['letmutpos=(hashasusize)&self.mask;letmutstride=0;letmutgroups=self.groups();whilegroups>0{','letindex=add(pos,group::first(bits))&self.mask;','bits=group::clear_first(bits);','groups=sub(groups,1);ifgroups!=0{(pos,stride)=probe_next(pos,stride,self.mask);}'],
- 'vacant':['letmutpos=(hashasusize)&self.mask;letmutstride=0;letmutgroups=self.groups();whilegroups>0{','groups=sub(groups,1);ifgroups!=0{(pos,stride)=probe_next(pos,stride,self.mask);}'],
- 'find_insert':['letmutpos=(hashasusize)&self.mask;letmutstride=0;','(pos,stride)=probe_next(pos,stride,self.mask);ifstride>self.mask{returnvacant.map(InsertSlot::Vacant);}'],
+ 'vacant':['letlane=group::first_vacant(self.ctrl.as_ptr().add(pos));iflane<WIDTH{letindex=add(pos,lane)&self.mask;', 'letmutpos=(hashasusize)&self.mask;letmutstride=0;letmutgroups=self.groups();whilegroups>0{','groups=sub(groups,1);ifgroups!=0{(pos,stride)=probe_next(pos,stride,self.mask);}'],
+ 'find_insert':['letmutpos=(hashasusize)&self.mask;letmutstride=0;',
+  'letlane=group::first_vacant(address);iflane<WIDTH{letindex=add(pos,lane)&self.mask;',
+  'ifgroup::any_empty(address){returnvacant.map(InsertSlot::Vacant);}','(pos,stride)=probe_next(pos,stride,self.mask);ifstride>self.mask{returnvacant.map(InsertSlot::Vacant);}'],
  'insert_at':['ifself.control(index)==EMPTY{self.growth=Checked::new(sub(self.growth.get(),1));}self.slot(index).write(pair);self.set_control(index,tag(hash));','self.len=Checked::new(add(self.len.get(),1));'],
  'erase':['letbefore=sub(mirror(index,add(self.mask,1)),WIDTH);','ifadd(aasusize,basusize)>=WIDTH{DELETED}else{self.growth=Checked::new(add(self.growth.get(),1));EMPTY}','self.len=Checked::new(sub(self.len.get(),1));'],
  'clear':['ptr::write_bytes(self.ctrl.as_ptr(),EMPTY,add(self.buckets(),WIDTH));','self.growth=Checked::new(capacity_for(self.mask));'],
@@ -145,7 +148,7 @@ def correspondence(root=ROOT):
   text=body(raw,'fn '+name+'(')
   for part in parts:assert part in text,('HashMap product caller changed',name,part)
   # RawTable::vacant's fallback, followed by hash_probe_caller.
- assert 'letindex=group::first(group::vacant(self.ctrl.as_ptr()));return(index<self.buckets()).then_some(index);' in body(raw,'pub(crate) fn vacant(')
+ assert 'letindex=group::first_vacant(self.ctrl.as_ptr());return(index<self.buckets()).then_some(index);' in body(raw,'pub(crate) fn vacant(')
  for (file,anchor,head),expected in POSITION_BODIES.items():
   text=(root/'src/collections'/('hash_map/'+file if file!='hash_map.rs' else file)).read_text();text=text[text.index(anchor):]
   assert body(text,head)==expected,('HashMap position caller changed',file,anchor,head)

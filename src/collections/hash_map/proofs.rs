@@ -7,6 +7,14 @@ fn group_masks_all_bytes() {
     let tag: u8 = kani::any();
     let equal = unsafe { group::matching(bytes.as_ptr(), tag) };
     let vacant = unsafe { group::vacant(bytes.as_ptr()) };
+    assert_eq!(
+        unsafe { group::any_empty(bytes.as_ptr()) },
+        bytes.contains(&group::EMPTY)
+    );
+    assert_eq!(
+        unsafe { group::first_vacant(bytes.as_ptr()) },
+        group::first(vacant)
+    );
     for i in 0..16 {
         assert_eq!((equal >> i) & 1 != 0, bytes[i] == tag);
         assert_eq!((vacant >> i) & 1 != 0, bytes[i] & 128 != 0);

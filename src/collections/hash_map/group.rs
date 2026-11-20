@@ -117,6 +117,83 @@ fn neon_mask(lanes: core::arch::aarch64::uint8x16_t) -> u16 {
     }
 }
 
+/// # Safety
+/// Sixteen initialized readable control bytes at ptr.
+#[inline(always)]
+pub(crate) unsafe fn any_empty(ptr: *const u8) -> bool {
+    #[cfg(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_endian = "little",
+        not(any(kani, miri))
+    ))]
+    {
+        use core::arch::aarch64::{vld1q_u8, vmaxvq_u8};
+        // EMPTY is the maximum possible control byte.
+        // SAFETY: the target has NEON and the caller admits all 16 bytes.
+        unsafe { vmaxvq_u8(vld1q_u8(ptr)) == EMPTY }
+    }
+    #[cfg(not(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_endian = "little",
+        not(any(kani, miri))
+    )))]
+    {
+        // SAFETY: the caller admits the same group read.
+        unsafe { matching(ptr, EMPTY) != 0 }
+    }
+}
+
+/// # Safety
+/// Sixteen initialized readable control bytes at ptr.
+#[inline(always)]
+pub(crate) unsafe fn first_vacant(ptr: *const u8) -> usize {
+    #[cfg(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_endian = "little",
+        not(any(kani, miri))
+    ))]
+    {
+        use core::arch::aarch64::{vcltzq_s8, vld1q_s8};
+        // SAFETY: the target has NEON and the caller admits all 16 bytes.
+        let lanes = unsafe { vcltzq_s8(vld1q_s8(ptr.cast())) };
+        neon_nibbles(lanes).trailing_zeros() as usize / 4
+    }
+    #[cfg(not(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_endian = "little",
+        not(any(kani, miri))
+    )))]
+    {
+        // SAFETY: the caller admits the same group read.
+        first(unsafe { vacant(ptr) })
+    }
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
+    target_feature = "neon",
+    target_endian = "little",
+    not(any(kani, miri))
+))]
+#[inline(always)]
+fn neon_nibbles(lanes: core::arch::aarch64::uint8x16_t) -> u64 {
+    use core::arch::aarch64::{
+        vget_lane_u64, vreinterpret_u64_u8, vreinterpretq_u16_u8, vshrn_n_u16,
+    };
+    // Each comparison byte is 0x00 or 0xff. Narrow each pair to one
+    // byte, keeping four bits per lane in the original lane order.
+    // A zero word still yields WIDTH (64 / 4).
+    // SAFETY: NEON is enabled by the function's target configuration.
+    unsafe {
+        let packed = vshrn_n_u16::<4>(vreinterpretq_u16_u8(lanes));
+        vget_lane_u64::<0>(vreinterpret_u64_u8(packed))
+    }
+}
+
 #[cfg_attr(verus_keep_ghost, verus_spec(out =>
     ensures out <= 16, bits != 0 ==> out < 16,
 ))]
@@ -163,6 +240,8 @@ mod tests {
                 assert_eq!(matching(ptr, DELETED), mask);
                 assert_eq!(matching(ptr, 0x7f), !mask);
                 assert_eq!(matching(ptr, EMPTY), 0);
+                assert!(!any_empty(ptr));
+                assert_eq!(first_vacant(ptr), first(mask));
                 assert_eq!(vacant(ptr), mask);
             }
         }
@@ -172,6 +251,11 @@ mod tests {
             0x05, 0xff,
         ]);
         let bytes = &controls.0[1..];
+        // SAFETY: ptr is the start of the initialized 16-byte suffix.
+        unsafe {
+            assert!(any_empty(bytes.as_ptr()));
+            assert_eq!(first_vacant(bytes.as_ptr()), 3);
+        }
         for tag in 0..=u8::MAX {
             let expected = bytes
                 .iter()

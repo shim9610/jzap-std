@@ -92,6 +92,17 @@ proof fn hash_neon_mask_octet(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h
         by(bit_vector) requires a & 1 == a, b & 2 == b, c & 4 == c, d & 8 == d,
             e & 16 == e, f & 32 == f, g & 64 == g, h & 128 == h;
 }
+// SHRN by four on a little-endian pair of 0x00/0xff comparison bytes
+// places one nibble per lane, preserving the lane order.
+proof fn hash_neon_nibble_pair(lo: u8, hi: u8)
+    requires lo == 0 || lo == 255, hi == 0 || hi == 255,
+    ensures ((((lo as u16) | ((hi as u16) << 8)) >> 4) as u8)
+        == ((if lo == 0 { 0u8 } else { 15u8 }) | (if hi == 0 { 0u8 } else { 240u8 })),
+{
+    assert(((((lo as u16) | ((hi as u16) << 8)) >> 4) as u8)
+        == ((if lo == 0 { 0u8 } else { 15u8 }) | (if hi == 0 { 0u8 } else { 240u8 })))
+        by(bit_vector) requires lo == 0 || lo == 255, hi == 0 || hi == 255;
+}
 // `write_bytes(ctrl, EMPTY, buckets + WIDTH)` and the whole control span copy.
 fn hash_controls_index(mask: usize) -> (controls: usize)
     requires table_shape(mask),

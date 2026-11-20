@@ -1,0 +1,107 @@
+name: Hash control group benchmarks
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/hash-control-bench.yml']
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    name: Hash controls (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Time paired builds
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import itertools
+          import json
+          import math
+          import os
+          import platform
+          import random
+          import shutil
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          def check(*cmd, **kw):
+              subprocess.run(cmd, check=True, **kw)
+
+          def time_one(exe, label, task, seed, epochs):
+              command = [exe, label, task, str(seed), str(epochs), "mixed"]
+              output = subprocess.check_output(command, text=True, timeout=120)
+              return json.loads(output)
+
+          print(platform.platform(), platform.machine(), flush=True)
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              work = root / "work"
+              target = root / "target"
+              base = "10c0598f025ffc69e424a21947cca7fa85f3f144"
+              revision = os.environ["HEAD_SHA"]
+              driver = Path("tools/throughput-analysis/src/bin/hash_set.rs").read_bytes()
+              check("git", "worktree", "add", "--detach", str(work), base)
+              outputs = {}
+              try:
+                  for name, rev in (("base", base), ("candidate", revision)):
+                      check("git", "switch", "--detach", rev, cwd=work)
+                      file = work / "tools/throughput-analysis/src/bin/hash_set.rs"
+                      original = file.read_bytes()
+                      file.write_bytes(driver)
+                      try:
+                          check("cargo", "+1.95.0", "build", "--locked", "--release",
+                                "--manifest-path", "tools/throughput-analysis/Cargo.toml",
+                                "--features", "hash-map,hash-set",
+                                "--bin", "hash_map", "--bin", "hash_set",
+                                "--target-dir", str(target), cwd=work)
+                      finally:
+                          file.write_bytes(original)
+                      for exe in ("hash_map", "hash_set"):
+                          suffix = ".exe" if os.name == "nt" else ""
+                          full = exe + suffix
+                          outputs[(name, exe)] = shutil.copy2(target / "release" / full, root / (name + "-" + full))
+                  tasks = (
+                      ("hash_map", "remove_cycle"),
+                      ("hash_set", "shrink"),
+                      ("hash_set", "phase_clone"),
+                      ("hash_set", "phase_grow"),
+                      ("hash_set", "phase_shrink"),
+                      ("hash_map", "fixed_get"),
+                  )
+                  methods = list(itertools.product(("base", "candidate"), ("std", "unlimited", "std_control")))
+                  for seed, (exe, task) in itertools.product((617, 6203, 96011), tasks):
+                      task = exe + "_" + task
+                      order = random.Random(f"{seed}/{task}").sample(methods, len(methods))
+                      pilot = 12
+                      fastest = min(time_one(outputs[(rev, exe)], mode, task, seed, pilot)["elapsed_seconds"] for rev, mode in order)
+                      epochs = max(pilot, math.ceil(1.42 * pilot / fastest))
+                      for attempt in range(4):
+                          measurements = [(rev, mode, time_one(outputs[(rev, exe)], mode, task, seed, epochs)) for rev, mode in order]
+                          fastest = min(r["elapsed_seconds"] for _, _, r in measurements)
+                          if fastest >= 1.0:
+                              break
+                          epochs = math.ceil(1.42 * epochs / fastest)
+                      else:
+                          raise RuntimeError((task, seed, fastest))
+                      keys = ("epochs", "cases", "operations", "elements", "corpus_digest", "checksum")
+                      assert len({tuple(r[k] for k in keys) for _, _, r in measurements}) == 1
+                      for rev, mode, record in measurements:
+                          print("HASH_BENCH " + json.dumps(dict(task=task, seed=seed, revision=rev, label=mode, **record)), flush=True)
+              finally:
+                  check("git", "worktree", "remove", str(work))
+          PY

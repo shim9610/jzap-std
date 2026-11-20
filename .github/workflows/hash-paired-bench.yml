@@ -1,0 +1,242 @@
+name: Paired ARM64 hash benchmarks
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/hash-paired-bench.yml']
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    name: Paired hash controls (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Compare in the same process
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d)
+          trap 'rm -rf "$root"' EXIT
+          mkdir -p "$root/old" "$root/new" "$root/pair/src"
+          git archive 10c0598f025ffc69e424a21947cca7fa85f3f144 | tar -xf - -C "$root/old"
+          git archive HEAD | tar -xf - -C "$root/new"
+          sed -i '' 's/^name = "jzap-std"$/name = "jzap-std-baseline"/' "$root/old/Cargo.toml"
+          uname -m
+          rustc +1.95.0 -vV
+          cat > "$root/pair/Cargo.toml" <<'TOML'
+          [package]
+          name = "hash-probe-pair"
+          version = "0.0.0"
+          edition = "2024"
+          [workspace]
+          [dependencies]
+          new = { package = "jzap-std", path = "../new", features = ["std"] }
+          old = { package = "jzap-std-baseline", path = "../old", features = ["std"] }
+          [profile.release]
+          codegen-units = 1
+          panic = "abort"
+          TOML
+          cat > "$root/pair/src/main.rs" <<'RUST'
+          use core::hint::black_box;
+          use new::{collections::hash_map::RandomState, TryClone as _};
+          use old::TryClone as _;
+          use std::{collections::{HashMap as StdMap,HashSet as StdSet},time::Instant};
+          
+          fn seed() -> RandomState { RandomState::from_seed(0,0) }
+          type SM = StdMap<u64,u64,RandomState>;
+          type SS = StdSet<u64,RandomState>;
+          type OM = old::collections::HashMap<u64,u64,old::collections::hash_map::RandomState>;
+          type OS = old::collections::HashSet<u64,old::collections::hash_map::RandomState>;
+          type NM = new::collections::HashMap<u64,u64,RandomState>;
+          type NS = new::collections::HashSet<u64,RandomState>;
+          
+          trait Map {
+              fn make(keys: &[u64]) -> Self;
+              fn cycle(&mut self,key:u64) -> u64;
+          }
+          impl Map for SM {
+              fn make(keys:&[u64])->Self {
+                  let mut m = Self::with_hasher(seed());
+                  for &k in keys { m.insert(k,k); }
+                  m
+              }
+              fn cycle(&mut self,k:u64)->u64 {
+                  let value = self.remove(&k).unwrap();
+                  black_box(self.insert(k,value));
+                  value
+              }
+          }
+          macro_rules! map_impl {
+              ($ty:ty, $hasher:expr) => {
+                  impl Map for $ty {
+                      fn make(keys:&[u64])->Self {
+                          let mut m = Self::with_hasher($hasher);
+                          for &k in keys { m.try_insert(k,k).unwrap(); }
+                          m
+                      }
+                      fn cycle(&mut self,k:u64)->u64 {
+                          let value = self.remove(&k).unwrap();
+                          black_box(self.try_insert(k,value).unwrap());
+                          value
+                      }
+                  }
+              };
+          }
+          map_impl!(OM, old::collections::hash_map::RandomState::from_seed(0,0));
+          map_impl!(NM, seed());
+          
+          trait Set {
+              fn make(keys:&[u64])->Self;
+              fn duplicate(&self)->Self;
+              fn grow(&mut self,n:usize);
+              fn shrink(&mut self);
+              fn count(&self)->usize;
+              fn has(&self,key:u64)->bool;
+          }
+          impl Set for SS {
+              fn make(keys:&[u64])->Self { let mut s=Self::with_hasher(seed()); for &k in keys {s.insert(k);} s }
+              fn duplicate(&self)->Self { self.clone() }
+              fn grow(&mut self,n:usize) { self.reserve(n) }
+              fn shrink(&mut self) { self.shrink_to_fit() }
+              fn count(&self)->usize { self.len() }
+              fn has(&self,key:u64)->bool { self.contains(&key) }
+          }
+          macro_rules! set_impl {
+              ($ty:ty, $hasher:expr) => {
+                  impl Set for $ty {
+                      fn make(keys:&[u64])->Self {
+                          let mut s=Self::with_hasher($hasher);
+                          for &k in keys { s.try_insert(k).unwrap(); }
+                          s
+                      }
+                      fn duplicate(&self)->Self { self.try_clone().unwrap() }
+                      fn grow(&mut self,n:usize) { self.try_reserve(n).unwrap() }
+                      fn shrink(&mut self) { self.try_shrink_to_fit().unwrap() }
+                      fn count(&self)->usize { self.len() }
+                      fn has(&self,key:u64)->bool { self.contains(&key) }
+                  }
+              }
+          }
+          set_impl!(OS, old::collections::hash_map::RandomState::from_seed(0,0));
+          set_impl!(NS, seed());
+          
+          fn random(seed: &mut u64) -> u64 {
+              *seed ^= *seed << 13;
+              *seed ^= *seed >> 7;
+              *seed ^= *seed << 17;
+              *seed
+          }
+          fn corpus(mut seed:u64)->Vec<Vec<u64>> {
+              (0..64).map(|_|{
+                  let n=(random(&mut seed)%4097) as usize;
+                  let mut numbers=(0..n as u64).map(|k|k.wrapping_mul(0x9e3779b97f4a7c15)).collect::<Vec<_>>();
+                  for i in (1..n).rev() { numbers.swap(i,(random(&mut seed) as usize)%(i+1)); }
+                  numbers
+              }).collect()
+          }
+          
+          fn maps<M:Map>(keys:&[Vec<u64>])->impl FnMut(usize)->(f64,u64) {
+              let mut maps:Vec<_> = keys.iter().map(|ks|M::make(ks)).collect();
+              move |batch| {
+                  let mut sum=0u64;
+                  let start=Instant::now();
+                  for _ in 0..batch {
+                      for (m,ks) in maps.iter_mut().zip(keys) {
+                          for &k in ks { sum=sum.wrapping_add(black_box(m.cycle(black_box(k)))); }
+                      }
+                  }
+                  (start.elapsed().as_secs_f64(),black_box(sum))
+              }
+          }
+          
+          fn sets<S:Set,const PHASE:u8>(keys:&[Vec<u64>])->impl FnMut(usize)->(f64,u64) {
+              let source:Vec<_>=keys.iter().map(|ks| S::make(ks)).collect();
+              let mut work=Vec::with_capacity(keys.len());
+              let mut verified=false;
+              move |batch| {
+                  let mut elapsed=0.0;
+                  let mut sum=0;
+                  for _ in 0..batch {
+                      if PHASE==2 || PHASE==3 {
+                          work.extend(source.iter().map(Set::duplicate));
+                      }
+                      if PHASE==3 {
+                          for (s,k) in work.iter_mut().zip(keys) { s.grow(k.len()+1); }
+                      }
+                      let now=Instant::now();
+                      match PHASE {
+                          0 => {
+                              for (s,k) in source.iter().zip(keys) {
+                                  let mut m=black_box(s).duplicate();
+                                  m.grow(k.len()+1);
+                                  m.shrink();
+                                  sum+=black_box(m.count()) as u64;
+                                  black_box(&m);
+                              }
+                          }
+                          1 => work.extend(source.iter().map(|s| black_box(s).duplicate())),
+                          2 => for (s,k) in work.iter_mut().zip(keys) { black_box(s).grow(k.len()+1); },
+                          3 => for s in &mut work { black_box(s).shrink(); },
+                          _ => unreachable!()
+                      }
+                      elapsed+=now.elapsed().as_secs_f64();
+                      if PHASE!=0 {
+                          for (s,k) in work.iter().zip(keys) {
+                              sum+=black_box(s.count()) as u64;
+                              if !verified { assert!(k.iter().all(|&key|s.has(key))); }
+                          }
+                          verified=true;
+                          work.clear();
+                      }
+                  }
+                  (elapsed,sum)
+              }
+          }
+          
+          fn pair(task:&str,seed:u64,n:usize, methods:&mut [&mut dyn FnMut(usize)->(f64,u64);4],batch:usize) {
+              let names=["std","old","jzap","std_control"];
+              let mut elapsed=[0.0;4];
+              let mut round=0;
+              let mut r=seed;
+              for m in methods.iter_mut() { black_box(m(batch)); }
+              while elapsed.iter().any(|&time|time<1.12) {
+                  let mut order=[0,1,2,3];
+                  for i in (1..order.len()).rev() { order.swap(i,(random(&mut r) as usize)%(i+1)); }
+                  let mut expected=None;
+                  for i in order {
+                      let (t,sum)=methods[i](batch);
+                      assert_eq!(*expected.get_or_insert(sum),sum);
+                      elapsed[i]+=t;
+                      println!("PAIR,{task},{seed},{round},{},{t:.9},{},{sum}",names[i],n*batch);
+                  }
+                  round+=1;
+              }
+          }
+          
+          fn set_pair<const P:u8>(task:&str,seed:u64,keys:&[Vec<u64>]) {
+              pair(task,seed,keys.len(),&mut[&mut sets::<SS,P>(keys),&mut sets::<OS,P>(keys),
+                  &mut sets::<NS,P>(keys),&mut sets::<SS,P>(keys)],16);
+          }
+          
+          fn main() {
+              let seed=std::env::args().nth(1).unwrap().parse::<u64>().unwrap();
+              let keys=corpus(seed);
+              pair("remove_cycle",seed,keys.iter().map(Vec::len).sum(),&mut[
+                  &mut maps::<SM>(&keys),&mut maps::<OM>(&keys),&mut maps::<NM>(&keys),&mut maps::<SM>(&keys)],2);
+              set_pair::<0>("shrink_lifecycle",seed,&keys);
+              set_pair::<1>("clone",seed,&keys);
+              set_pair::<2>("grow",seed,&keys);
+              set_pair::<3>("shrink",seed,&keys);
+          }
+          RUST
+          cargo +1.95.0 build --offline --release --manifest-path "$root/pair/Cargo.toml"
+          for seed in 617 6203 96011; do
+            caffeinate -i "$root/pair/target/release/hash-probe-pair" "$seed"
+          done

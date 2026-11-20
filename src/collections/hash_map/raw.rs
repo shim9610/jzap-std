@@ -281,9 +281,9 @@ impl<K, V> RawTable<K, V> {
                     bits = group::clear_first(bits);
                 }
                 if vacant.is_none() {
-                    let lane = group::first_vacant(address);
-                    if lane < WIDTH {
-                        let index = add(pos, lane) & self.mask;
+                    let slots = group::Vacancy::load(address);
+                    if slots.found() {
+                        let index = add(pos, slots.lane()) & self.mask;
                         if self.control(index) & 0x80 != 0 {
                             vacant = Some(index);
                         } else {
@@ -320,9 +320,9 @@ impl<K, V> RawTable<K, V> {
         while groups > 0 {
             // SAFETY: allocated initialized ctrl and masked pos.
             unsafe {
-                let lane = group::first_vacant(self.ctrl.as_ptr().add(pos));
-                if lane < WIDTH {
-                    let index = add(pos, lane) & self.mask;
+                let slots = group::Vacancy::load(self.ctrl.as_ptr().add(pos));
+                if slots.found() {
+                    let index = add(pos, slots.lane()) & self.mask;
                     if self.control(index) & 0x80 != 0 {
                         return Some(index);
                     }

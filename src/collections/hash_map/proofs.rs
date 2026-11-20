@@ -15,6 +15,9 @@ fn group_masks_all_bytes() {
         unsafe { group::first_vacant(bytes.as_ptr()) },
         group::first(vacant)
     );
+    let vacancy = unsafe { group::Vacancy::load(bytes.as_ptr()) };
+    assert_eq!(vacancy.found(), vacant != 0);
+    assert_eq!(vacancy.lane(), group::first(vacant));
     for i in 0..16 {
         assert_eq!((equal >> i) & 1 != 0, bytes[i] == tag);
         assert_eq!((vacant >> i) & 1 != 0, bytes[i] & 128 != 0);

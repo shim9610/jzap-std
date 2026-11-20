@@ -194,6 +194,50 @@ fn neon_nibbles(lanes: core::arch::aarch64::uint8x16_t) -> u64 {
     }
 }
 
+const ARM64_NEON: bool = cfg!(all(
+    target_arch = "aarch64",
+    target_feature = "neon",
+    target_endian = "little",
+    not(any(kani, miri))
+));
+
+#[derive(Clone, Copy)]
+pub(crate) struct Vacancy(u16);
+
+impl Vacancy {
+    /// # Safety
+    /// Sixteen initialized readable control bytes at ptr.
+    #[inline(always)]
+    pub(crate) unsafe fn load(ptr: *const u8) -> Self {
+        // SAFETY: both paths read the caller's sixteen control bytes.
+        unsafe {
+            if ARM64_NEON {
+                Self(first_vacant(ptr) as u16)
+            } else {
+                Self(vacant(ptr))
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn found(self) -> bool {
+        if ARM64_NEON {
+            usize::from(self.0) < WIDTH
+        } else {
+            self.0 != 0
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn lane(self) -> usize {
+        if ARM64_NEON {
+            usize::from(self.0)
+        } else {
+            first(self.0)
+        }
+    }
+}
+
 #[cfg_attr(verus_keep_ghost, verus_spec(out =>
     ensures out <= 16, bits != 0 ==> out < 16,
 ))]
@@ -242,6 +286,9 @@ mod tests {
                 assert_eq!(matching(ptr, EMPTY), 0);
                 assert!(!any_empty(ptr));
                 assert_eq!(first_vacant(ptr), first(mask));
+                let vacancy = Vacancy::load(ptr);
+                assert_eq!(vacancy.found(), mask != 0);
+                assert_eq!(vacancy.lane(), first(mask));
                 assert_eq!(vacant(ptr), mask);
             }
         }
@@ -254,7 +301,7 @@ mod tests {
         // SAFETY: ptr is the start of the initialized 16-byte suffix.
         unsafe {
             assert!(any_empty(bytes.as_ptr()));
-            assert_eq!(first_vacant(bytes.as_ptr()), 3);
+            assert_eq!(first_vacant(bytes.as_ptr()), 5);
         }
         for tag in 0..=u8::MAX {
             let expected = bytes

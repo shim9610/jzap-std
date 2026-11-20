@@ -394,14 +394,17 @@ construction.
 
 ##### Validated word prefixes
 
-Formats with a contiguous eight-byte prefix inside the key field can set
-`StridedFormat::WORD_PREFIX_OFFSET`. The constructor checks the suggested
-offset against each decoded key in the existing order-validation pass.
-A short key or a mismatched offset disables the hint for that page. A
-lookup prepares the query word once. Unequal words settle the comparison
-without decoding the key length. Equal words still use the complete key,
-including its length and suffix. In the x86-64 benchmark binary the
-prefix word load and comparison precede the conditional key-length load.
+Formats with keys stored inline can set
+`StridedFormat::WORD_PREFIX_OFFSET`. The view validates the hint against
+each decoded key while it checks page ordering. It can search the
+original records using three or eight key bytes. For pages where all
+keys share their first eight bytes, the lookup compares that word once
+and searches the following bytes. The lookup decodes the candidate on
+a prefix match and compares the remaining bytes. Colliding prefixes
+retain the exact full-key result and insertion position. Pages that
+cannot use the hint fall back to complete-key comparison.
+
+The measurements below describe the original eight-byte optimization.
 
 The residual-cost comparison uses the same page bytes and queries within
 each group. The dense-child control reads a fixture-only ordinal stored

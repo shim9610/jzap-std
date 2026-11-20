@@ -32,23 +32,21 @@ impl<const WIDTH: usize> StridedFormat for ByteFormat<WIDTH> {
     }
 }
 
-fn check_word_prefix(seed: usize) -> Result<(), Error> {
-    let page = black_box([0, 1, 2, 3, 4, 5, 6, 7, 8, 42, 1, 1, 2, 3, 4, 5, 6, 7, 8, 43]);
+fn check_prefix<const WIDTH: usize>(
+    page: &[u8],
+    query: &[u8],
+    expected: Option<u8>,
+) -> Result<(), Error> {
+    let stride = WIDTH.checked_add(1).ok_or(Error::InvalidStructure)?;
     let layout = StridedLayout {
-        stride: NonZeroUsize::new(10).ok_or(Error::InvalidStructure)?,
-        key: 0..9,
-        payload: 9..10,
+        stride: NonZeroUsize::new(stride).ok_or(Error::InvalidStructure)?,
+        key: 0..WIDTH,
+        payload: WIDTH..stride,
     };
-    let nodes = [StridedNode::<ByteFormat<9>>::leaf(&page, 2, layout)?];
+    let nodes = [StridedNode::<ByteFormat<WIDTH>>::leaf(page, 2, layout)?];
     let snapshot = StridedTree::try_new(&nodes, Some(0), 0)?;
-    let query = [(seed as u8) % 3, 1, 2, 3, 4, 5, 6, 7, 8];
-    let expected = match query.first() {
-        Some(0) => Some(42),
-        Some(1) => Some(43),
-        _ => None,
-    };
     if snapshot
-        .get(&query)?
+        .get(query)?
         .and_then(|value| value.first().copied())
         != expected
     {
@@ -58,7 +56,24 @@ fn check_word_prefix(seed: usize) -> Result<(), Error> {
 }
 
 pub fn run(seed: usize) -> Result<(), Error> {
-    check_word_prefix(seed)?;
+    let selected = (seed as u8) % 3;
+    let expected = match selected {
+        0 => Some(42),
+        1 => Some(43),
+        _ => None,
+    };
+    let word = black_box([0, 1, 2, 3, 4, 5, 6, 7, 8, 42, 1, 1, 2, 3, 4, 5, 6, 7, 8, 43]);
+    check_prefix::<9>(&word, &[selected, 1, 2, 3, 4, 5, 6, 7, 8], expected)?;
+    let short = black_box([1, 2, 0, 42, 1, 2, 1, 43]);
+    check_prefix::<3>(&short, &[1, 2, selected], expected)?;
+    let common = black_box([
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 43,
+    ]);
+    check_prefix::<12>(
+        &common,
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, selected],
+        expected,
+    )?;
     let layout = StridedLayout {
         stride: NonZeroUsize::new(3).ok_or(Error::InvalidStructure)?,
         key: 1..2,

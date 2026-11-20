@@ -213,6 +213,60 @@ The byte view handles complete keys of any length the format can represent
 and retain in a fence. Out-of-line key resolution and streaming range
 traversal are tracked separately. [Raw pages and partial keys](https://github.com/shim9610/jzap-std/issues/10) · [Streaming ranges](https://github.com/shim9610/jzap-std/issues/13)
 
+##### Fixed-stride page timing
+
+The Linux x86-64 benchmark at `7b3f49d` used Rust 1.95.0 on an AMD EPYC
+9V74 virtual machine, pinned to CPU 2. The generated fixture uses 4 KiB
+pages, 80-byte leaf records, 52-byte branch records, and complete 8–16 byte
+inline keys. Node occupancy varies, and the query corpus contains hits
+and misses. The timed paths share page bytes, query order, strict key-order
+checks and visited-path checks. The decoder builds typed arrays per page,
+with copied or borrowed values. Page I/O, checksums and Varlit-specific
+metadata validation are outside the benchmark. [Varlit reuse-page layout](https://github.com/shim9610/varlit/blob/f9e9c79e3cf50da07d03487bb469d940c1a298c6/crates/varlit-core/src/disk_index/tree.rs)
+
+The table divides total elapsed time by total lookups. Three independent
+seeds contributed 36 page-lookup intervals. The shortest was 1.105 s
+rounded to milliseconds. Counts and checksums matched within each seed and
+condition. The largest repeat difference for the same decoder was 5.58%.
+
+| Condition | Decode time (ns/lookup) | Direct time (ns/lookup) | Direct − decode (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · 27/40 maximum leaf/branch entries · copy values | 984.761 | 421.862 | −562.899 |
+| 2,048 keys · 27/40 maximum leaf/branch entries · borrow values | 886.841 | 421.862 | −464.979 |
+| 2,048 keys · 50/78 maximum leaf/branch entries · copy values | 1,208.706 | 443.277 | −765.429 |
+| 2,048 keys · 50/78 maximum leaf/branch entries · borrow values | 1,071.788 | 443.277 | −628.511 |
+| 181,267 keys · 50/78 maximum leaf/branch entries · copy values | 2,221.105 | 890.605 | −1,330.500 |
+| 181,267 keys · 50/78 maximum leaf/branch entries · borrow values | 2,143.495 | 890.605 | −1,252.890 |
+
+For the borrowed-value decoder, the paired gaps across seeds were
+−496.073 to −431.833, −657.489 to −593.204, and −1,335.179 to −1,189.450
+ns/lookup in fixture order. The optimized x86-64 decoder instruction
+sequences match the pre-change ones after normalizing addresses. The
+direct path eliminates per-entry scratch-array stores and reserves
+1,048 bytes in its prologue, compared with 4,096 bytes when borrowing
+values and 5,944 bytes when copying values, excluding register saves
+and padding pushes.
+
+The resident `std::collections::BTreeMap` check queries a prebuilt
+in-memory index directly. Its observed gaps were
++346.075, +366.202, and +716.075 ns/lookup, with the direct page lookup
+taking longer. All three conditions exceeded 10% on a standard-map repeat
+in at least one seed, with a maximum of 20.81%, so these comparisons are
+held. Every generated query's result was checked against the standard
+map before timing.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --bin bplus_strided
+mkdir -p target/verification/bplus-strided
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" \
+    > "target/verification/bplus-strided/seed-$seed.csv"
+  round=$((round + 1))
+done
+```
+
 #### Complete-key prototype timing
 
 The Linux x86-64 run used Rust 1.95.0, the release profile, and CPU affinity 2

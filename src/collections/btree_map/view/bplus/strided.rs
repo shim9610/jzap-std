@@ -363,24 +363,23 @@ mod proofs {
     fn lookup_matches_two_complete_keys() {
         let [first, second, query, a, b]: [u8; 5] = kani::any();
         let page = [0, first, a, 0, second, b];
-        let keys = [[first], [second]];
-        let values = [[a], [b]];
         let raw = StridedNode::<Bytes>::leaf(&page, 2, layout());
-        let typed = super::super::Node::<_, _, u8>::leaf(&keys, &values);
-        assert_eq!(raw.is_ok(), typed.is_ok());
-        if let (Ok(raw), Ok(typed)) = (raw, typed) {
-            let query = [query];
-            let mut lookup = Lookup::new(0u8, 0, query.as_slice()).unwrap();
-            let expected = lookup.provide(0, &typed).unwrap();
-            let mut actual = Lookup::new(0u8, 0, query.as_slice()).unwrap();
+        assert_eq!(raw.is_ok(), first < second);
+        if let Ok(raw) = raw {
+            let query_bytes = [query];
+            let mut actual = Lookup::new(0u8, 0, query_bytes.as_slice()).unwrap();
             let found = actual.provide_strided(0, &raw).unwrap();
-            match (expected, found) {
-                (LookupStep::Found(k, v), LookupStep::Found(rk, rv)) => {
-                    assert_eq!(k.as_slice(), rk);
-                    assert_eq!(v.as_slice(), rv);
+            match found {
+                LookupStep::Found(key, value) => {
+                    assert_eq!(key, query_bytes);
+                    assert_eq!(
+                        value.first().copied(),
+                        Some(if query == first { a } else { b })
+                    );
+                    assert!(query == first || query == second);
                 }
-                (LookupStep::Absent, LookupStep::Absent) => {}
-                _ => panic!("raw and typed lookup disagree"),
+                LookupStep::Absent => assert!(query != first && query != second),
+                LookupStep::NeedNode(_) => panic!("leaf requested another node"),
             }
         }
     }

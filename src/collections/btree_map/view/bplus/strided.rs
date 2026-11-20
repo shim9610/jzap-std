@@ -64,19 +64,6 @@ enum Prefix {
     SharedWord,
 }
 
-impl Prefix {
-    #[inline]
-    fn minimum(self) -> usize {
-        match self {
-            Self::None => 0,
-            Self::Short => 3,
-            Self::Word => 8,
-            Self::SharedShort => 11,
-            Self::SharedWord => 16,
-        }
-    }
-}
-
 enum KeyPosition<'a> {
     Found(usize, &'a [u8]),
     Gap(usize),
@@ -154,59 +141,50 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
             .map(|entry| Self::read_key(entry, &layout))
             .transpose()?
             .unwrap_or_default();
-        let mut prefix = Prefix::None;
-        let last_entry = F::WORD_PREFIX_OFFSET.and_then(|_| entries.next_back());
-        let endpoint = last_entry.map(|entry| Self::read_key(entry, &layout));
-        if let (Some(first_entry), Some(offset)) = (first_entry, F::WORD_PREFIX_OFFSET) {
-            let end = endpoint.and_then(Result::ok).unwrap_or(first);
-            let shortest = first.len().min(end.len());
-            // In a sorted node, equal endpoint prefixes also belong to
-            // all intervening keys.
-            prefix = if shortest >= 11 && first.first_chunk::<8>() == end.first_chunk::<8>() {
-                if shortest >= 16 {
-                    Prefix::SharedWord
-                } else {
-                    Prefix::SharedShort
-                }
-            } else if shortest >= 8 {
-                Prefix::Word
-            } else if shortest >= 3 {
-                Prefix::Short
-            } else {
-                Prefix::None
-            };
-            if !Self::matches_prefix(prefix, first_entry, first, &layout, offset)
-                || last_entry
-                    .is_some_and(|entry| !Self::matches_prefix(prefix, entry, end, &layout, offset))
-            {
-                prefix = Prefix::None;
-            }
+        let mut last = first;
+        let mut shortest = first.len();
+        let mut contiguous = false;
+        let mut words = false;
+        if let (Some(entry), Some(offset)) = (first_entry, F::WORD_PREFIX_OFFSET) {
+            let field = entry
+                .get(layout.key.clone())
+                .ok_or(Error::InvalidStructure)?;
+            contiguous = Self::inline_matches(field, first, offset, 0);
+            words = contiguous || Self::word_matches(field, first, offset);
         }
-        let offset = F::WORD_PREFIX_OFFSET.unwrap_or_default();
-        // Select the validation loop once per page. The ordinary word path
-        // stays a single linear pass with a fixed-width comparison.
-        let (mut last, valid) = match prefix {
-            Prefix::None => Self::check_sorted(entries, first, &layout, |_, _| true),
-            Prefix::Word => Self::check_sorted(entries, first, &layout, |field, key| {
-                Self::word_matches(field, key, offset)
-            }),
-            Prefix::Short | Prefix::SharedShort | Prefix::SharedWord => {
-                let minimum = prefix.minimum();
-                Self::check_sorted(entries, first, &layout, |field, key| {
-                    Self::inline_matches(field, key, offset, minimum)
-                })
-            }
-        }?;
-        if !valid {
-            prefix = Prefix::None;
-        }
-        if let Some(end) = endpoint {
-            let end = end?;
-            if compare_bytes(last, end).is_ge() {
+        for entry in entries {
+            let field = entry
+                .get(layout.key.clone())
+                .ok_or(Error::InvalidStructure)?;
+            let next = F::key(field)?;
+            if compare_bytes(last, next).is_ge() {
                 return Err(Error::InvalidStructure);
             }
-            last = end;
+            if let Some(offset) = F::WORD_PREFIX_OFFSET {
+                contiguous = contiguous && Self::inline_matches(field, next, offset, 0);
+                words = words && (contiguous || Self::word_matches(field, next, offset));
+                shortest = shortest.min(next.len());
+            }
+            last = next;
         }
+        // In a sorted node, equal endpoint prefixes also belong to
+        // all intervening keys.
+        let prefix = if contiguous
+            && shortest >= 11
+            && first.first_chunk::<8>() == last.first_chunk::<8>()
+        {
+            if shortest >= 16 {
+                Prefix::SharedWord
+            } else {
+                Prefix::SharedShort
+            }
+        } else if words && shortest >= 8 {
+            Prefix::Word
+        } else if contiguous && shortest >= 3 {
+            Prefix::Short
+        } else {
+            Prefix::None
+        };
         Ok(Self {
             bytes,
             count,
@@ -217,46 +195,6 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
             prefix,
             format: PhantomData,
         })
-    }
-
-    #[inline(always)]
-    fn check_sorted(
-        entries: core::slice::ChunksExact<'a, u8>,
-        mut last: &'a [u8],
-        layout: &StridedLayout,
-        mut validate_prefix: impl FnMut(&[u8], &[u8]) -> bool,
-    ) -> Result<(&'a [u8], bool), Error> {
-        let mut valid = true;
-        for entry in entries {
-            let field = entry
-                .get(layout.key.clone())
-                .ok_or(Error::InvalidStructure)?;
-            let next = F::key(field)?;
-            if compare_bytes(last, next).is_ge() {
-                return Err(Error::InvalidStructure);
-            }
-            valid = valid && validate_prefix(field, next);
-            last = next;
-        }
-        Ok((last, valid))
-    }
-
-    #[inline]
-    fn matches_prefix(
-        prefix: Prefix,
-        entry: &[u8],
-        key: &[u8],
-        layout: &StridedLayout,
-        offset: usize,
-    ) -> bool {
-        let Some(field) = entry.get(layout.key.clone()) else {
-            return false;
-        };
-        match prefix {
-            Prefix::None => true,
-            Prefix::Word => Self::word_matches(field, key, offset),
-            _ => Self::inline_matches(field, key, offset, prefix.minimum()),
-        }
     }
 
     #[inline]

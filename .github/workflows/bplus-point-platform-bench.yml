@@ -1,14 +1,14 @@
-name: B+ Range Benchmark
+name: B+ Streaming Lookup Benchmark
 on:
   pull_request:
     branches: [main]
     paths:
-      - '.github/workflows/bplus-platform-bench.yml'
+      - '.github/workflows/bplus-point-platform-bench.yml'
 permissions:
   contents: read
 jobs:
-  timed-range:
-    name: B+ range (${{ matrix.os }})
+  timed-point:
+    name: B+ lookup (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -44,42 +44,59 @@ jobs:
               print(command, flush=True)
               subprocess.run(command, check=True, **kwargs)
 
+          def benchmark_driver(original):
+              text = original.decode("utf-8").replace("\r\n", "\n")
+              first = text.index('        ("brie", &|q| {')
+              last = text.index('        ("std",', first)
+              text = text[:last] + text[first:last].replace('"brie"', '"brie_control"', 1) + text[last:]
+              text = text.replace(
+                  "    let pages = make_pages::<usize>(fanout, height);",
+                  '    if std::env::var("BPLUS_FANOUT").unwrap().parse::<usize>().unwrap() != fanout { return Ok(()); }\n'
+                  "    let pages = make_pages::<usize>(fanout, height);")
+              text = text.replace("            for &(_, method) in methods {",
+                  '            for &(name, method) in methods {\n                if !matches!(name, "brie" | "brie_control" | "jzap") { continue; }')
+              text = text.replace("            (pilot as f64 * 1.5 / fastest).ceil() as usize",
+                  '            let target: f64 = std::env::var("BPLUS_TARGET_SECONDS").unwrap().parse().unwrap();\n'
+                  "            (pilot as f64 * target / fastest).ceil() as usize")
+              text = text.replace("            let (elapsed, sum) = measure(method, &queries, batches)?;",
+                  '            if !matches!(name, "brie" | "brie_control" | "jzap") { continue; }\n'
+                  "            let (elapsed, sum) = measure(method, &queries, batches)?;")
+              assert text.count('if !matches!(name, "brie" | "brie_control" | "jzap")') == 2
+              return text
+
           print(platform.platform(), platform.machine(), flush=True)
           run(["rustc", "+1.95.0", "-vV"])
           with tempfile.TemporaryDirectory() as temporary:
               root = Path(temporary)
               work = root / "source"
               target = root / "target"
-              exe = "bplus_range.exe" if os.name == "nt" else "bplus_range"
+              exe = "bplus.exe" if os.name == "nt" else "bplus"
               run(["git", "worktree", "add", "--detach", str(work), os.environ["BASE_SHA"]])
               try:
                   binaries = {}
                   for label, rev in (("base", os.environ["BASE_SHA"]), ("candidate", os.environ["HEAD_SHA"])):
                       run(["git", "checkout", "--detach", rev], cwd=work)
-                      driver = work / "tools/throughput-analysis/src/bin/bplus_range.rs"
+                      driver = work / "tools/throughput-analysis/src/bin/bplus.rs"
                       original = driver.read_bytes()
-                      calibrated = original.decode("utf-8").replace("measure(f, &queries, 12).0", "measure(f, &queries, 96).0").replace("1.24 * 12.0 / min", "target_seconds * 96.0 / min")
-                      assert calibrated.count("target_seconds * 96.0 / min") == 1
-                      calibrated = calibrated.replace("        let batches =", "        let target_seconds: f64 = std::env::var(\"BPLUS_TARGET_SECONDS\").unwrap().parse().unwrap();\n        let batches =")
                       try:
-                          driver.write_text(calibrated, encoding="utf-8")
+                          driver.write_text(benchmark_driver(original), encoding="utf-8")
                           run(["cargo", "+1.95.0", "build", "--locked", "--release",
                            "--manifest-path", "tools/throughput-analysis/Cargo.toml",
-                           "--features", "bplus-bench", "--bin", "bplus_range",
+                           "--features", "bplus-bench", "--bin", "bplus",
                                "--target-dir", str(target)], cwd=work)
                       finally:
                           driver.write_bytes(original)
                       binaries[label] = shutil.copy2(target / "release" / exe, root / (label + "-" + exe))
-                  print("version,seed,fanout,height,items_per_range,impl,seconds,ranges,items,checksum", flush=True)
-                  for seed, width in product((1, 2, 3), ("8",)):
+                  print("version,seed,fanout,height,implementation,seconds,operations,checksum", flush=True)
+                  for seed, width in product((1, 2, 3), ("8", "16", "32")):
                       order = ("base", "candidate") if seed != 2 else ("candidate", "base")
                       for label in order:
                           for attempt in range(4):
-                              child = subprocess.run([binaries[label], str(seed), width],
+                              child = subprocess.run([binaries[label], str(seed)],
                                                      capture_output=True, text=True, timeout=90,
-                                                     env=os.environ | {"BPLUS_TARGET_SECONDS": str(1.45 + 0.35 * attempt)})
+                                                     env=os.environ | {"BPLUS_TARGET_SECONDS": str(1.45 + 0.35 * attempt), "BPLUS_FANOUT": width})
                               rows = list(csv.DictReader(io.StringIO(child.stdout)))
-                              if child.returncode == 0 and len(rows) == 12:
+                              if child.returncode == 0 and len(rows) == 3:
                                   break
                               print(child.stderr, flush=True)
                           else:

@@ -1,5 +1,6 @@
 //! Ordered scans of an already validated snapshot.
 
+use super::super::{SMALL_NODE_KEYS, count_admitted_minima, short_keys};
 use super::FixedTree;
 use crate::{Error, TryIterator};
 use core::{borrow::Borrow, iter::Zip, ops::Bound, slice::Iter};
@@ -85,12 +86,8 @@ fn branch_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
 ) -> Result<usize, Error> {
     // Child zero is the fallback. Only later minima can advance the slot.
     let later = keys.get(1..).ok_or(Error::InvalidStructure)?;
-    if N == 8 && size_of::<K>() <= size_of::<u64>() && size_of_val(query) <= size_of::<u64>() {
-        // For short keys, compare seven fixed offsets to avoid dependent reads.
-        Iterator::try_fold(&mut later.iter(), 0usize, |count, key| {
-            count.checked_add(usize::from(key.borrow().cmp(query).is_le()))
-        })
-        .ok_or(Error::InvalidStructure)
+    if N == SMALL_NODE_KEYS && short_keys::<K, _>(query) {
+        count_admitted_minima(later, query)
     } else {
         Ok(prefix_len(later, query, true))
     }

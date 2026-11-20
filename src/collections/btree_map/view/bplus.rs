@@ -9,6 +9,23 @@ pub use fixed::{FixedTree, Range};
 
 const SMALL_NODE_KEYS: usize = 8;
 
+#[inline(always)]
+fn short_keys<K, Q: ?Sized>(query: &Q) -> bool {
+    size_of::<K>() <= size_of::<u64>() && size_of_val(query) <= size_of::<u64>()
+}
+
+#[inline(always)]
+fn count_admitted_minima<K: Borrow<Q>, Q: ?Sized + Ord>(
+    later: &[K],
+    query: &Q,
+) -> Result<usize, Error> {
+    // Read the seven later minima at fixed offsets for width-eight nodes.
+    Iterator::try_fold(&mut later.iter(), 0usize, |count, key| {
+        count.checked_add(usize::from(key.borrow().cmp(query).is_le()))
+    })
+    .ok_or(Error::InvalidStructure)
+}
+
 #[inline]
 fn child_index<const CONDITIONAL: bool, K: Borrow<Q>, Q: ?Sized + Ord>(
     keys: &[K],
@@ -151,7 +168,17 @@ impl<'q, K: Copy + Ord + Borrow<Q>, I: Copy + Eq, Q: ?Sized + Ord> Lookup<'q, K,
                 }
             }
             Contents::Branch(children) => {
-                let index = if node.keys.len() <= SMALL_NODE_KEYS {
+                let index = if let Some(keys) =
+                    node.keys.first_chunk::<SMALL_NODE_KEYS>().filter(|_| {
+                        node.keys.len() == SMALL_NODE_KEYS && short_keys::<K, _>(self.query)
+                    }) {
+                    let (first, later) = keys.split_first().ok_or(Error::InvalidStructure)?;
+                    if first.borrow() > self.query {
+                        None
+                    } else {
+                        Some(count_admitted_minima(later, self.query)?)
+                    }
+                } else if node.keys.len() <= SMALL_NODE_KEYS {
                     child_index::<false, _, _>(node.keys, self.query)?
                 } else {
                     child_index::<true, _, _>(node.keys, self.query)?
@@ -234,6 +261,25 @@ mod proofs {
             Some((_, child)) => step == LookupStep::NeedNode(child),
             None => step == LookupStep::Absent,
         });
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn width_eight_lookup_selects_the_last_admitted_child() {
+        let minima: [u8; 8] = kani::any();
+        let query: u8 = kani::any();
+        let children = [1, 2, 3, 4, 5, 6, 7, 8];
+        let Ok(node) = Node::<_, (), _>::branch(&minima, &children) else {
+            return;
+        };
+        let expected = minima
+            .iter()
+            .rposition(|key| *key <= query)
+            .map_or(LookupStep::Absent, |index| {
+                LookupStep::NeedNode(children[index])
+            });
+        let mut lookup = Lookup::new(0, 1, &query).unwrap();
+        assert!(lookup.provide(0, &node) == Ok(expected));
     }
 
     #[kani::proof]

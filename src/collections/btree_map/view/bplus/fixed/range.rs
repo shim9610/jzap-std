@@ -62,7 +62,10 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
                 let (keys, children) = branch(self, id)?;
                 let slot = match start {
                     Bound::Included(query) | Bound::Excluded(query) => {
-                        prefix_len(keys, query, true).saturating_sub(1)
+                        // Child zero is the fallback. Only later minima
+                        // can advance the slot.
+                        let later = keys.get(1..).ok_or(Error::InvalidStructure)?;
+                        prefix_len(later, query, true)
                     }
                     Bound::Unbounded => 0,
                 };
@@ -90,6 +93,29 @@ fn prefix_len<K: Borrow<Q>, Q: ?Sized + Ord>(keys: &[K], query: &Q, inclusive: b
     })
 }
 
+// If the first two candidate slots settle the upper bound, skip the search.
+#[inline(always)]
+fn end_slot<K: Borrow<Q>, Q: ?Sized + Ord>(
+    keys: &[K],
+    first: usize,
+    query: &Q,
+    inclusive: bool,
+) -> Result<usize, Error> {
+    let past_end = |key: &K| match key.borrow().cmp(query) {
+        core::cmp::Ordering::Less => false,
+        core::cmp::Ordering::Equal => !inclusive,
+        core::cmp::Ordering::Greater => true,
+    };
+    if keys.get(first).is_some_and(past_end) {
+        return Ok(first);
+    }
+    let next = first.checked_add(1).ok_or(Error::InvalidStructure)?;
+    if keys.get(next).is_some_and(past_end) {
+        return Ok(next);
+    }
+    Ok(prefix_len(keys, query, inclusive))
+}
+
 #[inline]
 fn branch<'a, K, V, const N: usize>(
     tree: &FixedTree<'a, K, V, N>,
@@ -113,10 +139,10 @@ impl<'a, K: Borrow<Q>, V, Q: ?Sized + Ord, const N: usize> Range<'_, 'a, '_, K, 
         };
         let limit = match self.end {
             Bound::Included(query) if keys.last().is_some_and(|k| k.borrow() > query) => {
-                prefix_len(keys, query, true)
+                end_slot(keys, first, query, true)?
             }
             Bound::Excluded(query) if keys.last().is_some_and(|k| k.borrow() >= query) => {
-                prefix_len(keys, query, false)
+                end_slot(keys, first, query, false)?
             }
             _ => N,
         };
@@ -207,14 +233,27 @@ mod proofs {
         let tree = FixedTree::try_new(&leaves, &branches).unwrap();
         let start: u8 = kani::any();
         let end: u8 = kani::any();
-        let cursor = tree.range(Bound::Excluded(&start), Bound::Included(&end));
-        if start > end {
+        let include_start: bool = kani::any();
+        let include_end: bool = kani::any();
+        let lower = if include_start {
+            Bound::Included(&start)
+        } else {
+            Bound::Excluded(&start)
+        };
+        let upper = if include_end {
+            Bound::Included(&end)
+        } else {
+            Bound::Excluded(&end)
+        };
+        let cursor = tree.range(lower, upper);
+        if start > end || (start == end && !include_start && !include_end) {
             assert!(matches!(cursor, Err(Error::Bounds)));
             return;
         }
-        let expected = [2u8, 3, 5, 7]
-            .into_iter()
-            .find(|&key| start < key && key <= end);
+        let expected = [2u8, 3, 5, 7].into_iter().find(|&key| {
+            (start < key || (include_start && key == start))
+                && (key < end || (include_end && key == end))
+        });
         let mut cursor = cursor.unwrap();
         assert_eq!(
             cursor

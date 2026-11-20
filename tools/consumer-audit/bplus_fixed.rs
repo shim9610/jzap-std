@@ -105,5 +105,28 @@ proof fn range_admit_leaf_span(first: usize, limit: usize, width: usize, index: 
         0 <= (first as int + index as int) < width,
 {}
 
+// Slot zero is the fallback when no separator is admitted. In a sorted
+// branch, admitting any later minimum also admits the first minimum.
+proof fn range_route_by_later_minima(width: int, later: int, full: int, first_admitted: bool)
+    requires
+        0 < width,
+        0 <= later < width,
+        later > 0 ==> first_admitted,
+        full == if first_admitted { later + 1 } else { later },
+    ensures
+        0 <= later < width,
+        later == if full > 0 { full - 1 } else { 0 },
+{}
+
+// The checked lower and upper bounds give first <= limit. When each
+// candidate exists, being outside the upper bound is equivalent to
+// having a slot at or after the end of the admitted prefix.
+proof fn range_short_limit(first: int, limit: int, width: int)
+    requires 0 <= first <= limit <= width,
+    ensures
+        first < width && limit <= first ==> limit == first,
+        first + 1 < width && first < limit <= first + 1 ==> limit == first + 1,
+{}
+
 fn main() {}
 }

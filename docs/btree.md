@@ -465,9 +465,12 @@ fn scan_snapshot() -> Result<(), Error> {
 
 Either endpoint can be `Unbounded`. Reversed endpoints and equal endpoints
 that both exclude the key return `Error::Bounds`. The cursor descends to the
-first possible leaf and tracks its logical rank in separator order. It
-checks the key and value spans together when it opens a leaf. Within that
-span, a pair of slice iterators produces the items. The cursor caches its
+first possible leaf and tracks its logical rank in separator order. Child
+zero is the fallback, so routing searches only the later child minima.
+When the first candidate or its successor determines the upper bound, the
+cursor uses that slot directly. Other partial leaves use a binary search
+for the upper slot. The cursor checks both spans when it opens a leaf and
+then yields items from the paired slice iterators. The cursor caches its
 parent's child IDs and decodes the next leaf rank from the root at a parent
 boundary. Opening and advancing the cursor allocate no heap memory.
 
@@ -491,32 +494,38 @@ Repeat the seed and width if the driver rejects an interval shorter than one
 second. Divide total elapsed time by total range calls to combine the seeds.
 
 On Linux x86-64 (AMD EPYC 9V74), Rust 1.95.0 and `brie-tree` 0.1.2, the
-shortest of 108 retained intervals ran for 1.043 seconds. The condition gives
-jzap node width, tree height, and the number of returned entries. The gap
-is jzap time minus the paired `brie-tree` time.
+shortest of 216 retained intervals ran for 1.106 seconds. Two passes
+used three seeds each. The measurement build used 96 calibration batches
+and a target interval of 1.60 seconds to account for VM timing variation.
+The timed workload and one-second acceptance rule were the same.
+The condition gives jzap node width, tree height, and the number of
+returned entries. The gap is jzap time minus the paired `brie-tree` time.
 
 | Condition | `brie-tree` time (ns/range) | jzap time (ns/range) | Gap |
 | --- | ---: | ---: | ---: |
-| 8 / 2, 0 entries | 12.68 | 22.86 | +10.18 |
-| 8 / 2, 1 entry | 17.04 | 27.55 | +10.50 |
-| 8 / 2, 32 entries | 69.08 | 70.87 | +1.79 |
-| 8 / 2, 256 entries | 307.11 | 322.13 | +15.01 |
-| 16 / 3, 0 entries | 41.26 | 59.65 | +18.40 |
-| 16 / 3, 1 entry | 50.09 | 53.15 | +3.06 |
-| 16 / 3, 32 entries | 151.96 | 106.81 | −45.15 |
-| 16 / 3, 256 entries | 407.66 | 342.16 | −65.50 |
-| 32 / 2, 0 entries | 28.39 | 44.03 | +15.64 |
-| 32 / 2, 1 entry | 36.87 | 50.30 | +13.42 |
-| 32 / 2, 32 entries | 116.30 | 90.09 | −26.21 |
-| 32 / 2, 256 entries | 377.75 | 287.46 | −90.29 |
+| 8 / 2, 0 entries | 13.11 | 19.54 | +6.42 |
+| 8 / 2, 1 entry | 16.95 | 21.95 | +5.00 |
+| 8 / 2, 32 entries | 64.63 | 66.20 | +1.57 |
+| 8 / 2, 256 entries | 294.31 | 313.93 | +19.61 |
+| 16 / 3, 0 entries | 37.54 | 22.85 | −14.69 |
+| 16 / 3, 1 entry | 46.35 | 28.06 | −18.29 |
+| 16 / 3, 32 entries | 142.60 | 99.47 | −43.13 |
+| 16 / 3, 256 entries | 400.33 | 329.28 | −71.06 |
+| 32 / 2, 0 entries | 28.85 | 17.19 | −11.66 |
+| 32 / 2, 1 entry | 35.31 | 21.49 | −13.82 |
+| 32 / 2, 32 entries | 112.65 | 88.06 | −24.59 |
+| 32 / 2, 256 entries | 364.88 | 297.54 | −67.34 |
 
-Each seed also times a second run of the same `brie-tree` path. Its
-difference from the primary run reached 46.51 ns on a 256-entry scan.
-The width-8 gaps across seeds were −4.28 to +9.62 ns at 32 entries and
-+3.87 to +28.58 ns at 256 entries. In the optimized x86-64 consumer, the
-inlined range constructor avoids a 96-byte cursor copy. The item loop
-holds the slot in a register and compares it with the end of the admitted
-span. The out-of-line parent traversal receives the tree and rank.
+At width 8 with 256 entries, the two pass gaps were +15.50 and +23.73 ns.
+Across the six seed-and-pass pairs, the gap ranged from −2.23 to +38.08 ns.
+The paired `brie-tree` control ranged from −28.64 to +19.53 ns in that
+condition. At widths 16 and 32, the jzap time was lower in all six pairs
+for each range length.
+
+The width-8 x86-64 consumer routes directly to a child slot, eliminating
+the two instructions used to saturating-subtract one from the prefix
+length. Its empty and single-entry paths can return from the first two
+candidate comparisons without calling the upper-bound binary search.
 
 #### Fixed-width point lookup and preparation benchmarks
 

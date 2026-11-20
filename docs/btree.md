@@ -329,6 +329,61 @@ individually. Both paths compare complete byte keys. Keys of at least eight
 bytes compare their first eight bytes as big-endian words before examining
 equal-prefix suffixes.
 
+The Linux x86-64 campaign used three processes with seeds 617, 6203, and
+96011 on CPU 2 of the AMD EPYC 9V74 virtual machine, with Rust 1.95.0 and
+the same 4 KiB fixtures as the earlier comparison. Snapshot preparation
+and reference index construction took place before timing. The shuffled
+campaign used batches of 32,768 lookups and accumulated at least 1.2 timed
+seconds per implementation, fixture, and seed. Counts and checksums matched
+within each group. The largest repeat differences were 9.52% for
+`brie-tree`, 2.90% for snapshot lookup, and 3.52% for streaming lookup
+with cached page views.
+
+| Shuffled whole-index condition | brie-tree (ns/lookup) | jzap snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries | 81.325 | 103.074 | +21.748 |
+| 2,048 keys · height 1 · 50/78 max entries | 85.329 | 95.408 | +10.079 |
+| 181,267 keys · height 2 · 50/78 max entries | 261.383 | 284.521 | +23.138 |
+
+The separate validation comparison reuses the same raw pages across all
+paths. Uncached streaming constructs a checked page view on every visit.
+Cached streaming reuses those views and still validates the visited path.
+The snapshot checks the whole tree during construction and then performs
+point lookup through the same byte views.
+
+| Validation condition | Uncached streaming (ns/lookup) | Cached streaming (ns/lookup) | Snapshot (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries | 350.651 | 195.387 | 112.186 |
+| 2,048 keys · height 1 · 50/78 max entries | 295.080 | 132.878 | 94.718 |
+| 181,267 keys · height 2 · 50/78 max entries | 674.428 | 309.361 | 241.236 |
+
+Optimized x86-64 code uses a byte-swapped word comparison for long keys.
+The search loop is inlined in the snapshot lookup so its position result
+stays inside the caller. Smaller keys and equal-prefix suffixes retain
+lexical byte comparison.
+
+The continuous campaign times each path in its own interval, using the
+same data and at least one second per interval. Two conditions exceeded
+the 10% repeat limit and are held. The shuffled results above carry the
+primary comparison.
+
+| Continuous whole-index condition | brie-tree (ns/lookup) | jzap snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) | Repeat status |
+| --- | ---: | ---: | ---: | --- |
+| 2,048 keys · height 2 · 27/40 max entries | 79.123 | 83.229 | +4.106 | Held, 15.57% snapshot repeat |
+| 2,048 keys · height 1 · 50/78 max entries | 77.989 | 71.512 | −6.476 | Accepted, at most 8.27% repeat |
+| 181,267 keys · height 2 · 50/78 max entries | 201.949 | 214.141 | +12.192 | Held, 20.82% snapshot repeat |
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_strided
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --snapshot
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --snapshot-steady
+  round=$((round + 1))
+done
+```
+
 #### Complete-key prototype timing
 
 The Linux x86-64 run used Rust 1.95.0, the release profile, and CPU affinity 2

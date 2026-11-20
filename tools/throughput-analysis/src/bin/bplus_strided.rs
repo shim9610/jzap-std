@@ -362,6 +362,7 @@ fn snapshot_groups(
     queries: &[InlineKey],
     round: usize,
     case: usize,
+    steady: bool,
 ) -> [(&'static str, Vec<(&'static str, Duration, u64, usize)>); 2] {
     let nodes: Vec<_> = fixture
         .pages
@@ -395,6 +396,15 @@ fn snapshot_groups(
         for (_, read) in whole_index.into_iter().chain(validation) {
             assert_eq!(read(&prepared, query).unwrap(), expected);
         }
+    }
+    if steady {
+        return [
+            (
+                "steady",
+                run_group(&prepared, queries, &whole_index, round, case),
+            ),
+            ("validation", Vec::new()),
+        ];
     }
     [
         (
@@ -510,8 +520,10 @@ fn main() {
     let mode = args.next();
     let brie_only = match mode.as_deref() {
         None => false,
-        Some("--brie" | "--snapshot") if cfg!(feature = "bplus-bench") => true,
-        _ => panic!("expected --brie or --snapshot with the bplus-bench feature enabled"),
+        Some("--brie" | "--snapshot" | "--snapshot-steady") if cfg!(feature = "bplus-bench") => {
+            true
+        }
+        _ => panic!("expected a brie or snapshot mode with bplus-bench enabled"),
     };
     let cases = [
         (2048, 27, 40),
@@ -551,8 +563,9 @@ fn main() {
             }
         };
         #[cfg(feature = "bplus-bench")]
-        if mode.as_deref() == Some("--snapshot") {
-            for (group, rows) in snapshot_groups(&fixture, &queries, round, case) {
+        if matches!(mode.as_deref(), Some("--snapshot" | "--snapshot-steady")) {
+            let steady = mode.as_deref() == Some("--snapshot-steady");
+            for (group, rows) in snapshot_groups(&fixture, &queries, round, case, steady) {
                 emit(group, rows);
             }
             continue;

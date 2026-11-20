@@ -147,13 +147,40 @@ pinned core source protocol. Deliberate defects must produce solver failures.
 
 Phase models and reviewed correspondence checks are separate from direct Rust
 proofs. Kani uses the product's scalar group fallback; the native SIMD path is
-exercised by differential tests, Miri and AddressSanitizer. Pointer provenance,
+exercised by differential tests. Pointer provenance,
 aliasing, initialization and destructor paths use Miri, AddressSanitizer,
 compiler boundaries and failure-injection scenarios.
 Allocator, foreign entropy and user hasher/Hash/Eq/Drop/iterator contracts remain
 the execution boundary. The fresh source/link composition includes this module
 in all four registered Linux x86-64 profiles, with zero open source obligations
 or unproved linked exit edges. Consumers can apply the same linker check to their concrete roots.
+
+### ARM64 control groups
+
+On little-endian AArch64 targets built with NEON, HashMap and HashSet
+load 16 control bytes together. The equality and vacancy comparisons
+produce byte lanes of zero or all ones. Each half assigns one distinct
+bit to each byte and sums the lanes into an eight-bit mask. Bit zero
+still selects the first control byte. Both loads use the existing
+16-byte readable-span contract. The SSE2 implementation serves x86-64.
+The scalar implementation serves other targets and the ARM64 Miri and
+Kani builds.
+
+The ARM64 regression test exercises every 16-bit mask at an unaligned
+address and every tag on a mixed control group. The source-bound Verus
+model checks the weighted sum and its byte bound. The Apple arm64
+release probe emits one 16-byte control load per operation and reduces
+the two halves with `addv` instructions. The Linux x86-64 `hash_map`,
+`hash_set`, and `scenarios` release binaries built before and after this
+change at the same absolute path are byte-identical.
+
+For native macOS timing, run the mixed-size delete/reinsert, fixed-key
+construction, and set construction and owned-union workloads against the
+same Rust standard library. Use independent processes, seed-matched
+inputs and operations, and intervals of at least one second. Compare each
+result with the contemporaneous std time. The Apple M4 report measured
+the earlier scalar implementation. Native macOS timing of the NEON
+implementation is pending.
 
 
 ## Performance reproduction

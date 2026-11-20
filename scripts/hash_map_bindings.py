@@ -14,12 +14,13 @@ def is_copy_capability_site(row):
      row['context'].split('<')[0].strip()=='CopyWitness' and row['kind']=='field' and
      d.get('constructor') in ('Self','CopyWitness') and d.get('field')=='marker' and
      ''.join(d.get('value','').split())=='core::marker::PhantomData')
-REVIEWED={'src/collections/hash_map/entropy.rs': '7e9b67ebd9570ce03a519651ca288ed6fef887303451497c946ba330a192f1b5', 'src/collections/hash_map.rs': 'e716aec2b177e9871e5f9a7690e9f6b0c564626f40f411515bae744e53fbc8de', 'src/collections/hash_map/entry.rs': 'fe8ebb8355e09961fdf316689d8727ff7fa88f1129c6437c74cc397f4b5e5bef', 'src/collections/hash_map/geometry.rs': 'a9c60a1831f2c3a35d9c06e292bc58f807f75baf28f8bba4e42f9bfd77304dbe', 'src/collections/hash_map/group.rs': '9e8449e1d43a8ab1c6dcf4e6c8b3817439364be14b59cdac48a8504b8b8dc0a7', 'src/collections/hash_map/hash.rs': '115669968d99257578fea88fcdd1db51430557403b5fcbea5ab6014b5ca3a11d', 'src/collections/hash_map/iter.rs': '1fe28417666310b6324f33ac09be3fedcb8c79a5e431399238aacb32e8bd85c5', 'src/collections/hash_map/raw.rs': 'd7479b2b0e924e8686bb173665b09d6931f80c6550f8affca8d9be4db0e4d2c6'}
+REVIEWED={'src/collections/hash_map/entropy.rs': '7e9b67ebd9570ce03a519651ca288ed6fef887303451497c946ba330a192f1b5', 'src/collections/hash_map.rs': 'e716aec2b177e9871e5f9a7690e9f6b0c564626f40f411515bae744e53fbc8de', 'src/collections/hash_map/entry.rs': 'fe8ebb8355e09961fdf316689d8727ff7fa88f1129c6437c74cc397f4b5e5bef', 'src/collections/hash_map/geometry.rs': 'a9c60a1831f2c3a35d9c06e292bc58f807f75baf28f8bba4e42f9bfd77304dbe', 'src/collections/hash_map/group.rs': 'fa560eb3f229c7473524a5d8001d2a2d238c72a83daca3bdd00cf7c7237d0031', 'src/collections/hash_map/hash.rs': '115669968d99257578fea88fcdd1db51430557403b5fcbea5ab6014b5ca3a11d', 'src/collections/hash_map/iter.rs': '1fe28417666310b6324f33ac09be3fedcb8c79a5e431399238aacb32e8bd85c5', 'src/collections/hash_map/raw.rs': 'd7479b2b0e924e8686bb173665b09d6931f80c6550f8affca8d9be4db0e4d2c6'}
 # Product function -> maintained caller in tools/memory-proof/hash-map.verus.rs.
 RAW={'allocate':'hash_allocate_caller','try_clone_copy':'hash_allocation_caller','allocation':'hash_allocation_caller',
  ('drop','metadata_init'):'hash_allocation_caller',('drop','unsafe_block','Owner'):'hash_allocation_caller',('drop','unsafe_block','Storage'):'hash_allocation_caller',
  'slot':'hash_slot_caller','control':'hash_set_control_caller','set_control':'hash_set_control_caller',
  'find':'hash_probe_caller','vacant':'hash_probe_caller','matching':'hash_probe_caller','find_insert':'hash_find_insert_caller',
+ 'neon_mask':'hash_neon_mask_octet',
  'insert_at':'hash_insert_at_caller','erase':'hash_erase_caller','clear':'hash_reset_caller',('run','unsafe_block'):'hash_clear_run_caller'}
 # Position sites outside the table kernel: (file, function, context) -> maintained caller.
 POSITION={('hash_map.rs','try_retain','HashMap'):'hash_slot_caller',('hash_map.rs','get','HashMap'):'hash_slot_caller',

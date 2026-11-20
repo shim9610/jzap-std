@@ -70,6 +70,28 @@ fn hash_group_index(mask: usize, pos: usize)
         }
     }
 }
+// Each aarch64 comparison lane is 0x00 or 0xff. Masking an octet's
+// lanes with 1, 2, ..., 128 makes their horizontal sum equivalent
+// to setting the corresponding bits. The second octet uses the same
+// reduction and supplies the mask's high byte.
+proof fn hash_neon_mask_octet(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8)
+    requires a & 1 == a, b & 2 == b, c & 4 == c, d & 8 == d,
+        e & 16 == e, f & 32 == f, g & 64 == g, h & 128 == h,
+    ensures
+        a as int + b as int + c as int + d as int + e as int + f as int + g as int + h as int <= 255,
+        a.wrapping_add(b).wrapping_add(c.wrapping_add(d)).wrapping_add(
+            e.wrapping_add(f).wrapping_add(g.wrapping_add(h))
+        ) == a | b | c | d | e | f | g | h,
+{
+    assert(a.wrapping_add(b).wrapping_add(c.wrapping_add(d)).wrapping_add(
+        e.wrapping_add(f).wrapping_add(g.wrapping_add(h))
+    ) == a | b | c | d | e | f | g | h) by(bit_vector)
+        requires a & 1 == a, b & 2 == b, c & 4 == c, d & 8 == d,
+            e & 16 == e, f & 32 == f, g & 64 == g, h & 128 == h;
+    assert(a <= 1 && b <= 2 && c <= 4 && d <= 8 && e <= 16 && f <= 32 && g <= 64 && h <= 128)
+        by(bit_vector) requires a & 1 == a, b & 2 == b, c & 4 == c, d & 8 == d,
+            e & 16 == e, f & 32 == f, g & 64 == g, h & 128 == h;
+}
 // `write_bytes(ctrl, EMPTY, buckets + WIDTH)` and the whole control span copy.
 fn hash_controls_index(mask: usize) -> (controls: usize)
     requires table_shape(mask),

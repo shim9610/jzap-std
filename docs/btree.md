@@ -309,6 +309,26 @@ for seed in 617 6203 96011; do
 done
 ```
 
+##### Prevalidated fixed-stride snapshots
+
+For repeated lookups over stable page bytes, construct a `StridedNode` for
+each page and pass the descriptor slice, root slot, and height to
+`StridedTree::try_new`. Decoded child identifiers address slots in the
+slice. Parents and children may appear in any order.
+
+Construction checks every edge, expected node kind and level, child minimum,
+inherited exclusive ceiling, and unique reachability from the root. It
+releases temporary validation allocations before returning. The view borrows
+the descriptor slice and page bytes. Callers keep that snapshot stable
+throughout its lifetime, including consistent format decoding.
+
+`StridedTree::get` follows the validated edges and returns the original
+leaf value slice. Lookup uses checked access and allocates no storage.
+`Lookup::provide_strided` remains available for callers that supply pages
+individually. Both paths compare complete byte keys. Keys of at least eight
+bytes compare their first eight bytes as big-endian words before examining
+equal-prefix suffixes.
+
 #### Complete-key prototype timing
 
 The Linux x86-64 run used Rust 1.95.0, the release profile, and CPU affinity 2

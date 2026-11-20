@@ -1,6 +1,8 @@
 //! Compare complete inline keys using Varlit's fixed-stride reuse-page geometry.
 #[cfg(feature = "bplus-bench")]
 use brie_tree::{BTree, nonmax::NonMaxU128};
+#[cfg(feature = "bplus-bench")]
+use jzap::collections::btree_map::view::bplus::StridedTree;
 use jzap::{
     Error,
     collections::btree_map::view::{
@@ -99,7 +101,7 @@ impl StridedFormat for Format {
 
 type Page = [u8; PAGE];
 type Answer = Result<Option<u8>, Error>;
-type Read = fn(&Fixture, &[u8]) -> Answer;
+type Read<T = Fixture> = fn(&T, &[u8]) -> Answer;
 
 struct Fixture {
     pages: Vec<Page>,
@@ -205,6 +207,16 @@ fn entry_count(page: &Page) -> usize {
     usize::from(u16::from_le_bytes([page[10], page[11]]))
 }
 
+#[inline]
+fn page_view(page: &Page) -> Result<StridedNode<'_, Format>, Error> {
+    let count = entry_count(page);
+    if page[8] == 0 {
+        StridedNode::leaf(&page[HEADER..], count, layout(LEAF_STRIDE))
+    } else {
+        StridedNode::branch(&page[HEADER..], count, layout(BRANCH_STRIDE))
+    }
+}
+
 #[inline(never)]
 fn direct(fixture: &Fixture, query: &[u8]) -> Answer {
     let (root, depth) = root(fixture)?;
@@ -212,12 +224,7 @@ fn direct(fixture: &Fixture, query: &[u8]) -> Answer {
     let mut id = root;
     loop {
         let page = fixture.pages.get(id).ok_or(Error::InvalidStructure)?;
-        let count = entry_count(page);
-        let raw = if page[8] == 0 {
-            StridedNode::<Format>::leaf(&page[HEADER..], count, layout(LEAF_STRIDE))?
-        } else {
-            StridedNode::<Format>::branch(&page[HEADER..], count, layout(BRANCH_STRIDE))?
-        };
+        let raw = page_view(page)?;
         match lookup.provide_strided(id, &raw)? {
             LookupStep::NeedNode(child) => id = child,
             LookupStep::Found(_, value) => return Ok(value.last().copied()),
@@ -316,10 +323,95 @@ fn brie_lookup(fixture: &Fixture, query: &[u8]) -> Answer {
         .and_then(|value| value.last().copied()))
 }
 
-fn measure(
+#[cfg(feature = "bplus-bench")]
+struct Prepared<'a> {
+    fixture: &'a Fixture,
+    nodes: &'a [StridedNode<'a, Format>],
+    tree: StridedTree<'a, 'a, Format>,
+    root: usize,
+    height: usize,
+}
+
+#[cfg(feature = "bplus-bench")]
+#[inline(never)]
+fn cached(prepared: &Prepared<'_>, query: &[u8]) -> Answer {
+    let mut lookup = Lookup::new(prepared.root, prepared.height, query)?;
+    let mut id = prepared.root;
+    loop {
+        let node = prepared.nodes.get(id).ok_or(Error::InvalidStructure)?;
+        match lookup.provide_strided(id, node)? {
+            LookupStep::NeedNode(child) => id = child,
+            LookupStep::Found(_, value) => return Ok(value.last().copied()),
+            LookupStep::Absent => return Ok(None),
+        }
+    }
+}
+
+#[cfg(feature = "bplus-bench")]
+#[inline(never)]
+fn snapshot(prepared: &Prepared<'_>, query: &[u8]) -> Answer {
+    Ok(prepared
+        .tree
+        .get(query)?
+        .and_then(|value| value.last().copied()))
+}
+
+#[cfg(feature = "bplus-bench")]
+fn snapshot_groups(
     fixture: &Fixture,
     queries: &[InlineKey],
-    read: Read,
+    round: usize,
+    case: usize,
+) -> [(&'static str, Vec<(&'static str, Duration, u64, usize)>); 2] {
+    let nodes: Vec<_> = fixture
+        .pages
+        .iter()
+        .map(|page| page_view(page).unwrap())
+        .collect();
+    let (root, height) = root(fixture).unwrap();
+    let tree = StridedTree::try_new(&nodes, Some(root), height).unwrap();
+    let prepared = Prepared {
+        fixture,
+        nodes: &nodes,
+        tree,
+        root,
+        height,
+    };
+    let whole_index: [(&str, Read<Prepared<'_>>); 4] = [
+        ("brie", |p, q| brie_lookup(p.fixture, q)),
+        ("brie_control", |p, q| brie_lookup(p.fixture, q)),
+        ("snapshot", snapshot),
+        ("snapshot_control", snapshot),
+    ];
+    let validation: [(&str, Read<Prepared<'_>>); 4] = [
+        ("streaming", |p, q| direct(p.fixture, q)),
+        ("cached", cached),
+        ("cached_control", cached),
+        ("snapshot", snapshot),
+    ];
+    for query in queries {
+        let query = query.borrow();
+        let expected = std_lookup(fixture, query).unwrap();
+        for (_, read) in whole_index.into_iter().chain(validation) {
+            assert_eq!(read(&prepared, query).unwrap(), expected);
+        }
+    }
+    [
+        (
+            "snapshot",
+            run_interleaved(&prepared, queries, whole_index, round, case),
+        ),
+        (
+            "validation",
+            run_interleaved(&prepared, queries, validation, round, case),
+        ),
+    ]
+}
+
+fn measure<T>(
+    fixture: &T,
+    queries: &[InlineKey],
+    read: Read<T>,
     batches: usize,
 ) -> (Duration, u64) {
     let mut sum = 0u64;
@@ -336,6 +428,40 @@ fn measure(
     (start.elapsed(), black_box(sum))
 }
 
+#[cfg(feature = "bplus-bench")]
+fn run_interleaved<T, const N: usize>(
+    fixture: &T,
+    queries: &[InlineKey],
+    methods: [(&'static str, Read<T>); N],
+    round: usize,
+    case: usize,
+) -> Vec<(&'static str, Duration, u64, usize)> {
+    let mut total = [Duration::ZERO; N];
+    let mut checksums = [0u64; N];
+    let mut batches = 0usize;
+    let mut state = ((round as u64 + 1) << 32) | (case as u64 + 1);
+    let mut order: [usize; N] = std::array::from_fn(|index| index);
+    while total.iter().any(|&time| time < Duration::from_millis(1200)) {
+        // Vary the method preceding each measurement, including both copies
+        // of the reference. Rotation alone preserves predecessor effects.
+        for index in (1..N).rev() {
+            order.swap(index, next(&mut state) as usize % (index + 1));
+        }
+        for index in order {
+            let (elapsed, checksum) = measure(fixture, queries, methods[index].1, 8);
+            total[index] += elapsed;
+            checksums[index] = checksums[index].wrapping_add(checksum);
+        }
+        batches += 1;
+    }
+    assert!(checksums.iter().all(|&value| value == checksums[0]));
+    methods
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, _))| (name, total[i], checksums[i], batches * 8 * queries.len()))
+        .collect()
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;
     *seed ^= *seed >> 7;
@@ -343,10 +469,10 @@ fn next(seed: &mut u64) -> u64 {
     *seed
 }
 
-fn run_group(
-    fixture: &Fixture,
+fn run_group<T>(
+    fixture: &T,
     queries: &[InlineKey],
-    methods: &[(&'static str, Read)],
+    methods: &[(&'static str, Read<T>)],
     round: usize,
     case: usize,
 ) -> Vec<(&'static str, Duration, u64, usize)> {
@@ -381,10 +507,11 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let seed = args.next().expect("seed").parse::<u64>().unwrap();
     let round = args.next().expect("run order").parse::<usize>().unwrap();
-    let brie_only = match args.next().as_deref() {
+    let mode = args.next();
+    let brie_only = match mode.as_deref() {
         None => false,
-        Some("--brie") if cfg!(feature = "bplus-bench") => true,
-        _ => panic!("expected --brie with the bplus-bench feature enabled"),
+        Some("--brie" | "--snapshot") if cfg!(feature = "bplus-bench") => true,
+        _ => panic!("expected --brie or --snapshot with the bplus-bench feature enabled"),
     };
     let cases = [
         (2048, 27, 40),
@@ -414,6 +541,22 @@ fn main() {
         let queries: Vec<_> = (0..4096)
             .map(|_| key_at(next(&mut random) as usize % (2 * size)))
             .collect();
+        let emit = |group, rows: Vec<(&str, Duration, u64, usize)>| {
+            for (name, elapsed, checksum, operations) in rows {
+                println!(
+                    "{seed},{case},{size},{leaf},{branch},{},{group},{name},{:.9},{operations},{checksum}",
+                    fixture.pages.last().unwrap()[8],
+                    elapsed.as_secs_f64(),
+                );
+            }
+        };
+        #[cfg(feature = "bplus-bench")]
+        if mode.as_deref() == Some("--snapshot") {
+            for (group, rows) in snapshot_groups(&fixture, &queries, round, case) {
+                emit(group, rows);
+            }
+            continue;
+        }
         for query in &queries {
             let query = query.borrow();
             let expected = std_lookup(&fixture, query).unwrap();
@@ -438,15 +581,7 @@ fn main() {
             groups.as_slice()
         };
         for &(group, methods) in groups {
-            for (name, elapsed, checksum, operations) in
-                run_group(&fixture, &queries, methods, round, case)
-            {
-                println!(
-                    "{seed},{case},{size},{leaf},{branch},{},{group},{name},{:.9},{operations},{checksum}",
-                    fixture.pages.last().unwrap()[8],
-                    elapsed.as_secs_f64(),
-                );
-            }
+            emit(group, run_group(&fixture, &queries, methods, round, case));
         }
     }
 }

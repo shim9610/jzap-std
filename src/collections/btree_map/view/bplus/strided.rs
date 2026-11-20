@@ -2,7 +2,10 @@
 
 use super::{Lookup, LookupStep};
 use crate::Error;
-use core::{borrow::Borrow, marker::PhantomData, num::NonZeroUsize, ops::Range};
+use core::{borrow::Borrow, cmp::Ordering, marker::PhantomData, num::NonZeroUsize, ops::Range};
+
+mod tree;
+pub use tree::StridedTree;
 
 /// Entry layout relative to the beginning of each record.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +19,7 @@ pub struct StridedLayout {
 ///
 /// Implementations must consistently return the complete key in lexical byte
 /// order. The key field may include metadata such as its inline length.
+/// Decoding the same child field must always produce the same identifier.
 /// The fence representation must preserve those bytes and their ordering.
 /// For a reusable page buffer, the fence must own its bytes.
 pub trait StridedFormat {
@@ -40,6 +44,25 @@ pub struct StridedNode<'a, F> {
     last: &'a [u8],
     leaf: bool,
     format: PhantomData<F>,
+}
+
+enum KeyPosition<'a> {
+    Found(usize, &'a [u8]),
+    Gap(usize),
+}
+
+#[inline]
+fn compare_bytes(left: &[u8], right: &[u8]) -> Ordering {
+    if let (Some((l, l_tail)), Some((r, r_tail))) = (
+        left.split_first_chunk::<8>(),
+        right.split_first_chunk::<8>(),
+    ) {
+        u64::from_be_bytes(*l)
+            .cmp(&u64::from_be_bytes(*r))
+            .then_with(|| l_tail.cmp(r_tail))
+    } else {
+        left.cmp(right)
+    }
 }
 
 impl<'a, F: StridedFormat> StridedNode<'a, F> {
@@ -84,7 +107,7 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
         let mut last = first;
         for entry in entries {
             let next = Self::read_key(entry, &layout)?;
-            if last >= next {
+            if compare_bytes(last, next).is_ge() {
                 return Err(Error::InvalidStructure);
             }
             last = next;
@@ -123,26 +146,40 @@ impl<'a, F: StridedFormat> StridedNode<'a, F> {
     }
 
     #[inline]
+    fn fits(&self, height: usize, minimum: Option<&[u8]>, ceiling: Option<&[u8]>) -> bool {
+        (height == 0) == self.leaf
+            && minimum.is_none_or(|min| self.count != 0 && self.first == min)
+            && ceiling.is_none_or(|max| self.count == 0 || compare_bytes(self.last, max).is_lt())
+    }
+
+    #[inline]
+    fn key_if_present(&self, index: usize) -> Result<Option<&'a [u8]>, Error> {
+        (index < self.count).then(|| self.key(index)).transpose()
+    }
+
+    #[inline]
     fn payload(&self, index: usize) -> Result<&'a [u8], Error> {
         self.entry(index)?
             .get(self.layout.payload.clone())
             .ok_or(Error::InvalidStructure)
     }
 
-    #[inline]
-    fn partition(&self, query: &[u8], inclusive: bool) -> Result<usize, Error> {
+    #[inline(always)]
+    fn search(&self, query: &[u8]) -> Result<KeyPosition<'a>, Error> {
         let mut low = 0usize;
         let mut high = self.count;
         while low < high {
             let middle = low.midpoint(high);
-            let order = self.key(middle)?.cmp(query);
-            if order.is_lt() || (inclusive && order.is_eq()) {
-                low = middle.checked_add(1).ok_or(Error::InvalidStructure)?;
-            } else {
-                high = middle;
+            let key = self.key(middle)?;
+            match compare_bytes(key, query) {
+                Ordering::Less => {
+                    low = middle.checked_add(1).ok_or(Error::InvalidStructure)?;
+                }
+                Ordering::Greater => high = middle,
+                Ordering::Equal => return Ok(KeyPosition::Found(middle, key)),
             }
         }
-        Ok(low)
+        Ok(KeyPosition::Gap(low))
     }
 }
 
@@ -157,50 +194,49 @@ impl<K: Copy + Ord + Borrow<[u8]>, I: Copy + Eq> Lookup<'_, K, I, [u8]> {
         node: &StridedNode<'a, F>,
     ) -> Result<LookupStep<'a, [u8], [u8], I>, Error> {
         if self.pending != Some(id)
-            || (self.height == 0) != node.leaf
-            || self
-                .minimum
-                .is_some_and(|min| node.count == 0 || node.first != min.borrow())
-            || self
-                .ceiling
-                .is_some_and(|max| node.count != 0 && node.last >= max.borrow())
+            || !node.fits(
+                self.height,
+                self.minimum.as_ref().map(Borrow::borrow),
+                self.ceiling.as_ref().map(Borrow::borrow),
+            )
         {
             return Err(Error::InvalidStructure);
         }
 
-        let result = if node.leaf {
-            let index = node.partition(self.query, false)?;
-            if index < node.count {
-                let key = node.key(index)?;
-                if key == self.query {
-                    let value = node.payload(index)?;
-                    self.pending = None;
-                    return Ok(LookupStep::Found(key, value));
-                }
+        let position = node.search(self.query)?;
+        if node.leaf {
+            if let KeyPosition::Found(index, key) = position {
+                let value = node.payload(index)?;
+                self.pending = None;
+                return Ok(LookupStep::Found(key, value));
             }
-            LookupStep::Absent
         } else {
-            let upper = node.partition(self.query, true)?;
-            if let Some(index) = upper.checked_sub(1) {
+            let selected = match position {
+                KeyPosition::Found(index, key) => Some((index, key)),
+                KeyPosition::Gap(upper) => upper
+                    .checked_sub(1)
+                    .map(|index| node.key(index).map(|key| (index, key)))
+                    .transpose()?,
+            };
+            if let Some((index, key)) = selected {
                 let child = F::child(node.payload(index)?)?;
-                let minimum = Self::strided_fence::<F>(node.key(index)?)?;
+                let minimum = Self::strided_fence::<F>(key)?;
                 let first = [minimum];
                 let pair;
-                let minima = if upper < node.count {
-                    pair = [minimum, Self::strided_fence::<F>(node.key(upper)?)?];
+                let upper = index.checked_add(1).ok_or(Error::InvalidStructure)?;
+                let minima = if let Some(next) = node.key_if_present(upper)? {
+                    pair = [minimum, Self::strided_fence::<F>(next)?];
                     pair.as_slice()
                 } else {
                     first.as_slice()
                 };
-                // The byte view has already selected the child, so pass the
-                // selected minimum and optional next fence to the shared descent.
+                // The selector has already chosen a child and its fences.
                 self.descend::<()>(id, 0, minima, &[child])?;
                 return Ok(LookupStep::NeedNode(child));
             }
-            LookupStep::Absent
-        };
+        }
         self.pending = None;
-        Ok(result)
+        Ok(LookupStep::Absent)
     }
 
     #[inline]
@@ -408,5 +444,33 @@ mod proofs {
             assert_eq!(lookup.minimum, Some([second]));
             assert_eq!(lookup.ceiling, None);
         }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn compare_long_byte_keys_matches_lexical_order() {
+        let a: [u8; 9] = kani::any();
+        let b: [u8; 9] = kani::any();
+        let a_len = if kani::any() { 8 } else { 9 };
+        let b_len = if kani::any() { 8 } else { 9 };
+        let left = &a[..a_len];
+        let right = &b[..b_len];
+        assert_eq!(compare_bytes(left, right), left.cmp(right));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn snapshot_lookup_matches_known_arbitrary_page_order() {
+        let nodes = tree::test_format::arbitrary_ids();
+        let snapshot = StridedTree::try_new(&nodes, Some(0), 1).unwrap();
+        let query: u8 = kani::any();
+        let expected = match query {
+            5 => Some(&[51][..]),
+            10 => Some(&[52][..]),
+            20 => Some(&[71][..]),
+            21 => Some(&[72][..]),
+            _ => None,
+        };
+        assert_eq!(snapshot.get(&[query]), Ok(expected));
     }
 }

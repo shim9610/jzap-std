@@ -124,3 +124,33 @@ Rebuilding with a different compiler or configuration is a new experiment.
 Maintained tools write raw outputs under `target/verification/`; copy only the
 reviewed result summary into documentation. Historical detailed records can be
 retrieved from the source checkpoint in Git history.
+
+## Stack-alignment control
+
+A process's stack address depends on address randomization and on the size of
+its environment. Some loops store to more than one stack slot per iteration,
+and whether those slots share a 64-byte line changes the store-buffer
+throughput. One measured process therefore lands on one of four 16-byte stack
+alignments at random, and a small number of seeds can report gaps that differ
+by tens of percent between runs (see the [Vec growth
+case](verification/linux-bottlenecks.md#stack-offset-protocol)).
+
+`tools/throughput-analysis/compare.py --stack-offsets 0,16,32,48` removes that
+sampling. Each measurement then runs once per offset under `setarch -R`, with
+the environment cleared except a padding variable of the offset length, so
+every executable and label visits all four alignment classes. Each offset is
+its own process and must last at least one second; the seed totals sum the
+offsets. `report.py` merges the offsets before computing means. Without the
+option the original single-process protocol is unchanged.
+
+```sh
+python3 tools/throughput-analysis/compare.py --binary new=$PWD/target/release/jzap-throughput-analysis \
+  --cpus 6 --stack-offsets 0,16,32,48 --tasks grow --small-tasks grow --small-variants new \
+  --output target/verification/stack-offsets
+python3 tools/throughput-analysis/report.py --input target/verification/stack-offsets
+```
+
+The option controls stack placement only. Code placement (uop-cache lines and
+branch-predictor aliasing) is fixed by the build and is examined by comparing
+builds, for example with the opt-in loop alignment in [build
+tuning](build-tuning.md).

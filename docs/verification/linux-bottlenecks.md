@@ -395,6 +395,25 @@ confirmation](#counter-confirmation)). The `black_box` slot belongs to the bench
 interaction of the harness's frame layout with the store pattern rather than
 a product code difference.
 
+### Stack-offset protocol
+
+`compare.py --stack-offsets 0,16,32,48` runs every measurement once per
+16-byte stack offset with address randomization disabled, and sums the
+offsets per seed ([benchmarks](../benchmarks.md#stack-alignment-control)).
+Mixed Vec `grow`, which earlier varied between runs from +11% to +25% with
+seed ratios from 0.91 to 1.36, then gives:
+
+| Run | Executable | jzap vs std | Seed ratios |
+| --- | --- | ---: | --- |
+| Seeds 1–3 | `d1a04e7` | +16.6% | 1.166–1.167 |
+| Seeds 1–3 | Branch | +16.5% | 1.163–1.168 |
+| Seeds 4–6 | Branch | +16.7% | 1.166–1.167 |
+| Seeds 1–3, small inputs | `d1a04e7` / branch | +15.0% / +4.0% | 1.141–1.164 / 1.036–1.045 |
+
+The mixed result is the mean of one fast and three slow alignments and is now
+reproducible across runs and seeds. The option does not control code
+placement, which still differs per build.
+
 ### Counter confirmation
 
 `perf stat` on CPU 6 (whole process, same executables as above):

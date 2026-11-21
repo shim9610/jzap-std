@@ -186,6 +186,33 @@ construction-time height and ID invariant, for a gain that leaves the
 `brie-tree` gap largely in place. The approval terms and status are in
 [recorded decisions](../decisions.md).
 
+### Growth paths inline `storage::reallocate`
+
+The placement triage left a code difference in small VecDeque `push_back_8`
+(+11.2%). Single-step traces gave 718 instructions per call against std's
+637. The push loop and the allocator calls matched; each growth executed 116
+instructions against std's 80. `storage::reallocate` stayed out of line, so
+unmetered owners still ran the budget branches, stored the reservation result
+on the stack and passed the policy and the returned `Result` through memory.
+It is now `#[inline(always)]`; a growth takes about 90 instructions. Its body,
+the accounting order and the source checks are unchanged.
+
+Timed against the branch before the change (three seeds, ratio to std):
+
+| Workload | Before | Inlined `reallocate` |
+| --- | ---: | ---: |
+| VecDeque `push_back_8`, small | +11.0% (35.90 ns) | +5.9% (34.26 ns) |
+| Vec `grow`, small | +16.6% (93.66 ns) | −1.5% (79.00 ns) |
+| VecDeque `push_back_256`, mixed, six seeds | +5.7% | +3.3% |
+| Vec `grow`, mixed, six seeds | +25.0% | +29.9% |
+
+The mixed growth workloads are unstable before and after the change: the same
+branch executable measured +11.5% and +25.0% for Vec `grow` in two runs, with
+seed ratios from 0.91 to 1.35, and the std control moved by more than 15%
+between runs. Their difference is within that spread. This instability
+predates the change (the full run recorded seed ratios 0.995–1.215) and
+remains open.
+
 ## Remeasurement against public `main`
 
 Each run holds the `d1a04e7` executable, the branch executable and their std
@@ -335,6 +362,10 @@ harnesses, three each), direct
 product-source Verus, direct-source negative controls, projected models
 (`verify_btree`), ASan scenarios, the B+ consumer link audit, and the fixed
 B+ Miri tests on x86-64 and i686 (6 each) passed.
+
+After the `reallocate` change, the `vec` and `deque` areas passed tests,
+Clippy, release, overflow-checked and ASan runs; their retained panic edges
+are again 6/9/6/81 and match `d1a04e7` by function, location and target.
 
 Source pins updated with the changes: BTree review seals
 (`scripts/btree_bindings.py`), the pinned `node::insert` and

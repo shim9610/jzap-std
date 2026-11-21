@@ -17,11 +17,12 @@ MVP completion claim.
   least one second, three seeds, call-weighted means). B+ timings use the
   `bplus` and `bplus_range` binaries against `brie-tree` 0.1.2 in the same
   process.
-- Hardware performance counters were unavailable (`perf_event_paranoid=4`).
-  Causes below come from disassembly of the measured executables, ptrace PC
-  sampling, single-step instruction traces, LLVM IR, and `LD_PRELOAD` call
-  counters. Without counters, the share of a gap caused by code placement
-  (64-byte line offsets) is not quantified.
+- Hardware performance counters were unavailable (`perf_event_paranoid=4`)
+  for most of this work. Causes come from disassembly of the measured
+  executables, ptrace PC sampling, single-step instruction traces, LLVM IR,
+  and `LD_PRELOAD` call counters. Counters were enabled at the end (`perf
+  stat`, P-core `cpu_core` events on CPU 6) to confirm the placement and
+  stack-alignment readings; see [counter confirmation](#counter-confirmation).
 
 ## Changes
 
@@ -350,8 +351,9 @@ stayed within 2% across the executables.
 
 The small BTreeSet build is 3% slower on the branch (73.42 against 71.27 ns
 per call) and fastest with aligned loops (66.89 ns). Only the insertion guard
-on this branch reaches that path, so its share cannot be separated from
-placement without hardware counters.
+on this branch reaches that path; counters attribute its cost to front-end
+effects of the changed code layout (see [counter
+confirmation](#counter-confirmation)).
 
 ### Recheck of unstable and unresolved measurements
 
@@ -387,11 +389,22 @@ other 16-byte offsets, while std stays at 0.87 s. A debugger read the stack
 pointer at the loop for each padding. Each iteration stores the benchmark's
 `black_box` temporary at `0x8(%rsp)` and the vector length at `0x30(%rsp)`;
 these share a 64-byte line only at the fast alignment. std's two slots
-(`0x10`, `0x18`) share a line at every alignment. The hardware reason (likely
-the number of distinct lines stored per iteration) is not confirmed without
-counters. The `black_box` slot belongs to the benchmark, so this gap is an
+(`0x10`, `0x18`) share a line at every alignment. Counters attribute the
+difference to store-buffer-full stalls (see [counter
+confirmation](#counter-confirmation)). The `black_box` slot belongs to the benchmark, so this gap is an
 interaction of the harness's frame layout with the store pattern rather than
 a product code difference.
+
+### Counter confirmation
+
+`perf stat` on CPU 6 (whole process, same executables as above):
+
+| Case | Counter evidence | Conclusion |
+| --- | --- | --- |
+| Mixed Vec `grow`, slow vs fast stack alignment (jzap, address randomization off) | Cycles 3.68e9 vs 3.02e9; instructions (7.69e9) and stores (2.07e9) equal; store-buffer-full stall cycles 2.56e9 vs 1.89e9; store-forward and 4K-alias blocks below 2e5 | The 0.66e9 extra cycles equal the 0.67e9 extra store-buffer stalls. 4K aliasing is ruled out |
+| Small Vec `dedup`, default vs `align-loops=64` | jzap default: 1.90e9 cycles, 3.02e7 legacy-decode uops, 3.66e6 uop-cache misses, front-end bound 51.8%; std 1.61e9, 0.79e7, 0.61e6, 44.3%; jzap aligned 1.64e9, 0.87e7, 1.01e6, 42.7% | The hot branch crossing a 64-byte line costs uop-cache hits; alignment removes the gap |
+| Small BTreeSet `build`, guard vs no guard | Cycles 3.45e9 vs 3.26e9 with fewer instructions (1.37e10 vs 1.40e10); legacy-decode uops 7.77e7 vs 3.40e7; uop-cache misses 5.49e6 vs 2.17e6; resteer cycles 3.44e7 vs 1.27e7; retired mispredictions about 4e4 in both | The guard's cost is front-end behaviour of the changed layout, not mispredicted guard outcomes |
+| HashSet `extract` std control, `d1a04e7` vs branch executable | Same instructions (2.99e9); mispredicted branches 3.49e7 vs 4.58e7; jzap 4.4–4.6e7 in both | The std control was faster in the `d1a04e7` executable because of address-dependent branch prediction |
 
 ## Verification
 

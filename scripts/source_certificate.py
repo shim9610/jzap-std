@@ -344,7 +344,7 @@ def main():
     foundation=json.loads(evidence(ROOT/'target/verification/direct-source/summary.json').read_text())
     assert foundation['status']=='pass' and foundation['source_unchanged'] and foundation['mutations_run']
     assert {row['group'] for row in foundation['groups']}==set(FOUNDATION_GROUPS)
-    assert len(foundation['controls'])==55 and all(row['detected'] for row in foundation['controls'])
+    assert len(foundation['controls'])==57 and all(row['detected'] for row in foundation['controls'])
     assert run('direct-verus')==0
     direct_verus=json.loads(evidence(ROOT/'target/verification/direct-verus/summary.json').read_text())
     assert direct_verus['status']=='pass' and direct_verus['source_unchanged'] and direct_verus['mutations_run']

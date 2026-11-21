@@ -12,7 +12,7 @@ POOL = ROOT / "tools/throughput-analysis/src/bplus_pool.rs"
 # Path and content digest of the 29 reviewed files. Renewed after the src/vec/edit.rs
 # retain/dedup change, the src/storage.rs reallocate inlining attribute and the
 # value-passing push growth in src/vec.rs; none touches constructors.
-VEC_SOURCE_SHA256 = "188e36af0405a20e3c8db8fc12241312c02867b448d74d8824683433c772855c"
+VEC_SOURCE_SHA256 = "7099b12fab16a5a71b91377faa8aff153bf037f260307fa6b006e652409d3e8f"
 VEC_SOURCES = (
     "src/vec.rs", "src/vec", "src/buffer.rs", "src/buffer",
     "src/arithmetic", "src/layout", "src/error.rs",

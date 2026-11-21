@@ -49,6 +49,7 @@ def audit_operations(rows,out):
         'Layout::from_size_align_unchecked','mem::align_of','crate::capacity::Capacity::from_validated_raw','core::mem::MaybeUninit::new',
         'crate::error::InitError::Storage','crate::arithmetic::bounded::wrapping_sub',
         'crate::init::prefix::initialize','prefix::initialize','initialize_one','write_next','crate::init::collection::fill',
+        'grow_for_push',
     }
     allowed_methods={'as_ptr','as_mut_ptr','as_ref','as_mut','cast','add','read','write','drop_in_place','get_unchecked','get_unchecked_mut',
         'get','len','front','read','written','remaining','unvisited_len','is_aligned','mark_initialized','disarm_field','into_bytes','into_std_vec',
@@ -82,6 +83,7 @@ WRITES={
  ('src/span.rs','next'):('kani:both_transitions_preserve_order_and_exact_length',['self.front=next']),
  ('src/span.rs','next_back'):('kani:both_transitions_preserve_order_and_exact_length',['self.back=next']),
  ('src/vec.rs','resize_storage'):('resized_owner',['self.ptr=ptr.cast()','self.cap=capacity']),
+ ('src/vec.rs','try_push'):('resized_owner',['self.ptr=ptr','self.cap=cap']),
  ('src/vec.rs','try_insert'):('insertion_before_moves',['self.len=Checked::new(needed)']),
  ('src/vec.rs','pop'):('shortened_owner',['self.len=next']),
  ('src/vec.rs','remove'):('removal_before_moves',['self.len=next']),
@@ -331,6 +333,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
       ('src/boxed/slice.rs','try_from_std_vec_in'):['storage::reallocate(ptr.cast(),old,new,crate::budget::Accounting::Unmetered)'],
       ('src/storage.rs','reallocate'):['allocate(new,budget)','deallocate(ptr,old,budget)'],
       ('src/vec.rs','resize_storage'):['storage::allocate(new_layout,self.policy.budget())','storage::reallocate(self.ptr.cast(),self.layout(),new_layout,self.policy.budget())'],
+      ('src/vec.rs','grow_for_push'):['storage::allocate(new_layout,budget)','storage::reallocate(ptr.cast(),cap.layout(),new_layout,budget)'],
       ('src/vec.rs','drop'):['storage::deallocate(self.0,self.1,self.2)'],
     }
     storage_seen={}

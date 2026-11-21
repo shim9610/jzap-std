@@ -26,6 +26,8 @@ REPRESENTATION={('method',name) for name in (
     'Self::from_raw_parts','Self::from_raw','Self::into_raw','Self::from_utf8_unchecked','Self::from_bytes_unchecked',
     'InitSlot::new','crate::init::InitSlot::new','crate::init::InitSlot::from_raw',
     'storage::reallocate','storage::deallocate','deallocate',
+    # Vec push growth passes the owner's unique storage words, as reallocate does.
+    'grow_for_push',
     'alloc::alloc::alloc','alloc::alloc::alloc_zeroed','alloc::alloc::dealloc','alloc::alloc::realloc',
     'Pin::new_unchecked','Pin::into_inner_unchecked','crate::boxed::Pinned::into_inner_unchecked',
     'crate::init::collection::fill','crate::init::prefix::initialize','prefix::initialize','initialize_one','write_next',
@@ -187,6 +189,9 @@ PINNED_BODIES={
     ('src/vec.rs', 'reserve_length', 'Vec'):'{letneeded=required_len(self.len.get(),additional,self.max_len())?;ifneeded>self.cap.get(){self.grow_to(needed,false)?;}Ok(needed)}',
     ('src/vec.rs', 'grow_to', 'Vec'):'{letcap=geometry::growth_for_layout(self.cap.get(),needed,self.max_len(),mem::size_of::<T>(),exact,)?;self.resize_storage(cap)}',
     ('src/vec.rs', 'grow', 'Vec'):'{letneeded=required_len(self.len.get(),additional,self.max_len())?;self.grow_to(needed,exact)}',
+    # Push growth: the same admission, proposal and layout as grow(1, false), by value.
+    ('src/vec.rs', 'try_push', 'Vec'):'{ifself.len.get()>=self.cap.get(){let(ptr,cap,len,max_len)=(self.ptr,self.cap,self.len.get(),self.max_len());letbudget=self.policy.budget();matchunsafe{grow_for_push(ptr,cap,len,max_len,budget)}{Ok((ptr,cap))=>{self.ptr=ptr;self.cap=cap;}Err(error)=>returnErr(Rejected{value,error}),}}self.push_within_capacity(value).map(|_|())}',
+    ('src/vec.rs', 'grow_for_push', ''):'{letneeded=required_len(len,1,max_len)?;letgrown=geometry::growth_for_layout(cap.get(),needed,max_len,mem::size_of::<T>(),false)?;let(capacity,new_layout)=crate::capacity::Capacity::try_new(grown)?;letptr=ifcap.get()==0{storage::allocate(new_layout,budget)?}else{unsafe{storage::reallocate(ptr.cast(),cap.layout(),new_layout,budget)}?};Ok((ptr.cast(),capacity))}',
     ('src/vec.rs', 'resize_storage', 'Vec'):'{let(capacity,new_layout)=crate::capacity::Capacity::try_new(cap)?;letptr=ifself.cap.get()==0{storage::allocate(new_layout,self.policy.budget())?}else{unsafe{storage::reallocate(self.ptr.cast(),self.layout(),new_layout,self.policy.budget(),)}?};self.ptr=ptr.cast();self.cap=capacity;Ok(())}',
     ('src/vec.rs', 'try_reserve', 'Vec'):'{letspare=(self.cap-self.len).map_err(|_|Error::Capacity)?;ifadditional>spare.get(){self.grow(additional,false)?;}Ok(())}',
     ('src/vec.rs', 'try_reserve_exact', 'Vec'):'{letspare=(self.cap-self.len).map_err(|_|Error::Capacity)?;ifadditional>spare.get(){self.grow(additional,true)?;}Ok(())}',

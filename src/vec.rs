@@ -346,17 +346,11 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         if self.len.get() >= self.cap.get() {
             // The cold growth takes the storage words by value. Passing `&mut self`
             // would keep the owner in memory and store `len` on every push.
+            let (ptr, cap, len, max_len) = (self.ptr, self.cap, self.len.get(), self.max_len());
+            let budget = self.policy.budget();
             // SAFETY: ptr and cap describe this owner's unique storage, charged to
             // this policy's accounting; both are replaced only on success.
-            match unsafe {
-                grow_for_push(
-                    self.ptr,
-                    self.cap,
-                    self.len.get(),
-                    self.max_len(),
-                    self.policy.budget(),
-                )
-            } {
+            match unsafe { grow_for_push(ptr, cap, len, max_len, budget) } {
                 Ok((ptr, cap)) => {
                     self.ptr = ptr;
                     self.cap = cap;

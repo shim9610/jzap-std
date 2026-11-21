@@ -10,9 +10,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 POOL = ROOT / "tools/throughput-analysis/src/bplus_pool.rs"
 # Path and content digest of the 29 reviewed files. Renewed after the src/vec/edit.rs
-# retain/dedup change and the src/storage.rs reallocate inlining attribute; neither
-# touches constructors.
-VEC_SOURCE_SHA256 = "78a3a739a526dd5fb7c57dbd16541fcef8b2c8c702ecfc44f6ebb18c6c975ba3"
+# retain/dedup change, the src/storage.rs reallocate inlining attribute and the
+# value-passing push growth in src/vec.rs; none touches constructors.
+VEC_SOURCE_SHA256 = "188e36af0405a20e3c8db8fc12241312c02867b448d74d8824683433c772855c"
 VEC_SOURCES = (
     "src/vec.rs", "src/vec", "src/buffer.rs", "src/buffer",
     "src/arithmetic", "src/layout", "src/error.rs",

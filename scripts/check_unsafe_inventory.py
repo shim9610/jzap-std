@@ -16,7 +16,7 @@ from verify_edit_loops import block
 
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'target/verification/unsafe-inventory'
-EXPECTED={'G01':11,'G02':20,'G03':17,'G04':34,'G05':31,'G06':10,'G07':20,'G08':4,'G09':22,'G10':3,'G11':5,'G12':2,'G13':0,'G14':14,'G15':98,'G16':116,'G17':63,'G18':42,'G19':57,'G20':13}
+EXPECTED={'G01':13,'G02':20,'G03':17,'G04':34,'G05':31,'G06':10,'G07':20,'G08':4,'G09':22,'G10':3,'G11':5,'G12':2,'G13':0,'G14':14,'G15':98,'G16':116,'G17':63,'G18':42,'G19':57,'G20':13}
 
 
 def group(row):
@@ -69,7 +69,7 @@ def group(row):
     if f=='src/vec.rs':
         if fn=='drop':return 'G01' if 'deallocate' in text else 'G08'
         if row['kind']=='metadata_init':return 'G01'
-        return {'as_slice':'G03','as_mut_slice':'G03','resize_storage':'G01','try_insert':'G06','pop':'G06','remove':'G06','swap_remove':'G06','truncate':'G08','try_extend_copy':'G04','try_append':'G04','try_split_off':'G04','try_resize_with_init':'G02','try_extend_cloned':'G04','try_clone':'G05','try_clone_in':'G04'}[fn]
+        return {'as_slice':'G03','as_mut_slice':'G03','resize_storage':'G01','try_push':'G01','grow_for_push':'G01','try_insert':'G06','pop':'G06','remove':'G06','swap_remove':'G06','truncate':'G08','try_extend_copy':'G04','try_append':'G04','try_split_off':'G04','try_resize_with_init':'G02','try_extend_cloned':'G04','try_clone':'G05','try_clone_in':'G04'}[fn]
     raise AssertionError(('unrouted product site',row))
 
 
@@ -86,8 +86,8 @@ def main():
         assert row['kind'] in ('unsafe_block','macro_unsafe_block','unsafe_fn','macro_unsafe_fn','unsafe_impl','metadata_write','metadata_init'),('unsupported unsafe syntax',row)
         row['group']=group(row)
     blocks=Counter(row['group'] for row in rows if row['kind'] in ('unsafe_block','macro_unsafe_block'))
-    assert {k:blocks[k] for k in EXPECTED}==EXPECTED and sum(blocks.values())==582,blocks
-    assert sum(row['kind']=='unsafe_fn' for row in rows)==114
+    assert {k:blocks[k] for k in EXPECTED}==EXPECTED and sum(blocks.values())==584,blocks
+    assert sum(row['kind']=='unsafe_fn' for row in rows)==115
     assert sum(row['kind']=='macro_unsafe_fn' for row in rows)==2
     assert sum(row['kind']=='unsafe_impl' for row in rows)==42
     (OUT/'sites.json').write_text(json.dumps(rows,indent=2)+'\n')

@@ -134,6 +134,33 @@ height 2, ns/range):
 The lower-bound-only variant was slower for empty and single-item ranges and
 was not adopted.
 
+Empty ranges were then traced per instruction (seed 1, width 8, height 2).
+jzap executes about 160 instructions per range and `brie-tree` about 79,
+excluding the shared 15-instruction measurement loop:
+
+| Part of an empty range | jzap | `brie-tree` |
+| --- | ---: | ---: |
+| Closure entry and exit | 15 | 8 |
+| Branch descent, per level | 27: seven fixed-offset comparisons, node ID and slice checks, checked leaf rank | 16: conditional binary search over arena offsets |
+| Leaf | 38: eight comparisons, three dead stack stores | 17: conditional binary search, one end comparison, early return |
+| End slot and cursor | about 25 | none for an empty range |
+| Next leaf (one query in eight starts at a leaf end) | about 3 on average | — |
+
+Replacing the width-eight branch seek's fixed-offset count with conditional
+binary search (`child_index::<true>`) was timed against the current branch
+(three seeds, ns/range). It was slower at every size and was not adopted:
+
+| Items per range | Current | Conditional seek | `brie-tree` |
+| ---: | ---: | ---: | ---: |
+| 0 | 12.85 | 16.55 | 8.67 |
+| 1 | 14.70 | 18.53 | 11.92 |
+| 32 | 55.89 | 64.86 | 63.48 |
+| 256 | 272.20 | 282.68 | 241.48 |
+
+The remaining empty and single-item gap comes from checked node IDs and leaf
+ranks at each level and from building the returned cursor. `brie-tree`
+addresses its arena without these checks.
+
 ## Remeasurement against public `main`
 
 Each run holds the `d1a04e7` executable, the branch executable and their std

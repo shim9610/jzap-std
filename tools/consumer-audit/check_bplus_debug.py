@@ -65,9 +65,11 @@ CALLERS = {
         ("core::slice::raw::from_raw_parts" + GUARD, *VEC_SLICE),
         ("core::slice::raw::from_raw_parts_mut" + GUARD, *VEC_MUT_SLICE),
     },
+    # storage::reallocate is always inlined, so its null check is reached
+    # from the Vec growth path that calls it.
     "core::ptr::non_null::NonNull<T>::new_unchecked" + GUARD: {
-        ("core::ptr::non_null::NonNull<T>::new", "jzap::storage::" + operation)
-        for operation in ("allocate_impl", "reallocate")
+        ("core::ptr::non_null::NonNull<T>::new", "jzap::storage::allocate_impl"),
+        ("core::ptr::non_null::NonNull<T>::new", "jzap::vec::Vec<T,P,L>::grow_to"),
     },
     "core::slice::raw::from_raw_parts" + GUARD: {VEC_SLICE},
     "core::slice::raw::from_raw_parts_mut" + GUARD: {VEC_MUT_SLICE},

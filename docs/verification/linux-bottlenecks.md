@@ -161,6 +161,30 @@ The remaining empty and single-item gap comes from checked node IDs and leaf
 ranks at each level and from building the returned cursor. `brie-tree`
 addresses its arena without these checks.
 
+`try_new` already validates every child ID, height and parent, and the pools
+are immutably borrowed, so the per-lookup node-ID and rank checks cannot fail
+on a constructed snapshot. To bound the benefit of moving them to
+construction, an unproved experiment removed them with unchecked indexing
+(leaf slice checks kept, because an inconsistent `Ord` must still return
+`InvalidStructure`). Against the current branch (ns):
+
+| Condition | Current | Node-ID and rank checks removed | `brie-tree` in each binary |
+| --- | ---: | ---: | --- |
+| Range, 0 items | 12.85 | 11.74 | 8.68 / 8.68 |
+| Range, 1 item | 14.71 | 13.77 | 11.95 / 11.93 |
+| Range, 32 items | 55.66 | 56.76 | 63.39 / 63.04 |
+| Range, 256 items | 270.78 | 274.46 | 241.71 / 241.58 |
+| `get`, 8 / 2 | 19.50 | 17.11 | 11.56 / 24.10 |
+| `get`, 32 / 2 | 24.93 | 25.19 | 30.34 / 42.04 |
+| `get`, 16 / 3 | 44.07 | 42.25 | 45.99 / 51.65 |
+
+The unchanged `brie-tree` code doubled in the experimental `get` binary, so
+those `get` differences are not attributable to the checks. Ranges gained
+about 1 ns when small and lost 1–2% when large. With that bound, the change
+was deferred: it would add internal `unsafe` that needs a new proof of the
+construction-time height and ID invariant, for a gain that leaves the
+`brie-tree` gap largely in place.
+
 ## Remeasurement against public `main`
 
 Each run holds the `d1a04e7` executable, the branch executable and their std

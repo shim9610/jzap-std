@@ -47,8 +47,41 @@ def validate_equal_work(rows, labels, variants, minimum):
     assert min(r["elapsed_seconds"] for r in rows) >= minimum, "short interval"
 
 
+SUMMED = ("elapsed_seconds", "operations", "elements", "process_wall_seconds", "process_cpu_seconds")
+
+
+def merge_offsets(rows):
+    """Fold stack-offset replicates into one record per seed group and label.
+
+    Each offset is a separate >=1-second process with identical work. Summing them
+    averages the result over stack alignments instead of sampling one at random.
+    Records without offsets are returned unchanged.
+    """
+    if not any(r.get("stack_offset") is not None for r in rows):
+        return rows
+    groups = {}
+    for r in rows:
+        key = (r["profile"], r["task"], r["variant"], r["label"], r["seed"], r["phase"], r["attempt"])
+        groups.setdefault(key, []).append(r)
+    merged = []
+    for parts in groups.values():
+        parts = sorted(parts, key=lambda r: r["stack_offset"])
+        offsets = [r["stack_offset"] for r in parts]
+        assert len(offsets) == len(set(offsets)) and None not in offsets, "mixed or duplicate stack offsets"
+        if "checksum" in parts[0]:
+            assert len({r["checksum"] for r in parts}) == 1, "unequal workload result across offsets"
+        row = {k: v for k, v in parts[0].items() if k != "stack_offset"}
+        for k in SUMMED:
+            if k in row:
+                row[k] = sum(r[k] for r in parts)
+        row["stack_offsets"] = offsets
+        row["minimum_offset_seconds"] = min(r["elapsed_seconds"] for r in parts)
+        merged.append(row)
+    return merged
+
+
 def summarize(rows):
-    valid = [r for r in rows if r["phase"] == "measurement" and r["accepted_attempt"]]
+    valid = merge_offsets([r for r in rows if r["phase"] == "measurement" and r["accepted_attempt"]])
     groups = sorted({(r["profile"], r["task"], r["variant"]) for r in valid})
     result = []
     for profile, task, variant in groups:
@@ -65,7 +98,7 @@ def summarize(rows):
                                std_total_seconds=standard, total_seconds=elapsed,
                                ratio=elapsed / standard, median_seed_ratio=statistics.median(ratios),
                                min_seed_ratio=min(ratios), max_seed_ratio=max(ratios),
-                               minimum_recorded_seconds=min(r["elapsed_seconds"] for r in selected),
+                               minimum_recorded_seconds=min(r.get("minimum_offset_seconds", r["elapsed_seconds"]) for r in selected),
                                observation="above-15-percent" if elapsed / standard > 1.15 else "within-15-percent"))
     # This three-seed long-run diagnostic does not replace the earlier
     # independent-process bootstrap acceptance protocol with a point-estimate gate.
@@ -83,7 +116,14 @@ def main():
     parser.add_argument("--target-seconds", type=float, default=1.2)
     parser.add_argument("--output", type=Path, default=ROOT / "target/verification/throughput-long")
     parser.add_argument("--cpus", help="comma-separated allowed CPUs; default: one CPU; use multiple for threaded scenarios")
+    parser.add_argument("--stack-offsets", help="comma-separated environment paddings in bytes, multiples of 16 "
+                        "(for example 0,16,32,48). Each measurement then runs once per offset under "
+                        "`setarch -R` with a cleared environment, and seed results sum all offsets. "
+                        "Omitted: the original single-process protocol")
     args = parser.parse_args()
+    offsets = [int(x) for x in args.stack_offsets.split(",")] if args.stack_offsets else [None]
+    assert args.stack_offsets is None or (len(offsets) == len(set(offsets)) and
+                                           all(x >= 0 and x % 16 == 0 for x in offsets)), "invalid stack offsets"
     assert args.minimum_seconds >= 1.0 and args.target_seconds > args.minimum_seconds
     binaries = {k: Path(v).resolve() for k, v in (x.split("=", 1) for x in args.binary)}
     assert len(binaries) == len(args.binary)
@@ -119,6 +159,10 @@ def main():
                     inputs=benchmark_info.get("inputs", "64 pre-generated shuffled cases, log-uniform exponent plus zero/one/maximum; small profile uniform 0..64"))
     if args.cpus:
         protocol["cpus"] = sorted(selected_cpus)
+    if args.stack_offsets:
+        protocol["stack_offsets"] = offsets
+        protocol["stack_control"] = ("setarch -R per process; environment cleared except JZAP_STACK_PAD of the "
+                                     "offset length; seed totals sum every offset")
     if "scenarios" in benchmark_info:
         protocol["scenarios"] = benchmark_info["scenarios"]
         protocol["timing"] = "one interval across fixed worker transactions; worker creation, readiness and warmup excluded; start/completion barriers included"
@@ -142,11 +186,17 @@ def main():
         with journal.open("a") as stream:
             stream.write(json.dumps(row, separators=(",", ":")) + "\n")
 
-    def run(variant, label, task, seed, profile, epochs, phase, attempt):
+    def run(variant, label, task, seed, profile, epochs, phase, attempt, offset=None):
         before_cpu = resource.getrusage(resource.RUSAGE_CHILDREN)
         before_wall = time.monotonic()
-        result = json.loads(subprocess.check_output(
-            [str(binaries[variant]), "std" if label == "std_control" else label, task, str(seed), str(epochs), profile], text=True))
+        command = [str(binaries[variant]), "std" if label == "std_control" else label, task, str(seed), str(epochs), profile]
+        env = None
+        if offset is not None:
+            # A fixed address layout plus a padded environment places the stack at
+            # a chosen 16-byte offset, so each alignment class is measured once.
+            command = ["setarch", "-R", *command]
+            env = {"JZAP_STACK_PAD": "x" * offset}
+        result = json.loads(subprocess.check_output(command, text=True, env=env))
         after_cpu = resource.getrusage(resource.RUSAGE_CHILDREN)
         result["process_wall_seconds"] = time.monotonic() - before_wall
         result["process_cpu_seconds"] = after_cpu.ru_utime + after_cpu.ru_stime - before_cpu.ru_utime - before_cpu.ru_stime
@@ -157,6 +207,8 @@ def main():
         assert result["epochs"] == epochs and result["cases"] == 64 and result["elapsed_seconds"] > 0
         result.update(variant=variant, label=label, task=task, seed=seed, profile=profile,
                       phase=phase, attempt=attempt)
+        if offset is not None:
+            result["stack_offset"] = offset
         return result
 
     def write_summary():
@@ -180,7 +232,7 @@ def main():
                         continue
                     count = 4
                     while True:
-                        row = run(variant, label, task, seed, profile, count, "calibration", 0)
+                        row = run(variant, label, task, seed, profile, count, "calibration", 0, offsets[0])
                         save(row)
                         if row["elapsed_seconds"] >= 0.05:
                             break
@@ -198,16 +250,21 @@ def main():
                     if seed_index % 2:
                         order = order[::-1]
                     for label in order:
-                        row = run(variant, label, task, seed, profile, epochs, "measurement", attempt)
-                        save(row)
-                        measurements.append(row)
-                        print(f"TIME {profile} {task} seed={seed} {variant}/{label} "
-                              f"{row['operations']} calls {row['elapsed_seconds']:.6f} s", flush=True)
+                        for offset in offsets:
+                            row = run(variant, label, task, seed, profile, epochs, "measurement", attempt, offset)
+                            save(row)
+                            measurements.append(row)
+                            print(f"TIME {profile} {task} seed={seed} {variant}/{label}"
+                                  f"{'' if offset is None else f' offset={offset}'} "
+                                  f"{row['operations']} calls {row['elapsed_seconds']:.6f} s", flush=True)
                 # Always check work even if one record was too short.
-                validate_equal_work(measurements, labels, variants, 0)
+                for offset in offsets:
+                    validate_equal_work([r for r in measurements if r.get("stack_offset") == offset], labels, variants, 0)
                 shortest = min(r["elapsed_seconds"] for r in measurements)
                 if shortest >= args.minimum_seconds:
-                    validate_equal_work(measurements, labels, variants, args.minimum_seconds)
+                    for offset in offsets:
+                        validate_equal_work([r for r in measurements if r.get("stack_offset") == offset],
+                                            labels, variants, args.minimum_seconds)
                     completed.append(dict(profile=profile, task=task, seed=seed, attempt=attempt, epochs=epochs))
                     commits.write_text(json.dumps(completed, indent=2) + "\n")
                     write_summary()

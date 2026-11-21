@@ -204,7 +204,7 @@ def main():
             ('retain_destination','src/vec/edit.rs','pointer.as_ptr().add(write),','pointer.as_ptr().add(read),','compaction physical leaf routing'),
             ('retain_input_route','src/vec/edit.rs','keep(unsafe { &mut *pointer.as_ptr().add(read) })','keep(unsafe { &mut *pointer.as_ptr().add(original) })','compaction predicate routing'),
             ('dedup_initial_state','src/vec/edit.rs','state: Compaction::first_kept(original)','state: Compaction::full(original)','compaction adapter statements'),
-            ('dedup_driver_route','src/vec/edit.rs','compaction_driver::run::<true, E, _, _>','compaction_driver::run::<false, E, _, _>','compaction driver routing'),
+            ('dedup_driver_route','src/vec/edit.rs','compaction_driver::run::<false, E, _, _>(\n            &mut g.state,\n            original,\n            |read, write| {','compaction_driver::run::<true, E, _, _>(\n            &mut g.state,\n            original,\n            |read, write| {','compaction driver routing'),
             ('duplicate_release','src/storage.rs','budget.release(layout.size());','budget.release(layout.size()); budget.release(layout.size());','accounting argument/order mismatch'),
             ('unbound_capacity_caller','src/vec.rs','self.truncate(0);','let _ = self.resize_storage(0); self.truncate(0);','unbound private-capacity caller'),
             ('wrong_array_reservation','src/vec/convenience.rs','result.try_reserve_exact(N)','result.try_reserve_exact(0)','unbound array reservation'),

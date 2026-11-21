@@ -177,17 +177,23 @@ pub(super) unsafe fn insert<K, V>(
     unsafe {
         let n = len(node);
         let (after, tail, _, _) = super::geometry::insert_span(n, i);
-        pairs(node, i, node, after, tail);
+        // Appending at the end moves nothing; skip the zero-length copies as
+        // std's slice_insert does instead of calling memmove twice.
+        if tail != 0 {
+            pairs(node, i, node, after, tail);
+        }
         key(node, i).write(k);
         val(node, i).write(v);
         if let Some(right) = right {
-            edges(
-                node,
-                after,
-                node,
-                super::geometry::insert_span(n, i).3,
-                tail,
-            );
+            if tail != 0 {
+                edges(
+                    node,
+                    after,
+                    node,
+                    super::geometry::insert_span(n, i).3,
+                    tail,
+                );
+            }
             edge(node, after).write(right);
             fix(node, after, super::geometry::insert_span(n, i).2);
         }

@@ -516,6 +516,9 @@ impl<K, V> BorrowState<K, V> {
                 next = BorrowEdge::new(c.node, edge, 0);
                 c.set_index(i);
             } else {
+                // Leaf boundaries occur once per leaf; keep the in-leaf step as
+                // the fall-through loop body, as std's layout does.
+                core::hint::cold_path();
                 let mut n = c.node;
                 let mut h = 0;
                 loop {

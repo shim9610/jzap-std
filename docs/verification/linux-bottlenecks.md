@@ -183,7 +183,8 @@ those `get` differences are not attributable to the checks. Ranges gained
 about 1 ns when small and lost 1–2% when large. With that bound, the change
 was deferred: it would add internal `unsafe` that needs a new proof of the
 construction-time height and ID invariant, for a gain that leaves the
-`brie-tree` gap largely in place.
+`brie-tree` gap largely in place. The approval terms and status are in
+[recorded decisions](../decisions.md).
 
 ## Remeasurement against public `main`
 

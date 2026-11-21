@@ -306,6 +306,26 @@ placement of std's loop in that executable, which matches the earlier
 difference per element remains but does not set the measured gap, so the
 shared `Scan` was not changed.
 
+### Placement triage of the remaining gaps
+
+Each remaining candidate was timed in one run with three executables: `d1a04e7`,
+the branch, and the branch built with `-C llvm-args=-align-loops=64`, each
+against its own std control (three seeds, unbudgeted ratios). The std controls
+stayed within 2% across the executables.
+
+| Workload | `d1a04e7` | Branch | Branch, `align-loops=64` | Reading |
+| --- | ---: | ---: | ---: | --- |
+| BTreeSet `build`, small | +15.3% | +18.4% | +6.3% | Mostly placement; about 6% remains |
+| VecDeque `push_back_8`, small | +9.5% | +11.2% | +11.6% | Code difference |
+| HashSet `build`, small | +7.5% | +7.4% | +6.4% | Code difference |
+| String `utf16`, mixed | +6.3% | +6.5% | +8.8% | Code difference |
+| BinaryHeap `peek_mut_8`, mixed | +5.4% | +5.6% | +2.6% | Half placement; about 2.6% remains |
+
+The small BTreeSet build is 3% slower on the branch (73.42 against 71.27 ns
+per call) and fastest with aligned loops (66.89 ns). Only the insertion guard
+on this branch reaches that path, so its share cannot be separated from
+placement without hardware counters.
+
 ## Verification
 
 Executed locally on the changed areas (`vec`, `btree`, `btree-set`):

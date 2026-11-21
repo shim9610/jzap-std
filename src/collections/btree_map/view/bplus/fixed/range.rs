@@ -103,14 +103,17 @@ fn branch_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
 }
 
 // Width-eight leaves count the keys below the bound at fixed offsets, like the
-// branch seek; other widths and key sizes keep the binary search.
+// branch seek; other widths and key sizes keep the binary search. 32-bit
+// targets also keep it: there a u64 comparison takes two instructions and the
+// eight-comparison count grew the range code (i686 311 -> 408, armv7 363 -> 424
+// instructions) without a timing on those targets.
 #[inline(always)]
 fn leaf_prefix<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
     keys: &[K; N],
     query: &Q,
     inclusive: bool,
 ) -> Result<usize, Error> {
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), target_pointer_width = "64"))]
     if N == SMALL_NODE_KEYS && short_keys::<K, _>(query) {
         return Iterator::try_fold(&mut keys.iter(), 0usize, |count, key| {
             count.checked_add(usize::from(match key.borrow().cmp(query) {

@@ -115,8 +115,9 @@ A width-eight range opened its first leaf with a binary search for the lower
 bound and, when the first two candidates did not settle the upper bound, an
 out-of-line `partition_point` call. For width eight and keys of at most eight
 bytes (the existing `short_keys` condition, not on Windows), both leaf bounds
-now count the keys below the bound at fixed offsets, as the branch seek
-already does. Other widths and key sizes keep the binary search. A new Kani
+now count the keys below the bound at fixed offsets on 64-bit targets, as
+the branch seek already does. Other widths, key sizes and 32-bit targets keep
+the binary search (see [cross-target assembly](#cross-target-assembly)). A new Kani
 harness, `width_eight_leaf_prefix_matches_binary_search`, checks the count
 against `prefix_len` for every sorted `[u8; 8]`, query and inclusivity.
 
@@ -172,6 +173,32 @@ The 16 / 3 `FixedTree` change has no source cause (width 16 runs the same
 code) and is attributed to placement. Small Vec `dedup` and small BTreeSet
 `build` remain above +15%. Streaming lookup and empty/single-item ranges
 remain slower than `brie-tree`.
+
+## Cross-target assembly
+
+The changed paths were compiled for ten targets with the same Rust 1.95.0
+compiler, for `d1a04e7` and for the branch. `core` and `alloc` were built from
+the toolchain's `rust-src` with `rustc`, and an empty `compiler_builtins`
+stand-in satisfied `alloc` (it supplies link-time intrinsics only). A
+`no_std` harness reproduces the benchmark loop shapes; on x86-64 Linux it
+reproduces the measured `retain` reload. These are static comparisons. No
+target other than x86-64 Linux was timed.
+
+| Change | x86-64 Linux, Windows, macOS, FreeBSD | AArch64 Linux, Android, macOS, Windows | i686 Linux | ARMv7 Android |
+| --- | --- | --- | --- | --- |
+| `retain` threshold loads in inner loops | 2 → 0 | 1 → 0 | 1 → 0 | 1 → 0 |
+| `dedup` sweep | paired loop → std's loop | paired loop → std's loop | paired 22-instruction loop → single-element loop; one stack bound load versus std's memory compare | paired loop → std's loop |
+| BTreeSet in-leaf iteration | 10 instructions with jumps → 9 without | already 10 instructions with one taken branch; rotation only | shared tail → own 10-instruction loop | shared tail → own 12-instruction loop |
+| `FixedTree::get` width 8 | selects 4 → 6, conditional branches 13 → 11 | identical machine code (already `csel`) | identical | identical |
+| Range width 8 | calls 4 → 1 (Windows unchanged by design) | calls 4 → 1 (Windows unchanged) | identical | identical |
+
+With the fixed-offset leaf count enabled on 32-bit targets, the range function
+grew from 311 to 408 instructions on i686 and from 363 to 424 on ARMv7, because
+each `u64` comparison takes two instructions there. Without a timing on those
+targets, the count is limited to 64-bit pointer widths and the 32-bit code is
+identical to `d1a04e7`. The existing width-eight branch seek and streaming
+lookup still count on all non-Windows targets; their 32-bit timing is likewise
+unverified.
 
 ## Examined and left unchanged
 

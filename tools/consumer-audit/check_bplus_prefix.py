@@ -9,8 +9,9 @@ import subprocess
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 POOL = ROOT / "tools/throughput-analysis/src/bplus_pool.rs"
-# Path and content digest of the 29 reviewed files at 42afdab.
-VEC_SOURCE_SHA256 = "315fd1adbe0d811d9f4e485868fbb99cc20175893f57faf4dbe2456a86ceadca"
+# Path and content digest of the 29 reviewed files. Renewed after the src/vec/edit.rs
+# retain closure and dedup routing change, which does not touch constructors.
+VEC_SOURCE_SHA256 = "99ac117b2001e2cf99867745aa17c271a106624d6c52beb2ed49b302df14eb92"
 VEC_SOURCES = (
     "src/vec.rs", "src/vec", "src/buffer.rs", "src/buffer",
     "src/arithmetic", "src/layout", "src/error.rs",

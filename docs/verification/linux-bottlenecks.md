@@ -170,9 +170,28 @@ four seeds; ranges at width 8, three seeds; ns per lookup or range):
 | Range, 256 items | 286.26 | 270.29 | 241.41 |
 
 The 16 / 3 `FixedTree` change has no source cause (width 16 runs the same
-code) and is attributed to placement. Small Vec `dedup` and small BTreeSet
-`build` remain above +15%. Streaming lookup and empty/single-item ranges
-remain slower than `brie-tree`.
+code) and is attributed to placement. Small BTreeSet `build` remains above
++15%. Streaming lookup and empty/single-item ranges remain slower than
+`brie-tree`.
+
+Small Vec `dedup` (+14.6%) was traced per instruction. Its element loop is
+instruction-for-instruction std's and runs the same per-call counts (15.55,
+12.19, 3.36 and 3.44 executions per call of its four blocks). The remaining
+nine instructions per call belong to the benchmark's `try_clone` (a capacity
+overflow test) and register moves; small `retain` uses the same clone and is
+9.9% faster than std. In this build the hottest backward branch of the
+element loop straddles a 64-byte line, while std's block sits in one line. A
+diagnostic build with `-C llvm-args=-align-loops=64` (three seeds, same
+protocol) gives:
+
+| Small workload | Default build | `align-loops=64` |
+| --- | ---: | ---: |
+| Vec `dedup` | +14.0% (1.133–1.155) | +0.9% (1.006–1.014) |
+| Vec `retain` | −9.0% (0.906–0.914) | +3.8% (1.034–1.047) |
+
+The small `dedup` gap is a code placement effect. Default builds do not force
+loop alignment; the opt-in setting is described in
+[build tuning](../build-tuning.md). No source change was made for it.
 
 ## Cross-target assembly
 

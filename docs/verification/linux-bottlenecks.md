@@ -278,7 +278,7 @@ unverified.
 | B+ `FixedTree` routing result | — | Width-eight branch search kept `Option<usize>` on the stack | Two source forms compiled to identical machine code; the selected search above removes the case |
 | String `from_utf16` | +6.6% | Per code point: checked length add, in-capacity path as a taken branch, length re-check after the write with a materialized `Result` | Moving growth out of line made the default build slower (+6.3% to +7.7%) and was reverted. A std-shaped push changes the proved String edit envelope |
 | HashSet small build | +7.4% | Per insert +11 instructions; per resize +85 (copy-then-publish wrapper and guard calls) | Ownership-preserving resize and bounded probing; estimated inlining gain about 1% |
-| HashSet `extract` | +19.6% | 19 vs 17 instructions per element: index-based bucket addressing, constant rematerialized, bounded group scan | Bounded `Scan` frontier is proved by an actual Rust kernel |
+| HashSet `extract` | +19.6% in the full run | 19 vs 17 instructions per element: index-based bucket addressing, constant rematerialized, bounded group scan | Gap follows the std control's placement; see below |
 | VecDeque small `push_back_8` | +8.3% | 117 vs 80 instructions per growth | Spread across budget/layout checks and ring relocation |
 | Rc `clone` | +6.7% | Saturating count: load/compare/store instead of `incq` | Part of the shared count protocol |
 | Arc `cow_weak`, `unique4096` | +5.8%, +9.4% | Uniqueness pre-check | Part of the shared count protocol |
@@ -287,6 +287,24 @@ unverified.
 | HashMap/HashSet `default_new`, HashSet `owned_*` | — | Recorded in `docs/random-state.md` | Source variants were already tried and reverted there |
 | HashSet `iter`, BinaryHeap `iter_8`/`drain_8`, arithmetic `call` | — | Identical or shorter code at a different line offset | Default builds do not force alignment |
 | Benchmark-wrapper inlining (BTreeSet disjoint/skew, HashMap `get`) | — | Outlined benchmark adapter | Measurement tool, not product code |
+
+### HashSet `extract` follows the std control
+
+The hash table sources are identical in `d1a04e7` and on the branch. Timed in
+one run (three seeds, ns per call):
+
+| Executable | std control | jzap | jzap vs std |
+| --- | ---: | ---: | ---: |
+| `d1a04e7` | 2,585.4 | 3,161.7 | +22.3% |
+| Branch | 3,135.4 | 3,128.8 | −0.2% |
+| Branch, `align-loops=64` | 3,160.4 | 2,891.7 | −8.5% |
+
+jzap's time is nearly constant across the three executables; the std control
+moved by 18% between them. The full-run gap therefore comes from the
+placement of std's loop in that executable, which matches the earlier
+−7.3% to +16.2% swings recorded in `docs/random-state.md`. The two-instruction
+difference per element remains but does not set the measured gap, so the
+shared `Scan` was not changed.
 
 ## Verification
 

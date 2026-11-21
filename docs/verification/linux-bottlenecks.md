@@ -292,8 +292,11 @@ direct product-source Verus, direct-source groups with their source mutants
 (`verify_btree`), ASan scenarios, fixed B+ Miri on x86-64 and i686, and the
 certificate stages `bplus`, `owner-protocol` (with mutations) and `link`.
 
-The unsafe inventory routes the two new push-growth blocks to the storage
-group; its expected totals still differ from `d1a04e7`'s actual counts for
+The owner protocol binds the push growth as two more unsafe callers (the call
+in `try_push` and the reallocation in `grow_for_push`) and two more state
+writes (`self.ptr`, `self.cap`): 181 callers and 89 writes, pinned in the
+certificate assembly. The unsafe inventory routes the two new push-growth
+blocks to the storage group; its expected totals still differ from `d1a04e7`'s actual counts for
 G16 (116 against 117) and G17 (63 against 72), as on `d1a04e7` itself. The
 retained panic edges are 6/9/6/81 (release/LTO/checked/debug) and match
 `d1a04e7` by function, source location and target.

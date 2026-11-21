@@ -243,7 +243,7 @@ def main():
                 state_adapter_sha256=hashlib.sha256((ROOT/'tools/direct-verus/state-adapters.rs').read_bytes()).hexdigest(),
                 word_domain='Verus Either32Or64; no usize-to-u32 body rewriting',
                 scope='Original Compaction/Extraction methods composed with pending projected owner/loop/credit/core caller contracts in the same product crate. Numeric word domain is Either32Or64; final link and executed memory targets are separate. Heap/alias behavior is covered separately by actual-source checks.',
-                source_closure_complete=source_bindings['unsafe_callers']==179 and len(expressions['caller_bindings'])==179,
+                source_closure_complete=source_bindings['unsafe_callers']==181 and len(expressions['caller_bindings'])==181,
                 boundary='The final link certificate is produced separately by verify_panic_paths.py; these source-model results do not certify arbitrary user callbacks or Rust provenance.')
     (OUT/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     print('Owner/loop/credit models, actual core-call queries and exhaustive source publications pass; final-link attachment is checked by verify_panic_paths.py.')

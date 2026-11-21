@@ -353,6 +353,46 @@ per call) and fastest with aligned loops (66.89 ns). Only the insertion guard
 on this branch reaches that path, so its share cannot be separated from
 placement without hardware counters.
 
+### Recheck of unstable and unresolved measurements
+
+The unstable and unresolved results were timed again with six seeds, against
+`d1a04e7` or a same-source control (ratio to std; seed min/median/max):
+
+| Workload | Compared | Result | Reading |
+| --- | --- | --- | --- |
+| Vec `grow`, small | `d1a04e7` / branch | +15.4% / +4.2% | The `reallocate` change holds |
+| VecDeque `push_back_8`, small | `d1a04e7` / branch | +8.8% / +4.7% | The `reallocate` change holds |
+| Vec `extract_all`, small | `d1a04e7` / branch | +9.1% / +7.7% | Small gap remains |
+| VecDeque `push_back_256`, mixed | `d1a04e7` / branch | −14.7% / −9.1% (medians 0.966 / 0.974) | No gap |
+| BTreeSet `build`, small | guard / no guard, same branch | 75.40 / 72.40 ns (+19.9% / +9.2%) | Guard is slower here, see below |
+| Scratch `borrowed_push_pop_256` | identical executables (A/A) | −0.2% / −7.5% (medians 1.000 / 1.013) | No gap; one std-control outlier per run |
+| Rc `get_mut` | `d1a04e7` / branch | +2.0% / −0.5% | No gap |
+| HashSet `is_disjoint_true` | `d1a04e7` / branch (same hash code) | +7.5% / +4.4% | Small gap; 3% moves with placement |
+| Arc `mutex_t4` | `d1a04e7` / branch | +4.1% / +0.4% | Within contention spread |
+| Arc `state8_t4`, `state128_t4` | `d1a04e7` / branch | +6.4% / −0.6%, +5.1% / +6.0% (seed ratios 0.74–1.39) | Too noisy to conclude |
+
+With identical std controls, the small BTreeSet build ran 4% faster without
+the insertion guard (72.40 against 75.40 ns), matching the triage result
+(71.27 against 73.42 ns). The guard helped small BTreeMap `remove_cycle` and
+`build` in the earlier guard-only comparison. It stays, and the small set
+build cost is recorded as open.
+
+Mixed Vec `grow` is bimodal per process, not noisy: std took about 1.2 s in
+every process, while jzap took either 1.15–1.22 s or 1.61–1.74 s (+35%), and
+the same seed fell on either side in different runs. With address
+randomization disabled (`setarch -R`) and the environment padded in 16-byte
+steps, jzap's time is set by the stack address: 0.869 s when the stack
+pointer at the push loop is 64-byte aligned and 1.063 s (+22%) at the three
+other 16-byte offsets, while std stays at 0.87 s. A debugger read the stack
+pointer at the loop for each padding. Each iteration stores the benchmark's
+`black_box` temporary at `0x8(%rsp)` and the vector length at `0x30(%rsp)`;
+these share a 64-byte line only at the fast alignment. std's two slots
+(`0x10`, `0x18`) share a line at every alignment. The hardware reason (likely
+the number of distinct lines stored per iteration) is not confirmed without
+counters. The `black_box` slot belongs to the benchmark, so this gap is an
+interaction of the harness's frame layout with the store pattern rather than
+a product code difference.
+
 ## Verification
 
 Executed locally on the changed areas (`vec`, `btree`, `btree-set`):

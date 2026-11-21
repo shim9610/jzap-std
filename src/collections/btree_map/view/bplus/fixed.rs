@@ -110,11 +110,10 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
                 .branches
                 .get(branch_id)
                 .ok_or(Error::InvalidStructure)?;
-            let next = if N <= SMALL_NODE_KEYS {
-                child_index::<false, _, _>(keys, query)?
-            } else {
-                child_index::<true, _, _>(keys, query)?
-            };
+            // Conditional selection at every width: on the pinned Linux x86-64
+            // CPU the width-eight branch search took 32.50 ns/lookup against
+            // 19.64 ns with selection (docs/verification/linux-bottlenecks.md).
+            let next = child_index::<true, _, _>(keys, query)?;
             let Some(next) = next else { return Ok(None) };
             id = *children.get(next).ok_or(Error::InvalidStructure)?;
         }

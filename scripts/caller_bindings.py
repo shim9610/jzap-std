@@ -122,14 +122,15 @@ def compaction_leaves(root, unsafe_rows, state_rows):
     transfer=canonical("""unsafe { if retain {
         core::ptr::copy_nonoverlapping(pointer.as_ptr().add(read),pointer.as_ptr().add(write),1);
     } else {core::ptr::drop_in_place(pointer.as_ptr().add(read));}}""")
-    for name,paired in [('try_retain_mut','false'),('try_dedup_by','true')]:
+    # Dedup uses the unpaired sweep: its loop then matches std's block layout.
+    for name,paired,dedup in [('try_retain_mut','false',False),('try_dedup_by','false',True)]:
         body=canonical(block(source,'pub fn '+name+'<'))
         assert body.count('super::compaction_driver::run::<'+paired+',E,_,_>(&mutg.state,original,')==1, ('compaction driver routing',name)
         assert body.count('letpointer=g.owner.ptr;')==1, ('compaction allocation identity',name)
         actual=[canonical(row['expression']) for row in unsafe_rows
                 if row['file']=='src/vec/edit.rs' and row['function']==name and row['kind']=='unsafe_block']
         expected=[canonical('unsafe {&mut*pointer.as_ptr().add(read)}')]
-        if paired=='true':
+        if dedup:
             expected.append(canonical('unsafe {&mut*pointer.as_ptr().add(previous)}'))
             assert 'letprevious=crate::arithmetic::bounded::wrapping_sub(write,1);' in body
             assert '.map(|duplicate|!duplicate)' in body
@@ -143,12 +144,12 @@ def compaction_leaves(root, unsafe_rows, state_rows):
         assert len(bodies)==1, ('compaction adapter body',name)
         normalize=lambda value:re.sub(r',(?=[)}])','',canonical(value))
         scan='|read,_write|{keep(unsafe{&mut*pointer.as_ptr().add(read)})}'
-        if paired=='true':
+        if dedup:
             scan='|read,write|{let previous=crate::arithmetic::bounded::wrapping_sub(write,1);same(unsafe{&mut*pointer.as_ptr().add(read)},unsafe{&mut*pointer.as_ptr().add(previous)}).map(|duplicate|!duplicate)}'
         action='|read,write,retain|{'+transfer+'}'
         shape=['let original=self.len.get();']
-        if paired=='true':shape+=['if original<2{return Ok(());}']
-        constructor='full' if paired=='false' else 'first_kept'
+        if dedup:shape+=['if original<2{return Ok(());}']
+        constructor='first_kept' if dedup else 'full'
         shape+=['let mut g=Compact{owner:self,state:Compaction::'+constructor+'(original)};',
                 'let pointer=g.owner.ptr;',
                 'super::compaction_driver::run::<'+paired+',E,_,_>(&mut g.state,original,'+scan+','+action+')?;',
@@ -257,7 +258,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     entries=[r for r in rows if r['kind']=='compaction_driver_reference']
     expected_entries={
         ('try_retain_mut','super::compaction_driver::run::<false,E,_,_>'):'retained_loop',
-        ('try_dedup_by','super::compaction_driver::run::<true,E,_,_>'):'dedup_loop',
+        ('try_dedup_by','super::compaction_driver::run::<false,E,_,_>'):'dedup_loop',
         ('next','super::compaction_driver::extract_next::<E,_,_>'):'extract_next_loop',
         ('stage_excess','super::staging_driver::run'):'staged_collection_loop',
     }

@@ -255,6 +255,7 @@ outputs. Earlier source states belong in Git history, not `before/` directories.
 | [Splice batch verification and timing](vec-splice-batch.md) | Four-profile source/link certificate, remaining small-input performance gaps and pinned reproduction |
 | [Vec proof migration status](vec-projection-removal.md) | Original-source diagnostic checks and the remaining nine Vec caller projections |
 | [Vec benchmark aggregates](vec-benchmarks.csv) | 185 policy/control means with totals, call counts and seed ranges; raw samples excluded |
+| [Linux binary-level bottleneck follow-up](linux-bottlenecks.md) | Causes of the slower operations on public `main`, the BTree/Vec/B+ changes, std and `brie-tree` remeasurement, and gaps left open |
 | [Long-interval operation means](throughput-averages.md) | Standard mean reporting from validated one-second-or-longer repeats; operation-weighted averages and per-policy tables |
 | [Randomized total-time comparison](throughput-long.md) | November 4 one-second-or-longer recordings, equal randomized work, total seconds, policy/flag comparisons and remaining overhead |
 | [Box and Vec performance recheck](performance-recheck.md) | Preceding fixed-input comparisons, collection fix, alignment options, allocation measurements and remaining Vec failures |

@@ -15,7 +15,7 @@ BOUND = {
     "pub struct FixedTree<": "5fd18d87f241a7b8dc83c0c3156fcddd14edd7c294276d48d56fc8b66d37b8a7",
     "struct Summary<": "0e770ad9e97dd75f4f5bc7096603c6218760988620abc5a9fa05c92e275f1153",
     "pub fn try_new(": "74ca71d91e5c1c3d366b81b7fcbea9ee2f3ef98451f6ed8be4555ebfebd472f2",
-    "pub fn get<": "a156680d97c2379a42d5e359d837ee5709cde01fba6ff5b2b42422402343a746",
+    "pub fn get<": "12ddf8eb35319e2ab59ebeea40b8d8ef229e5e2942d84a2f204d6394690f15c1",
     "fn summarize_branch<": "77c261f16f9e0620e8885d0914a3bc923a631952ba80e1f94bf1fd5b4cebf239",
 }
 

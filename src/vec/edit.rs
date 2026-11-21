@@ -95,13 +95,13 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         Ok(())
     }
     pub fn try_retain<E>(&mut self, mut keep: impl FnMut(&T) -> Result<bool, E>) -> Result<(), E> {
-        self.try_retain_mut(|v| keep(v))
+        self.try_retain_mut(move |v| keep(v))
     }
     pub fn retain_mut(&mut self, mut keep: impl FnMut(&mut T) -> bool) {
-        let _: Result<(), core::convert::Infallible> = self.try_retain_mut(|v| Ok(keep(v)));
+        let _: Result<(), core::convert::Infallible> = self.try_retain_mut(move |v| Ok(keep(v)));
     }
     pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
-        self.retain_mut(|v| keep(v));
+        self.retain_mut(move |v| keep(v));
     }
 
     /// Compare (later, previous retained), in std's argument order. Error keeps
@@ -119,7 +119,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             state: Compaction::first_kept(original),
         };
         let pointer = g.owner.ptr;
-        super::compaction_driver::run::<true, E, _, _>(
+        super::compaction_driver::run::<false, E, _, _>(
             &mut g.state,
             original,
             |read, write| {

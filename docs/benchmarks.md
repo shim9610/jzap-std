@@ -133,7 +133,7 @@ and whether those slots share a 64-byte line changes the store-buffer
 throughput. One measured process therefore lands on one of four 16-byte stack
 alignments at random, and a small number of seeds can report gaps that differ
 by tens of percent between runs (see the [Vec growth
-case](verification/linux-bottlenecks.md#vec-push-growth-takes-the-storage-words-by-value)).
+case](verification/linux-bottlenecks.md#vec-push-growth-works-on-copies-of-the-storage-words)).
 
 `tools/throughput-analysis/compare.py --stack-offsets 0,16,32,48` removes that
 sampling. Each measurement then runs once per offset under `setarch -R`, with

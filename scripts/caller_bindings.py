@@ -84,6 +84,7 @@ WRITES={
  ('src/span.rs','next_back'):('kani:both_transitions_preserve_order_and_exact_length',['self.back=next']),
  ('src/vec.rs','resize_storage'):('resized_owner',['self.ptr=ptr.cast()','self.cap=capacity']),
  ('src/vec.rs','try_push'):('resized_owner',['self.ptr=ptr','self.cap=cap']),
+ ('src/vec.rs','grow_for_push'):('resized_owner',['*ptr=new.cast()','*cap=capacity']),
  ('src/vec.rs','try_insert'):('insertion_before_moves',['self.len=Checked::new(needed)']),
  ('src/vec.rs','pop'):('shortened_owner',['self.len=next']),
  ('src/vec.rs','remove'):('removal_before_moves',['self.len=next']),

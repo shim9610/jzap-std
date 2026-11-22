@@ -391,7 +391,7 @@ def main():
         assert not owner['reused_prerequisites']
         if collected is None:
             assert owner_path.stat().st_mtime_ns>=started
-    assert owner['source_bindings']['state_writes']==89
+    assert owner['source_bindings']['state_writes']==91
     assert owner['source_bindings']['constructor_fields']==132
     assert owner['source_bindings']['unsafe_callers']==181
     assert len(owner['owner_expressions']['caller_bindings'])==181

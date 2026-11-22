@@ -77,7 +77,7 @@ placement.
 
 ## Changes
 
-### Vec push growth takes the storage words by value
+### Vec push growth works on copies of the storage words
 
 `try_push`'s cold growth took `&mut self`. The owner's address then escaped
 into an out-of-line call, so the vector stayed in memory and every push stored
@@ -87,13 +87,23 @@ temporary, and the two slots shared a 64-byte line at only one of four
 0.67e9 cycles to an otherwise identical 7.69e9-instruction run, so mixed `grow`
 took 22% longer depending on the process's stack address.
 
-A cold `unsafe fn grow_for_push` now takes pointer, capacity, length, limit and
-accounting by value and returns the new pointer and capacity. It performs the
-computation of `grow(1, false)`: the same length admission, growth proposal,
-layout and allocation or reallocation; a refusal leaves the caller's words
-unchanged. The push loop keeps `len` in a register; its only stack store is the
-benchmark's temporary. Mixed `grow` moved from +16.7% to +0.3% of std, for the
-`limited` and `metered` policies as well.
+`try_push` now copies the pointer and capacity into locals and passes those,
+with length, limit and accounting, to a cold `unsafe fn grow_for_push`. It
+performs the computation of `grow(1, false)`: the same length admission,
+growth proposal, layout and allocation or reallocation. Only success writes
+the new words into the locals, and `try_push` then stores them in the owner;
+a refusal leaves both unchanged. The owner's address no longer escapes, so the
+push loop keeps `len` in a register; its only stack store is the benchmark's
+temporary.
+
+A first form returned the words as `Result<(NonNull<T>, Capacity<T>), Error>`.
+Its push loop is the same, but CBMC did not finish
+`proofs::vec_bounded_push_pop_preserves_values_and_budget` with it: the
+program grew from 273,210 to 293,713 steps and the solver exceeded a 24 GB
+limit (an unlimited local run was killed at 57 GB; the CI runner was stopped
+twice). With the out-parameters the harness takes 18.6 s and 1.78 GB, as
+before the change (19.7 s, 1.74 GB). Why the returned tuple is hard for the
+solver was not determined.
 
 Ten-target assembly of the push loop (instructions / stack stores / stack
 loads per element):
@@ -104,11 +114,33 @@ loads per element):
 | AArch64 Linux, Android, Windows | 11/2/2 | 12/2/3 | 10/1/1 | 12/2/3 | 10/1/1 |
 | AArch64 macOS | 11/2/2 | 12/2/3 | 9/1/1 | 12/2/3 | 9/1/1 |
 | ARMv7 Android | 16/2/3 | 15/2/1 | 12/1/1 | 15/2/3 | 12/1/1 |
-| i686 Linux | 14/3/4 | 18/3/6 | 16/3/5 | 18/3/6 | 15/2/4 |
+| i686 Linux | 14/3/4 | 18/3/6 | 17/3/4 | 18/3/6 | 15/2/4 |
 
 On i686 the eight general registers spill the two halves of each `u64`, so the
-store count stays; no target got worse. The call site of the cold growth moves
-a few more registers (x86-64 Linux: 9 to about 16 instructions per growth).
+store count stays; no target got worse. Each growth costs more at its call
+site: on x86-64 Linux the path from the growth branch back into the loop is 12
+instructions with `&mut self`, 19 with the returned tuple and 21 with the
+out-parameters.
+
+Paired timing of the two forms (same run, four stack offsets, three seeds;
+ratio to the std control of the same executable):
+
+| Input, policy | Returned tuple | Out-parameters |
+| --- | ---: | ---: |
+| mixed, unbudgeted | +1.8% | +1.7% |
+| mixed, `limited` | +1.7% | +1.7% |
+| mixed, `metered` | +1.8% | +1.5% |
+| small, unbudgeted | −0.0% | +0.9% |
+| small, `limited` | +13.9% | +5.4% |
+| small, `metered` | −1.9% | −0.8% |
+
+For small `limited` the out-parameter form executes 1.9% more instructions
+(23.03e9 against 22.60e9) and takes 8% fewer cycles (4.31e9 against 4.70e9);
+the difference is front-end bound slots (15.7% against 25.1%). The returned
+tuple form measured −7.6% for the same case in the executable of the
+[results](#results) table, so these small-input differences follow code
+placement. The [results](#results) table was measured with the returned-tuple
+form and was not repeated with the out-parameters.
 
 A new Kani harness, `push_growth_matches_grow_one_for_every_full_numeric_owner`,
 checks for every full numeric owner under both length policies that `try_push`
@@ -293,10 +325,12 @@ direct product-source Verus, direct-source groups with their source mutants
 certificate stages `bplus`, `owner-protocol` (with mutations) and `link`.
 
 The owner protocol binds the push growth as two more unsafe callers (the call
-in `try_push` and the reallocation in `grow_for_push`) and two more state
-writes (`self.ptr`, `self.cap`): 181 callers and 89 writes, pinned in the
-certificate assembly. The unsafe inventory routes the two new push-growth
-blocks to the storage group; its expected totals still differ from `d1a04e7`'s actual counts for
+in `try_push` and the reallocation in `grow_for_push`) and four more state
+writes (`*ptr` and `*cap` in `grow_for_push`, `self.ptr` and `self.cap` in
+`try_push`), all to the resized-owner contract of `resize_storage`: 181
+callers and 91 writes, pinned in the certificate assembly. The unsafe
+inventory routes the two new push-growth blocks to the storage group; its
+expected totals still differ from `d1a04e7`'s actual counts for
 G16 (116 against 117) and G17 (63 against 72), as on `d1a04e7` itself. The
 retained panic edges are 6/9/6/81 (release/LTO/checked/debug) and match
 `d1a04e7` by function, source location and target.

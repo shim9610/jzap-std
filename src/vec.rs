@@ -346,12 +346,15 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         if self.len.get() >= self.cap.get() {
             // The cold growth takes the storage words by value. Passing `&mut self`
             // would keep the owner in memory and store `len` on every push.
-            let (ptr, cap, len, max_len) = (self.ptr, self.cap, self.len.get(), self.max_len());
+            // The new words come back through these locals: a returned
+            // `Result<(NonNull<T>, Capacity<T>), Error>` exhausts the Kani solver.
+            let (mut ptr, mut cap, len, max_len) =
+                (self.ptr, self.cap, self.len.get(), self.max_len());
             let budget = self.policy.budget();
             // SAFETY: ptr and cap describe this owner's unique storage, charged to
             // this policy's accounting; both are replaced only on success.
-            match unsafe { grow_for_push(ptr, cap, len, max_len, budget) } {
-                Ok((ptr, cap)) => {
+            match unsafe { grow_for_push(&mut ptr, &mut cap, len, max_len, budget) } {
+                Ok(()) => {
                     self.ptr = ptr;
                     self.cap = cap;
                 }
@@ -783,26 +786,28 @@ mod metadata_proofs;
 ///
 /// # Safety
 /// `ptr` and `cap` are a live owner's unique storage (dangling when `cap` is
-/// zero), charged to `budget`. On success the caller replaces both words with
-/// the returned ones and must not use the old pointer.
+/// zero), charged to `budget`. Only success writes the new words; the caller
+/// then replaces its own with them and must not use the old pointer.
 #[cold]
 #[inline(never)]
 unsafe fn grow_for_push<T>(
-    ptr: NonNull<T>,
-    cap: crate::capacity::Capacity<T>,
+    ptr: &mut NonNull<T>,
+    cap: &mut crate::capacity::Capacity<T>,
     len: usize,
     max_len: usize,
     budget: crate::budget::Accounting<'_>,
-) -> Result<(NonNull<T>, crate::capacity::Capacity<T>), Error> {
+) -> Result<(), Error> {
     let needed = required_len(len, 1, max_len)?;
     let grown =
         geometry::growth_for_layout(cap.get(), needed, max_len, mem::size_of::<T>(), false)?;
     let (capacity, new_layout) = crate::capacity::Capacity::try_new(grown)?;
-    let ptr = if cap.get() == 0 {
+    let new = if cap.get() == 0 {
         storage::allocate(new_layout, budget)?
     } else {
         // SAFETY: caller's unique allocation, same alignment, initialized prefix retained.
         unsafe { storage::reallocate(ptr.cast(), cap.layout(), new_layout, budget) }?
     };
-    Ok((ptr.cast(), capacity))
+    *ptr = new.cast();
+    *cap = capacity;
+    Ok(())
 }

@@ -73,7 +73,9 @@ BODIES={
  ('btree_map.rs', '', 'pub fn get_mut<'):
   'matchself.search(key){Search::Found(c)=>{Some(unsafe{&mut*node::val(c.node,c.index())})}_=>None,}',
  ('btree_map.rs', '', 'fn try_insert_at('):
-  'ifletSome(at)=at{ifunsafe{node::len(at.node)}<CAP{letnew_len=matchself.len+Checked::new(1){Ok(n)=>n,Err(_)=>{returnErr(Rejected{value:(key,value),error:Error::Capacity,});}};returnOk(unsafe{self.commit_fit(at,new_len,key,value)});}}letplan=matchself.plan_insert(at){Ok(plan)=>plan,Err(error)=>{returnErr(Rejected{value:(key,value),error,});}};Ok(self.commit_insert(plan,key,value))',
+  'ifletSome(at)=at{ifunsafe{node::len(at.node)}<CAP{letnew_len=matchself.len+Checked::new(1){Ok(n)=>n,Err(_)=>{returnErr(Rejected{value:(key,value),error:Error::Capacity,});}};returnOk(unsafe{self.commit_fit(at,new_len,key,value)});}}self.try_insert_split(at,key,value)',
+ ('btree_map.rs', '', 'fn try_insert_split('):
+  'letplan=matchself.plan_insert(at){Ok(plan)=>plan,Err(error)=>{returnErr(Rejected{value:(key,value),error,});}};Ok(self.commit_insert(plan,key,value))',
  ('btree_map.rs', '', 'unsafe fn commit_fit('):
   'unsafe{node::insert(at.node,at.index(),key,value,None)};self.len=new_len;at',
  ('btree_map.rs', '', 'fn plan_insert('):

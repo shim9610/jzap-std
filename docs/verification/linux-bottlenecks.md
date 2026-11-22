@@ -227,6 +227,90 @@ previous branch (three seeds, ns/range): 0 items 13.17 to 12.83, 1 item 14.67
 to 14.71, 32 items 62.96 to 56.23, 256 items 285.75 to 274.10. Counting only the
 lower bound was slower for empty and single-item ranges.
 
+### `FixedTree` point lookup reads the validated pools unchecked
+
+After the conditional-selection change, each width-eight branch level of
+`FixedTree::get` still executed about 24 instructions: a node-ID subtraction
+with a borrow check and a branch-pool bound check, a first-key fence, the
+routing result stored to the stack as `Option<usize>` and reloaded, and a
+child-slot bound check; the leaf added a leaf-ID and a value-slot check. All
+of these are guaranteed by `try_new`: leaves have height zero, a branch has
+the checked successor of its children's common height, every child ID is
+below its parent's ID, and the root is the last record.
+
+`get` now reads the branch, child, leaf and value records with
+`get_unchecked`, through the private `unsafe fn branch_unchecked`. A new
+`floor_slot` keeps the conditional binary search but starts at slot zero and
+returns a plain `usize`, so its result is below `N` for every order. The
+first-key fence runs at the root only: with a stable order every lower node's
+minimum equals its separator, so the removed fences could not reject a query
+that the root admitted. The routing `Option` came from that per-level fence,
+which is why the two earlier source forms that removed only the `Option`
+compiled to the same code. `range` keeps its checks. The public signature is
+unchanged and the method contains no public `unsafe`.
+
+In the release build of a width-eight `u64` lookup, a branch level is now 14
+instructions with no stack access and no branch other than the loop, and the
+leaf search is branch-free; in the benchmark executable the three `fixed`
+lookup closures went from 106, 103 and 103 to 74, 68 and 68 instructions.
+Widths 16 and 32 keep the leaf's `leaf_index` match checks.
+
+Paired A/B against the previous branch build (`1c1a689`) in one run, on a
+cloud Intel Xeon at 2.30 GHz pinned with `taskset` to one CPU, without
+frequency control. Seeds 1, 2, 3 and 10, two rounds with alternating build
+order, batches 60000/20000/17000, every interval at least 1.54 s,
+call-weighted ns/lookup:
+
+| Width / height | `FixedTree`, previous | `FixedTree`, unchecked | Ratio | Seed ratios |
+| --- | ---: | ---: | ---: | --- |
+| 8 / 2 | 16.49 | 12.75 | 0.773 | 0.703–0.820 |
+| 32 / 2 | 24.11 | 20.76 | 0.861 | 0.741–0.936 |
+| 16 / 3 | 43.47 | 27.50 | 0.632 | 0.598–0.653 |
+
+The other 15 lookup closures, including `brie-tree` and `packed`, have the
+same instructions in both executables at shifted addresses. They still moved:
+`brie-tree` 12.34 → 23.32, 30.32 → 40.30 and 42.44 → 55.52 ns, and `packed`
+32.40 → 26.34 ns at width eight. These cloud numbers therefore show the
+direction of the change only and are not comparable with the pinned-PC
+figures or with `brie-tree` across executables. Timings on the pinned Linux
+PC have not been run.
+
+Verification of the unchecked reads:
+
+- Kani, actual product source (`fixed::proofs`, 11 harnesses). A key type
+  whose every comparison returns an arbitrary result models every order,
+  including inconsistent ones. For widths one, two and three, `try_new` gets
+  arbitrary child IDs below the record count on concrete shapes of every
+  height the pools allow (width one up to height four, width two up to height
+  two); every accepted tree returns `Ok` from `get` and any value is one of the
+  pool's own values. Larger IDs are rejected by the prefix lookup, which
+  `fixed_tree_rejects_invalid_child_ids` covers for every machine word. A
+  cover property per shape confirms that the expected height is reached.
+  `floor_slot` stays below the width for widths 1–5, 7–9, 16, 17, 32, 33 and
+  64, and the leaf search stays in the value array for widths 7, 8, 9 and 16.
+  For `u8` keys with arbitrary keys, values and queries, `get` equals both a
+  linear search of all leaves and the previous checked implementation at
+  heights one and two, including leaves stored out of ID order. A single-leaf
+  instance of that comparison exhausted CBMC memory in this environment and is
+  not included; height zero only skips the descent.
+- Kani defect controls, each in a copied crate: accepting children of
+  different heights, descending one level past the root height, routing one
+  slot past the floor, reading the value after the matching key, and a
+  strict separator comparison each produce a counterexample in the named
+  harness.
+- Verus (`tools/consumer-audit/bplus_fixed.rs`, bound to the reviewed `get`,
+  `branch_unchecked`, `floor_slot`, `try_new` and `summarize_branch` bodies by
+  digest): pushing leaves and branches as `try_new` does preserves the height
+  invariant, every descent of exactly the root height through any child slots
+  ends at a leaf, every intermediate node is in the branch pool, and each
+  `floor_slot` step keeps its middle position below the width. Admitting a
+  child at its parent's ID, or a floor step past the width, leaves a solver
+  error. These lemmas are a model bound to source digests, not a direct
+  product-source proof.
+- Miri: the fixed B+ tests include a width-two, height-three tree whose order
+  becomes pseudo-random after validation; every lookup returns `Ok` and only
+  values from the pool.
+
 ## Code placement
 
 Some gaps follow where code sits, not what it executes. Counters on CPU 6:

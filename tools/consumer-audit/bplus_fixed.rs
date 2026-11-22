@@ -189,6 +189,7 @@ proof fn push_branch_preserves_validation(
         if j < children.len() {
             assert(c[j] == children[j]);
             assert(h[leaves + j] == heights[leaves + j]);
+            assert(children[j].len() == width);
             assert forall|s: int| 0 <= s < width implies {
                 &&& 0 <= #[trigger] c[j][s] < leaves + j
                 &&& h[c[j][s]] == h[leaves + j] - 1
@@ -198,6 +199,7 @@ proof fn push_branch_preserves_validation(
         } else {
             assert(c[j] == ids);
             assert(leaves + j == heights.len());
+            assert(h[leaves + j] == heights[ids[0]] + 1);
             assert forall|s: int| 0 <= s < width implies {
                 &&& 0 <= #[trigger] c[j][s] < leaves + j
                 &&& h[c[j][s]] == h[leaves + j] - 1

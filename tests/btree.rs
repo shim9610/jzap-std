@@ -1290,7 +1290,12 @@ fn fixed_bplus_lookup_reads_only_the_pools_under_an_inconsistent_order() {
 
     // Width two and height three: eight leaves, then four, two and one branches.
     let leaves: Vec<_> = (0..8u32)
-        .map(|leaf| ([Key(4 * leaf + 2), Key(4 * leaf + 4)], [2 * leaf, 2 * leaf + 1]))
+        .map(|leaf| {
+            (
+                [Key(4 * leaf + 2), Key(4 * leaf + 4)],
+                [2 * leaf, 2 * leaf + 1],
+            )
+        })
         .collect();
     let mut branches = Vec::new();
     let (mut first, mut count) = (0usize, 8usize);
@@ -1311,7 +1316,10 @@ fn fixed_bplus_lookup_reads_only_the_pools_under_an_inconsistent_order() {
         count /= 2;
     }
     let tree = FixedTree::try_new(&leaves, &branches).unwrap();
-    let values = leaves.iter().flat_map(|(_, values)| values).collect::<Vec<_>>();
+    let values = leaves
+        .iter()
+        .flat_map(|(_, values)| values)
+        .collect::<Vec<_>>();
     for query in 0..36 {
         let expected = (query % 2 == 0 && (2..=32).contains(&query)).then(|| query / 2 - 1);
         assert_eq!(tree.get(&Key(query)).unwrap().copied(), expected);
@@ -1320,7 +1328,11 @@ fn fixed_bplus_lookup_reads_only_the_pools_under_an_inconsistent_order() {
         STATE.with(|state| state.set(seed));
         for query in 0..36 {
             if let Some(value) = tree.get(&Key(query)).unwrap() {
-                assert!(values.iter().any(|candidate| std::ptr::eq(*candidate, value)));
+                assert!(
+                    values
+                        .iter()
+                        .any(|candidate| std::ptr::eq(*candidate, value))
+                );
             }
         }
     }

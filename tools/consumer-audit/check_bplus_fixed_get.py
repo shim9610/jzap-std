@@ -21,12 +21,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from bplus_bindings import check as check_bplus
 
 PROOFS = "collections::btree_map::view::bplus::fixed::proofs::"
-HARNESSES = 9
+HARNESSES = 11
+COVERS = 10
 FIXED = "src/collections/btree_map/view/bplus/fixed.rs"
 WIDTH_TWO = PROOFS + "fixed_get_reads_only_pool_values_for_any_order_width_two"
 FLOOR = PROOFS + "floor_slot_stays_below_every_width_for_any_order"
 LEAF = PROOFS + "fixed_leaf_search_reads_only_pool_values_for_any_order"
-STABLE = PROOFS + "fixed_get_matches_checked_and_linear_lookup_for_a_stable_order"
+STABLE = PROOFS + "fixed_get_matches_checked_and_linear_lookup_at_height_one"
 ROUTE = "base = select_unpredictable(key.borrow() <= query, middle, base);"
 CONTROLS = (
     # Validation accepts children of different heights, so a descent can
@@ -70,10 +71,10 @@ def main():
     complete = f"Complete - {HARNESSES} successfully verified harnesses, 0 failures, {HARNESSES} total."
     if positive.returncode != 0 or complete not in positive.stdout:
         raise SystemExit("fixed B+ Kani harnesses did not all verify")
-    if re.search(r"\b(UNSATISFIABLE|UNREACHABLE)\b", positive.stdout) or (
-        positive.stdout.count("Status: SATISFIED") < 4
-    ):
-        raise SystemExit("a fixed B+ cover property was not satisfied")
+    # Every shape instance must reach its expected height.
+    covers = re.findall(r"Status: (\w+)\n\s*- Description: \"cover condition", positive.stdout)
+    if covers != ["SATISFIED"] * COVERS:
+        raise SystemExit(f"fixed B+ cover properties not all satisfied: {covers}")
 
     for name, old, new, harness in CONTROLS:
         with tempfile.TemporaryDirectory(prefix="jzap-fixed-get-") as directory:

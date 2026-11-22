@@ -711,7 +711,10 @@ fn lookup_snapshot() -> Result<(), Error> {
 ```
 
 Lookup performs bounded descent through the borrowed pools, allocates no memory,
-and returns a value borrowed from a leaf. Use the streaming `Lookup` when the
+and returns a value borrowed from a leaf. A tree accepted by `try_new` never
+makes `get` return an error. An `Ord` that breaks the stable-order contract can
+make the result unspecified, but the lookup still reads only the borrowed
+pools. Use the streaming `Lookup` when the
 caller supplies pages individually during each lookup.
 
 For a range over an already validated snapshot, use
@@ -1014,10 +1017,18 @@ and i686 Miri.
 
 `FixedTree` reuses the Vec storage and slice-borrow contracts. Its source-bound
 Verus check adds parent uniqueness, connectivity, and the descent and address
-invariants. Three Kani harnesses covered all `u8` queries over a two-leaf tree,
-arbitrary machine-word child IDs in that constructor, and the branch-summary
-checks. Removing the duplicate-parent test yielded a Kani counterexample.
-The snapshot regression passed natively and in x86-64 and i686 Miri.
+invariants, including that every descent of exactly the root height ends at a
+leaf. `get` reads the validated pools without bounds checks, so its Kani
+harnesses also run under a key whose comparisons return arbitrary results:
+every tree `try_new` accepts with arbitrary child IDs, up to height four at
+width one and height two at width two, returns `Ok` and only values from its
+own pool. For `u8` keys `get` equals a linear search and the previous checked
+lookup at heights one and two. Five source defects, among them accepting mixed
+child heights and routing past the last slot, each yield a Kani
+counterexample; removing the duplicate-parent test does too. The snapshot
+regressions, including one whose order turns pseudo-random after validation,
+passed natively and in x86-64 and i686 Miri. Details are in the [Linux
+bottleneck follow-up](verification/linux-bottlenecks.md#fixedtree-point-lookup-reads-the-validated-pools-unchecked).
 
 ```sh
 python3 tools/consumer-audit/check_bplus_debug.py

@@ -79,8 +79,8 @@ def collect(directory, context, stages, receipts, commands, profiles):
             if name == 'link':
                 required.add('output/link/summary.json')
                 optional = {f'output/link/{profile}/product/retained-panic-calls.json' for profile in profiles}
-            if name == 'bplus-release':
-                required.add('output/bplus-release/summary.json')
+            if name in ('bplus-release', 'bplus-strided-release'):
+                required.add(f'output/{name}/summary.json')
             actual = set(row['files'])
             assert required <= actual <= required | optional and actual.isdisjoint(files), (
                 name, 'missing, unexpected or duplicate evidence files')

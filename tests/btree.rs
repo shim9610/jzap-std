@@ -1297,7 +1297,7 @@ fn fixed_bplus_lookup_reads_only_the_pools_under_an_inconsistent_order() {
             )
         })
         .collect();
-    let mut branches = Vec::new();
+    let mut branches: Vec<([Key; 2], [usize; 2])> = Vec::new();
     let (mut first, mut count) = (0usize, 8usize);
     while count > 1 {
         for pair in 0..count / 2 {

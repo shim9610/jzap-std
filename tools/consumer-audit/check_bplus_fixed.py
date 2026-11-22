@@ -38,12 +38,12 @@ def main():
     proof = HERE / "bplus_fixed.rs"
     subprocess.run([verus, str(proof), "--no-cheating"], check=True)
 
-    # Admitting a child at its parent's own ID, or a floor step past the
+    # Letting a child sit at any lower height, or a floor step past the
     # width, must leave a solver error in the unchecked-descent lemmas.
     text = proof.read_text()
     for name, old, new in (
-        ("child-at-parent", "&&& 0 <= #[trigger] children[j][s] < leaves + j\n            &&& heights",
-         "&&& 0 <= #[trigger] children[j][s] <= leaves + j\n            &&& heights"),
+        ("child-below-parent-height", "&&& heights[children[j][s]] == heights[leaves + j] - 1",
+         "&&& heights[children[j][s]] <= heights[leaves + j] - 1"),
         ("floor-past-width", "requires 0 < width, 0 <= base, 1 < remaining, base + remaining <= width,",
          "requires 0 < width, 0 <= base, 1 < remaining, base + remaining <= width + 1,"),
     ):

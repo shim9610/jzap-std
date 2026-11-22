@@ -155,15 +155,22 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
     /// the x86-64 release lookups have the same instruction counts, with
     /// identical code at width eight and a different block order at widths
     /// 16 and 32.
+    ///
+    /// The offset uses the library's bounded subtraction, whose non-wrapping
+    /// contract is registered for this call in the wrapping-memory coverage.
     #[inline(always)]
     unsafe fn branch_unchecked(&self, id: usize) -> &'a ([K; N], [usize; N]) {
         // SAFETY: the caller guarantees leaves.len() <= id < leaves.len() +
-        // branches.len(), so the record lies inside the borrowed pool.
+        // branches.len(), so the subtraction does not wrap and the record lies
+        // inside the borrowed pool.
         unsafe {
             &*self
                 .branches
                 .as_ptr()
-                .add(id.unchecked_sub(self.leaves.len()))
+                .add(crate::arithmetic::bounded::wrapping_sub(
+                    id,
+                    self.leaves.len(),
+                ))
         }
     }
 }

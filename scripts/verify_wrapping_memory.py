@@ -228,6 +228,9 @@ def coverage(census):
         ("src/vec/convenience.rs", "Vec", "split_at_spare_mut"): (1, ["owner_spare_capacity", "spare_view_before_slice"]),
         ("src/vec/edit.rs", "Vec", "try_dedup_by"): (1, ["c_previous_kept"]),
         ("src/vec/edit.rs", "Drain", "restore_tail"): (1, ["drain_before_tail_restore"]),
+        # FixedTree::try_new places every branch after the leaves, and get
+        # reaches this only for nodes of nonzero height; bplus_fixed.rs proves it.
+        ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "branch_unchecked"): (1, ["fixed_branch_offset"]),
     }
     found, ledger = {}, []
     for row in census:

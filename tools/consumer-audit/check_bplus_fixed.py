@@ -20,7 +20,7 @@ BOUND = {
     "struct Summary<": "0e770ad9e97dd75f4f5bc7096603c6218760988620abc5a9fa05c92e275f1153",
     "pub fn try_new(": "74ca71d91e5c1c3d366b81b7fcbea9ee2f3ef98451f6ed8be4555ebfebd472f2",
     "pub fn get<": "02cc6b9fc11a1e0ea961042f76457c9901a389c71cb7ec38c4d5149fbdbde57c",
-    "unsafe fn branch_unchecked(": "2446a400e5ab41dbd6998b494341f1ef48a9612259c866b77e21afe12c220400",
+    "unsafe fn branch_unchecked(": "a48c3a4d4338b097eb372a58159318e683d3023bc2a268020e7551b4ba9384f7",
     "fn floor_slot<": "b8e8c5ef7fd293984589634d82a97a690a9a9acdc93a4a706e0b26a9c3a16cf3",
     "fn summarize_branch<": "77c261f16f9e0620e8885d0914a3bc923a631952ba80e1f94bf1fd5b4cebf239",
 }

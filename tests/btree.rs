@@ -1251,6 +1251,83 @@ fn fixed_bplus_validates_a_complete_snapshot() {
 }
 
 #[test]
+fn fixed_bplus_lookup_reads_only_the_pools_under_an_inconsistent_order() {
+    use jzap::collections::btree_map::view::bplus::FixedTree;
+    use std::{cell::Cell, cmp::Ordering};
+
+    thread_local! {
+        // Zero keeps the stable order; later values scramble each comparison.
+        static STATE: Cell<u64> = const { Cell::new(0) };
+    }
+    #[derive(Clone, Copy)]
+    struct Key(u32);
+    impl Ord for Key {
+        fn cmp(&self, other: &Self) -> Ordering {
+            STATE.with(|state| {
+                let mut s = state.get();
+                if s == 0 {
+                    return self.0.cmp(&other.0);
+                }
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                state.set(s);
+                [Ordering::Less, Ordering::Equal, Ordering::Greater][(s % 3) as usize]
+            })
+        }
+    }
+    impl PartialOrd for Key {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl PartialEq for Key {
+        fn eq(&self, other: &Self) -> bool {
+            self.cmp(other) == Ordering::Equal
+        }
+    }
+    impl Eq for Key {}
+
+    // Width two and height three: eight leaves, then four, two and one branches.
+    let leaves: Vec<_> = (0..8u32)
+        .map(|leaf| ([Key(4 * leaf + 2), Key(4 * leaf + 4)], [2 * leaf, 2 * leaf + 1]))
+        .collect();
+    let mut branches = Vec::new();
+    let (mut first, mut count) = (0usize, 8usize);
+    while count > 1 {
+        for pair in 0..count / 2 {
+            let ids = [first + 2 * pair, first + 2 * pair + 1];
+            let minimum = |id: usize| -> Key {
+                let mut id = id;
+                while id >= leaves.len() {
+                    id = branches[id - leaves.len()].1[0];
+                }
+                leaves[id].0[0]
+            };
+            let minima = [minimum(ids[0]), minimum(ids[1])];
+            branches.push((minima, ids));
+        }
+        first += count;
+        count /= 2;
+    }
+    let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+    let values = leaves.iter().flat_map(|(_, values)| values).collect::<Vec<_>>();
+    for query in 0..36 {
+        let expected = (query % 2 == 0 && (2..=32).contains(&query)).then(|| query / 2 - 1);
+        assert_eq!(tree.get(&Key(query)).unwrap().copied(), expected);
+    }
+    for seed in 1..=64u64 {
+        STATE.with(|state| state.set(seed));
+        for query in 0..36 {
+            if let Some(value) = tree.get(&Key(query)).unwrap() {
+                assert!(values.iter().any(|candidate| std::ptr::eq(*candidate, value)));
+            }
+        }
+    }
+    STATE.with(|state| state.set(0));
+}
+
+#[test]
 fn fixed_bplus_range_matches_std_across_scrambled_leaf_ids() {
     use core::ops::Bound::{Excluded, Included, Unbounded};
     use jzap::{Error, collections::btree_map::view::bplus::FixedTree};

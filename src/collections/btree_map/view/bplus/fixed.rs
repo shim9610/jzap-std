@@ -1,8 +1,8 @@
 //! Snapshots with fixed-width records borrowed from the caller.
 
-use super::{Node, SMALL_NODE_KEYS, child_index, leaf_index};
+use super::{Node, SMALL_NODE_KEYS, leaf_index};
 use crate::{Error, vec::Vec};
-use core::borrow::Borrow;
+use core::{borrow::Borrow, hint::select_unpredictable};
 mod range;
 pub use range::Range;
 
@@ -92,6 +92,12 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
     }
 
     /// Find a value in the validated snapshot. Lookup does not allocate.
+    ///
+    /// For keys that keep the documented stable ordering, the result is the
+    /// value stored with an equal key. An inconsistent `Ord` can make the
+    /// result unspecified, but the lookup still only reads the borrowed pools.
+    /// A tree accepted by [`try_new`](Self::try_new) never makes this method
+    /// return an error.
     #[inline(always)]
     pub fn get<Q: ?Sized + Ord>(&self, query: &Q) -> Result<Option<&'a V>, Error>
     where
@@ -101,32 +107,79 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             return Ok(None);
         };
         let mut remaining = self.height;
+        if remaining != 0 {
+            // SAFETY: a root of nonzero height is a validated branch.
+            let (keys, _) = unsafe { self.branch_unchecked(id) };
+            // Separators are the minima of their children, so with a stable
+            // order only the root can rule out a query below every key.
+            if keys.first().is_none_or(|key| key.borrow() > query) {
+                return Ok(None);
+            }
+        }
         while let Some(next_height) = remaining.checked_sub(1) {
             remaining = next_height;
-            let branch_id = id
-                .checked_sub(self.leaves.len())
-                .ok_or(Error::InvalidStructure)?;
-            let (keys, children) = self
-                .branches
-                .get(branch_id)
-                .ok_or(Error::InvalidStructure)?;
+            // SAFETY: `id` has height `remaining + 1`, so it is a validated
+            // branch, and its children all have height `remaining`.
+            let (keys, children) = unsafe { self.branch_unchecked(id) };
             // Conditional selection at every width: on the pinned Linux x86-64
             // CPU the width-eight branch search took 32.50 ns/lookup against
             // 19.64 ns with selection (docs/verification/linux-bottlenecks.md).
-            let next = child_index::<true, _, _>(keys, query)?;
-            let Some(next) = next else { return Ok(None) };
-            id = *children.get(next).ok_or(Error::InvalidStructure)?;
+            let slot = floor_slot(keys, query);
+            // SAFETY: `floor_slot` returns a slot below `N` for every order.
+            id = *unsafe { children.get_unchecked(slot) };
         }
-        let (keys, values) = self.leaves.get(id).ok_or(Error::InvalidStructure)?;
+        // SAFETY: a node of height zero is a validated leaf.
+        let (keys, values) = unsafe { self.leaves.get_unchecked(id) };
         let index = if N <= SMALL_NODE_KEYS {
             keys.binary_search_by(|key| key.borrow().cmp(query)).ok()
         } else {
             leaf_index(keys, query)
         };
-        index
-            .map(|i| values.get(i).ok_or(Error::InvalidStructure))
-            .transpose()
+        // SAFETY: both searches return only indices of existing keys, and a
+        // leaf holds `N` keys and `N` values.
+        Ok(index.map(|i| unsafe { values.get_unchecked(i) }))
     }
+
+    /// Borrow the branch record with node ID `id`.
+    ///
+    /// # Safety
+    ///
+    /// `id` must be the root of a tree of nonzero height, or a child reached
+    /// from a branch of height at least two. `try_new` guarantees that such a
+    /// node lies after the leaves and before the end of the branch pool.
+    #[inline(always)]
+    unsafe fn branch_unchecked(&self, id: usize) -> &'a ([K; N], [usize; N]) {
+        // SAFETY: the caller guarantees leaves.len() <= id < leaves.len() +
+        // branches.len().
+        unsafe {
+            self.branches
+                .get_unchecked(id.unchecked_sub(self.leaves.len()))
+        }
+    }
+}
+
+// Select the last child whose minimum does not exceed the query, defaulting to
+// child zero. The base slot only ever takes checked middle positions, so the
+// result is below `N` for every order whenever `N` is nonzero.
+#[inline(always)]
+fn floor_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(keys: &[K; N], query: &Q) -> usize {
+    let mut base = 0usize;
+    let mut remaining = N;
+    while remaining > 1 {
+        let half = remaining / 2;
+        let Some(middle) = base.checked_add(half) else {
+            break;
+        };
+        let Some(key) = keys.get(middle) else {
+            break;
+        };
+        base = select_unpredictable(key.borrow() <= query, middle, base);
+        let Some(rest) = remaining.checked_sub(half) else {
+            break;
+        };
+        remaining = rest;
+    }
+    base
 }
 
 fn summarize_branch<'a, K: Ord, const N: usize>(
@@ -169,6 +222,180 @@ fn summarize_branch<'a, K: Ord, const N: usize>(
 #[cfg(kani)]
 mod proofs {
     use super::*;
+    use core::cmp::Ordering;
+
+    // Every comparison returns an arbitrary result, so these harnesses cover
+    // every order, including ones that break the stable-`Ord` contract.
+    struct Chaos;
+
+    impl PartialEq for Chaos {
+        fn eq(&self, _: &Self) -> bool {
+            kani::any()
+        }
+    }
+
+    impl Eq for Chaos {}
+
+    impl PartialOrd for Chaos {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Chaos {
+        fn cmp(&self, _: &Self) -> Ordering {
+            match kani::any::<u8>() {
+                0 => Ordering::Less,
+                1 => Ordering::Equal,
+                _ => Ordering::Greater,
+            }
+        }
+    }
+
+    fn chaos<const N: usize>() -> [Chaos; N] {
+        [const { Chaos }; N]
+    }
+
+    // Accept arbitrary prefixes of both pools with arbitrary child IDs and
+    // check that every accepted tree answers from its own value pool.
+    fn lookup_reads_only_pool_values<const N: usize, const L: usize, const B: usize, const H: usize>(
+    ) {
+        let leaves: [([Chaos; N], [u8; N]); L] = core::array::from_fn(|_| (chaos(), kani::any()));
+        let branches: [([Chaos; N], [usize; N]); B] =
+            core::array::from_fn(|_| (chaos(), kani::any()));
+        let leaf_count: usize = kani::any();
+        let branch_count: usize = kani::any();
+        kani::assume(leaf_count <= L && branch_count <= B);
+        let leaves = &leaves[..leaf_count];
+        let branches = &branches[..branch_count];
+        let Ok(tree) = FixedTree::try_new(leaves, branches) else {
+            return;
+        };
+        kani::cover!(tree.height == H);
+        let found = tree.get(&Chaos);
+        assert!(found.is_ok());
+        if let Ok(Some(value)) = found {
+            assert!(leaves.iter().any(|(_, values)| values.iter().any(|v| core::ptr::eq(v, value))));
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn fixed_get_reads_only_pool_values_for_any_order_width_one() {
+        // Width one admits single-child chains up to height four.
+        lookup_reads_only_pool_values::<1, 2, 4, 4>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn fixed_get_reads_only_pool_values_for_any_order_width_two() {
+        // Four leaves, two inner branches and a root reach height two.
+        lookup_reads_only_pool_values::<2, 4, 3, 2>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn fixed_get_reads_only_pool_values_for_any_order_width_three() {
+        lookup_reads_only_pool_values::<3, 4, 2, 1>();
+    }
+
+    fn floor_slot_below_width<const N: usize>() {
+        assert!(floor_slot(&chaos::<N>(), &Chaos) < N);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn floor_slot_stays_below_every_width_for_any_order() {
+        floor_slot_below_width::<1>();
+        floor_slot_below_width::<2>();
+        floor_slot_below_width::<3>();
+        floor_slot_below_width::<4>();
+        floor_slot_below_width::<5>();
+        floor_slot_below_width::<7>();
+        floor_slot_below_width::<8>();
+        floor_slot_below_width::<9>();
+        floor_slot_below_width::<16>();
+        floor_slot_below_width::<17>();
+        floor_slot_below_width::<32>();
+        floor_slot_below_width::<33>();
+        floor_slot_below_width::<64>();
+    }
+
+    fn leaf_search_reads_only_pool_values<const N: usize>() {
+        let leaves = [(chaos::<N>(), kani::any::<[u8; N]>())];
+        let Ok(tree) = FixedTree::try_new(&leaves, &[]) else {
+            return;
+        };
+        if let Ok(Some(value)) = tree.get(&Chaos) {
+            assert!(leaves[0].1.iter().any(|v| core::ptr::eq(v, value)));
+        } else {
+            assert!(tree.get(&Chaos) == Ok(None));
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn fixed_leaf_search_reads_only_pool_values_for_any_order() {
+        // Widths up to eight use the binary search, wider leaves leaf_index.
+        leaf_search_reads_only_pool_values::<7>();
+        leaf_search_reads_only_pool_values::<8>();
+        leaf_search_reads_only_pool_values::<9>();
+        leaf_search_reads_only_pool_values::<16>();
+    }
+
+    // The checked lookup before the unchecked indexing, kept as the reference.
+    fn checked_get<'a, const N: usize>(
+        tree: &FixedTree<'a, u8, u8, N>,
+        query: &u8,
+    ) -> Result<Option<&'a u8>, Error> {
+        let Some(mut id) = tree.root else {
+            return Ok(None);
+        };
+        let mut remaining = tree.height;
+        while let Some(next_height) = remaining.checked_sub(1) {
+            remaining = next_height;
+            let branch_id = id
+                .checked_sub(tree.leaves.len())
+                .ok_or(Error::InvalidStructure)?;
+            let (keys, children) = tree.branches.get(branch_id).ok_or(Error::InvalidStructure)?;
+            let next = super::super::child_index::<true, _, _>(keys, query)?;
+            let Some(next) = next else { return Ok(None) };
+            id = *children.get(next).ok_or(Error::InvalidStructure)?;
+        }
+        let (keys, values) = tree.leaves.get(id).ok_or(Error::InvalidStructure)?;
+        let index = if N <= SMALL_NODE_KEYS {
+            keys.binary_search_by(|key| key.cmp(query)).ok()
+        } else {
+            leaf_index(keys, query)
+        };
+        index
+            .map(|i| values.get(i).ok_or(Error::InvalidStructure))
+            .transpose()
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn fixed_get_matches_checked_and_linear_lookup_for_a_stable_order() {
+        let leaves: [([u8; 2], [u8; 2]); 4] = kani::any();
+        let branches: [([u8; 2], [usize; 2]); 3] = kani::any();
+        let leaf_count: usize = kani::any();
+        let branch_count: usize = kani::any();
+        kani::assume(leaf_count <= 4 && branch_count <= 3);
+        let leaves = &leaves[..leaf_count];
+        let Ok(tree) = FixedTree::try_new(leaves, &branches[..branch_count]) else {
+            return;
+        };
+        kani::cover!(tree.height == 2);
+        let query = kani::any();
+        let expected = leaves.iter().find_map(|(keys, values)| {
+            keys.iter()
+                .zip(values)
+                .find_map(|(key, value)| (*key == query).then_some(value))
+        });
+        let found = tree.get(&query);
+        assert!(found == Ok(expected));
+        assert!(found == checked_get(&tree, &query));
+    }
 
     #[kani::proof]
     #[kani::unwind(8)]

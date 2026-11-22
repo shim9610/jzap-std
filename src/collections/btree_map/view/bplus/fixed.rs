@@ -126,10 +126,10 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             // 19.64 ns with selection (docs/verification/linux-bottlenecks.md).
             let slot = floor_slot(keys, query);
             // SAFETY: `floor_slot` returns a slot below `N` for every order.
-            id = *unsafe { children.get_unchecked(slot) };
+            id = unsafe { *children.as_ptr().add(slot) };
         }
         // SAFETY: a node of height zero is a validated leaf.
-        let (keys, values) = unsafe { self.leaves.get_unchecked(id) };
+        let (keys, values) = unsafe { &*self.leaves.as_ptr().add(id) };
         let index = if N <= SMALL_NODE_KEYS {
             keys.binary_search_by(|key| key.borrow().cmp(query)).ok()
         } else {
@@ -137,7 +137,7 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
         };
         // SAFETY: both searches return only indices of existing keys, and a
         // leaf holds `N` keys and `N` values.
-        Ok(index.map(|i| unsafe { values.get_unchecked(i) }))
+        Ok(index.map(|i| unsafe { &*values.as_ptr().add(i) }))
     }
 
     /// Borrow the branch record with node ID `id`.
@@ -147,13 +147,23 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
     /// `id` must be the root of a tree of nonzero height, or a child reached
     /// from a branch of height at least two. `try_new` guarantees that such a
     /// node lies after the leaves and before the end of the branch pool.
+    ///
+    /// The unchecked reads use `as_ptr().add()` rather than `get_unchecked`:
+    /// Kani 0.68 with CBMC 6.11 reported a wrong value for a pointer that
+    /// `get_unchecked` derived from a pool returned by `try_new`, while Miri and
+    /// native runs read the right record. Both forms perform the same loads;
+    /// the x86-64 release lookups have the same instruction counts, with
+    /// identical code at width eight and a different block order at widths
+    /// 16 and 32.
     #[inline(always)]
     unsafe fn branch_unchecked(&self, id: usize) -> &'a ([K; N], [usize; N]) {
         // SAFETY: the caller guarantees leaves.len() <= id < leaves.len() +
-        // branches.len().
+        // branches.len(), so the record lies inside the borrowed pool.
         unsafe {
-            self.branches
-                .get_unchecked(id.unchecked_sub(self.leaves.len()))
+            &*self
+                .branches
+                .as_ptr()
+                .add(id.unchecked_sub(self.leaves.len()))
         }
     }
 }
@@ -450,5 +460,69 @@ mod proofs {
         branches[1].1 = [2, 3];
         branches[2].1 = [4, 5];
         matches_checked_and_linear_lookup::<4, 3, 2>(branches);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn fixed_tree_matches_linear_lookup() {
+        let leaves = [([2u8, 5], [20, 50]), ([7, 12], [70, 120])];
+        let branches = [([2, 7], [0, 1])];
+        let query = kani::any();
+        let tree = FixedTree::try_new(&leaves, &branches).unwrap();
+        let expected = match query {
+            2 => Some(&20),
+            5 => Some(&50),
+            7 => Some(&70),
+            12 => Some(&120),
+            _ => None,
+        };
+        assert!(tree.get(&query) == Ok(expected));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn fixed_tree_rejects_invalid_child_ids() {
+        let leaves = [([2u8, 5], [20, 50]), ([7, 12], [70, 120])];
+        let first: usize = kani::any();
+        let second: usize = kani::any();
+        let branches = [([2, 7], [first, second])];
+        assert!(FixedTree::try_new(&leaves, &branches).is_ok() == (first == 0 && second == 1));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn fixed_branch_checks_fences_heights_and_unique_parent() {
+        let minima = [2u8, 7];
+        let first_maximum = kani::any::<u8>();
+        let right_minimum = kani::any::<u8>();
+        let left_height = kani::any::<usize>();
+        let right_height = kani::any::<usize>();
+        let used = kani::any();
+        let mut prefix = [
+            Summary {
+                minimum: &2,
+                maximum: &first_maximum,
+                height: left_height,
+                has_parent: used,
+            },
+            Summary {
+                minimum: &right_minimum,
+                maximum: &12,
+                height: right_height,
+                has_parent: false,
+            },
+        ];
+        let expected = !used
+            && first_maximum < 7
+            && right_minimum == 7
+            && left_height == right_height
+            && left_height != usize::MAX;
+        let result = summarize_branch(&minima, &[0, 1], &mut prefix);
+        assert!(result.is_ok() == expected);
+        if let Ok(summary) = result {
+            assert!(*summary.minimum == 2 && *summary.maximum == 12);
+            assert!(summary.height == left_height + 1 && !summary.has_parent);
+            assert!(prefix.iter().all(|child| child.has_parent));
+        }
     }
 }

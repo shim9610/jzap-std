@@ -529,6 +529,7 @@ pub(crate) struct Free<'a> {
     pub(crate) budget: Accounting<'a>,
 }
 impl Drop for Free<'_> {
+    #[inline]
     fn drop(&mut self) {
         // SAFETY: the guard receives one exclusively owned, already detached allocation.
         unsafe { storage::deallocate(self.pointer, self.layout, self.budget) }

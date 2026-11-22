@@ -436,6 +436,17 @@ impl<K, V, P: AllocationPolicy> BTreeMap<K, V, P> {
                 return Ok(unsafe { self.commit_fit(at, new_len, key, value) });
             }
         }
+        self.try_insert_split(at, key, value)
+    }
+    /// Empty-root and split insertion, kept out of the in-place fast path.
+    #[cold]
+    #[inline(never)]
+    fn try_insert_split(
+        &mut self,
+        at: Option<Cursor<K, V>>,
+        key: K,
+        value: V,
+    ) -> Result<Cursor<K, V>, Rejected<(K, V)>> {
         let plan = match self.plan_insert(at) {
             Ok(plan) => plan,
             Err(error) => {

@@ -26,8 +26,12 @@ claim.
 
 ## Results
 
-Unbudgeted (`unlimited`) ratios against std; `d1a04e7` and the final branch
-executable in the same run:
+Unbudgeted (`unlimited`) ratios against std; `d1a04e7` and the branch
+executable before the strided B+ merge (`4b5439a`) in the same run. After the
+merge, the same stack-controlled run against `d1a04e7` (CPU 6, three seeds)
+showed no regression against this table, and strided lookups matched the
+strided-page branch head within about 2%; its rows are not republished here.
+The changes after the merge are reported in their own sections:
 
 | Operation | Input | `d1a04e7` | Branch | Branch seed ratios |
 | --- | --- | ---: | ---: | --- |
@@ -238,8 +242,9 @@ of these are guaranteed by `try_new`: leaves have height zero, a branch has
 the checked successor of its children's common height, every child ID is
 below its parent's ID, and the root is the last record.
 
-`get` now reads the branch, child, leaf and value records with
-`get_unchecked`, through the private `unsafe fn branch_unchecked`. A new
+`get` now reads the branch, child, leaf and value records through
+`as_ptr().add()`, with the branch read in the private `unsafe fn
+branch_unchecked`. A new
 `floor_slot` keeps the conditional binary search but starts at slot zero and
 returns a plain `usize`, so its result is below `N` for every order. The
 first-key fence runs at the root only: with a stable order every lower node's
@@ -255,7 +260,19 @@ leaf search is branch-free; in the benchmark executable the three `fixed`
 lookup closures went from 106, 103 and 103 to 74, 68 and 68 instructions.
 Widths 16 and 32 keep the leaf's `leaf_index` match checks.
 
-Paired A/B against the previous branch build (`1c1a689`) in one run, on a
+A first form used `get_unchecked`. On width-one chains of height two or more,
+Kani 0.68 with CBMC 6.11 read a wrong value through a pointer that
+`get_unchecked` derived from a pool returned by `try_new`: the same record read
+correctly through checked indexing, `ptr::eq` placed the pointer at that
+record, and the same input passed natively and under Miri. The same tree built
+as a struct literal, or the same record read through `as_ptr().add()`, verified.
+A reduced crate without `try_new` did not reproduce it, so the cause inside the
+verifier was not isolated. The product uses `as_ptr().add()`, which performs the
+same loads: the width-eight lookup compiles to identical code, and widths 16
+and 32 keep their instruction counts (66 and 72) with a different block order.
+
+Paired A/B of the `get_unchecked` form against the previous branch build
+(`1c1a689`) in one run, on a
 cloud Intel Xeon at 2.30 GHz pinned with `taskset` to one CPU, without
 frequency control. Seeds 1, 2, 3 and 10, two rounds with alternating build
 order, batches 60000/20000/17000, every interval at least 1.54 s,
@@ -277,7 +294,8 @@ PC have not been run.
 
 Verification of the unchecked reads:
 
-- Kani, actual product source (`fixed::proofs`, 11 harnesses). A key type
+- Kani, actual product source (`fixed::proofs`, 11 harnesses, all verified;
+  `tools/consumer-audit/check_bplus_fixed_get.py`). A key type
   whose every comparison returns an arbitrary result models every order,
   including inconsistent ones. For widths one, two and three, `try_new` gets
   arbitrary child IDs below the record count on concrete shapes of every
@@ -293,20 +311,23 @@ Verification of the unchecked reads:
   heights one and two, including leaves stored out of ID order. A single-leaf
   instance of that comparison exhausted CBMC memory in this environment and is
   not included; height zero only skips the descent.
-- Kani defect controls, each in a copied crate: accepting children of
-  different heights, descending one level past the root height, routing one
-  slot past the floor, reading the value after the matching key, and a
-  strict separator comparison each produce a counterexample in the named
-  harness.
+- Kani defect controls, each in a copied crate, all rejected: accepting
+  children of different heights (pointer-bounds, invalid-dereference and
+  `unchecked_sub` failures), descending one level past the root height
+  (`unchecked_sub` overflow and offset failures), routing one slot past the
+  floor (the slot bound), reading the value after the matching key (invalid
+  dereference) and a strict separator comparison (the equivalence assertion).
+  The three earlier fixed harnesses (two-leaf lookup, every machine-word child
+  ID, branch summaries) still pass.
 - Verus (`tools/consumer-audit/bplus_fixed.rs`, bound to the reviewed `get`,
   `branch_unchecked`, `floor_slot`, `try_new` and `summarize_branch` bodies by
   digest): pushing leaves and branches as `try_new` does preserves the height
   invariant, every descent of exactly the root height through any child slots
   ends at a leaf, every intermediate node is in the branch pool, and each
-  `floor_slot` step keeps its middle position below the width. Admitting a
-  child at its parent's ID, or a floor step past the width, leaves a solver
-  error. These lemmas are a model bound to source digests, not a direct
-  product-source proof.
+  `floor_slot` step keeps its middle position below the width (24 verified,
+  0 errors). Letting a child sit at any lower height, or a floor step past
+  the width, leaves a solver error. These lemmas are a model bound to source
+  digests, not a direct product-source proof.
 - Miri: the fixed B+ tests include a width-two, height-three tree whose order
   becomes pseudo-random after validation; every lookup returns `Ok` and only
   values from the pool.
@@ -363,8 +384,20 @@ adds about four instructions per key (2.2%). The cycle gap is front end:
 split planning and commit. The common in-place path executes in 64-byte lines
 0, 1, 5, 6, 34 and 35 of the function; std's `insert_entry` (2,010 bytes) runs
 its common path in lines 0, 1 and 26. The scattered hot path explains the
-uop-cache misses. Separating the split path into a cold function is the
-indicated next experiment; it has not been tried.
+uop-cache misses.
+
+`1c1a689` keeps only the in-place insert in `try_insert_at` and moves
+empty-root and split insertion into `#[cold] #[inline(never)] fn
+try_insert_split`. Paired A/B on CPU 6 against the merged build:
+
+| Workload | Before | After | Against std, before → after |
+| --- | ---: | ---: | --- |
+| BTreeSet `build`, small | 75.2 ns | 60.1 ns | +20.4% → −8.5% |
+| BTreeMap `build`, small | 86.6 ns | 74.2 ns | — |
+| BTreeMap `build`, mixed | 35.90 µs | 36.95 µs | −2.4% after |
+
+The mixed BTreeMap build is 2.9% slower in absolute time and still 2.4%
+faster than std; its cause is examined below.
 
 ## Examined and left unchanged
 
@@ -373,7 +406,7 @@ Gaps measured in the first full run of `d1a04e7` unless stated:
 | Operation | Gap | Cause found | Reason left unchanged |
 | --- | ---: | --- | --- |
 | String `from_utf16` | +3.2% (branch) | Per code point: checked length add, in-capacity path as a taken branch, length re-check after the write with a materialized `Result` | Outlining growth made the default build slower; a std-shaped push changes the proved String edit envelope |
-| HashSet `build`, small | +4.5% (branch) | Per insert +11 instructions; per resize +85 (copy-then-publish wrapper and guard calls) | Ownership-preserving resize and bounded probing; estimated gain about 1% |
+| HashSet `build`, small | about +6% (merged build) | About 35 more instructions per insert: 11.5 in insert and about 19 in resize; `try_reserve` stays out of line | Ownership-preserving resize and bounded probing. Inlining the storage free (`Free::drop`) into resize in `1c1a689` measured 170.8 → 168.9 ns, with the ratio still about +6% |
 | HashSet `extract` | see placement | 19 vs 17 instructions per element: index-based bucket addressing, constant rematerialized, bounded group scan | The measured gap follows the std control's placement |
 | Rc `clone` | +6.7% | Saturating count: load/compare/store instead of `incq` | Part of the shared count protocol |
 | Arc `cow_weak`, `unique4096` | +5.8%, +9.4% | Uniqueness pre-check | Part of the shared count protocol |

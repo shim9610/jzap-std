@@ -18,7 +18,7 @@ FIXED = ROOT / "src/collections/btree_map/view/bplus/fixed.rs"
 BOUND = {
     "pub struct FixedTree<": "5fd18d87f241a7b8dc83c0c3156fcddd14edd7c294276d48d56fc8b66d37b8a7",
     "struct Summary<": "0e770ad9e97dd75f4f5bc7096603c6218760988620abc5a9fa05c92e275f1153",
-    "pub fn try_new(": "a6f4e11bce644c78ab9c73a798dd4f6a7351eb67662475d752ab2ee79caa2204",
+    "pub fn try_new(": "3f10399b54818fd18de2f8d1c66855c159eac18641673f2744fa349bf8dd5c82",
     "pub fn get<": "673f603f210413767d72861e39d6d1f6fe764f15765e725eb4b19c1d31d67f9f",
     "fn summarize<": "bae443874a72ad986f9382728b274215e26cd94472fd13923ee8e08a210e3053",
     "fn summarize_branch<": "4f529519675b1e16e928b9617b89f09ecfa1cf9a9c5c775ad5a07971717a521a",

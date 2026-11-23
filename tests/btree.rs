@@ -1250,6 +1250,103 @@ fn fixed_bplus_validates_a_complete_snapshot() {
     ));
 }
 
+// Every width-one snapshot of the Kani harness shapes (one leaf under zero, one
+// or four branches), every child ID below the record count and every sequence
+// of comparison outcomes: accepted trees answer only from their own value
+// pool. Kani 0.68.0/CBMC 6.11.0 report a counterexample for these shapes that
+// does not replay natively (tools/consumer-audit/check_bplus_fixed_get.py); in
+// debug builds and under Miri this run checks the unchecked reads directly.
+#[test]
+fn fixed_bplus_width_one_chains_read_only_their_pools() {
+    use jzap::collections::btree_map::view::bplus::FixedTree;
+    use std::{cell::Cell, cmp::Ordering};
+
+    thread_local! {
+        // Each comparison takes the next two bits of the script.
+        static SCRIPT: Cell<u64> = const { Cell::new(0) };
+        static USED: Cell<u32> = const { Cell::new(0) };
+    }
+    fn next() -> u64 {
+        USED.with(|used| used.set(used.get() + 1));
+        SCRIPT.with(|script| {
+            let bits = script.get();
+            script.set(bits >> 2);
+            bits & 3
+        })
+    }
+    struct Key;
+    impl Ord for Key {
+        fn cmp(&self, _: &Self) -> Ordering {
+            match next() {
+                0 => Ordering::Less,
+                1 => Ordering::Equal,
+                _ => Ordering::Greater,
+            }
+        }
+    }
+    impl PartialOrd for Key {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl PartialEq for Key {
+        fn eq(&self, _: &Self) -> bool {
+            next() & 1 == 1
+        }
+    }
+    impl Eq for Key {}
+
+    // Returns the number of accepted trees of one shape.
+    fn shape(leaf_count: usize, branch_count: usize) -> usize {
+        let total = leaf_count + branch_count;
+        let mut ids = vec![0usize; branch_count];
+        let mut accepted = 0;
+        loop {
+            let mut longest = 0;
+            for script in 0u64.. {
+                let leaves: Vec<([Key; 1], [usize; 1])> =
+                    (0..leaf_count).map(|leaf| ([Key], [leaf])).collect();
+                let branches: Vec<([Key; 1], [usize; 1])> =
+                    ids.iter().map(|&id| ([Key], [id])).collect();
+                SCRIPT.with(|bits| bits.set(script));
+                USED.with(|used| used.set(0));
+                if let Ok(tree) = FixedTree::try_new(&leaves, &branches) {
+                    accepted += 1;
+                    if let Some(value) = tree.get(&Key).unwrap() {
+                        assert!(
+                            leaves
+                                .iter()
+                                .any(|(_, values)| std::ptr::eq(&values[0], value)),
+                            "value outside the pool"
+                        );
+                    }
+                }
+                // Stop once every outcome sequence of the longest run is covered.
+                longest = longest.max(USED.with(|used| used.get()));
+                if script + 1 >= 1u64 << (2 * longest) {
+                    break;
+                }
+            }
+            let mut digit = 0;
+            while digit < branch_count {
+                ids[digit] += 1;
+                if ids[digit] < total {
+                    break;
+                }
+                ids[digit] = 0;
+                digit += 1;
+            }
+            if digit == branch_count {
+                return accepted;
+            }
+        }
+    }
+    assert_eq!(shape(1, 0), 4);
+    assert_eq!(shape(1, 1), 32);
+    // The height-four chain is accepted for 256 outcome sequences.
+    assert_eq!(shape(1, 4), 256);
+}
+
 #[test]
 fn fixed_bplus_lookup_reads_only_the_pools_under_an_inconsistent_order() {
     use jzap::collections::btree_map::view::bplus::FixedTree;

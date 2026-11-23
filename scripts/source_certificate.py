@@ -436,11 +436,16 @@ def main():
     if collected is not None:
         for name in STAGES['bplus'][1][1:]:
             assert run(name)==0
-        for name,count in (('bplus-kani',3),('fixed-bplus-kani',11),('bplus-range-kani',3),('bplus-strided-kani',9)):
+        for name,count in (('bplus-kani',3),('bplus-range-kani',3),('bplus-strided-kani',9)):
             assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
+        # Ten fixed harnesses verify; the width-one harness is the recorded Kani
+        # false counterexample, never counted as verified (check_bplus_fixed_get.py).
+        fixed_log=evidence(out/'fixed-bplus-kani.log').read_text()
+        assert 'Complete - 10 successfully verified harnesses, 1 failures, 11 total.' in fixed_log
+        assert re.search(r'Width-one harness: recorded Kani false counterexample .*; \d+ concrete playbacks diverge natively; not counted as verified',fixed_log)
         for name in ('fixed-bplus-miri','fixed-bplus-miri-32'):
-            assert re.search(r'test result: ok\. 7 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
-        assert '5 fixed B+ lookup defect controls rejected' in evidence(out/'fixed-bplus-kani.log').read_text()
+            assert re.search(r'test result: ok\. 8 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+        assert '5 fixed B+ lookup defect controls rejected' in fixed_log
         for name in ('bplus-strided-miri','bplus-strided-miri-32'):
             assert re.search(r'test result: ok\. 7 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}

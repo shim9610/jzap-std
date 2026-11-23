@@ -212,14 +212,14 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             .checked_add(branches.len())
             .ok_or(Error::InvalidStructure)?;
         if count == 0 {
-            return Ok(Self::assemble(
+            return Self::assemble(
                 leaves,
                 branches,
                 &mut [],
                 leaf_bounds,
                 branch_minimum,
                 fences_fail,
-            )?);
+            );
         }
         let mut summaries = Vec::try_with_capacity(count)?;
         // Summaries hold only references and integers, so the vector never
@@ -334,9 +334,7 @@ impl<'a, K, V, const N: usize> FixedTree<'a, K, V, N> {
         proof! {
             use_type_invariant(self);
         }
-        let Some(mut id) = self.root else {
-            return None;
-        };
+        let mut id = self.root?;
         let mut remaining = self.height;
         if remaining != 0 {
             #[cfg(verus_keep_ghost)]

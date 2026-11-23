@@ -179,6 +179,15 @@ impl<'a, K, V, I> NodeSlice<'a, K, V, I> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LookupStep<'a, K: ?Sized, V: ?Sized, I> {
     NeedNode(I),
+    /// Partial-key lookups only: attach the full key at this index of the
+    /// current node, then provide the node again.
+    NeedKey(usize),
+    /// Partial-key lookups only: provide the current node again together with
+    /// the full keys of the listed fences.
+    NeedFence {
+        minimum: bool,
+        ceiling: bool,
+    },
     Found(&'a K, &'a V),
     Absent,
 }

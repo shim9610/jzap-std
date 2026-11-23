@@ -80,8 +80,7 @@ represents:
 
 - **Consistency.** A `Some(o)` from any comparison holds for every
   completion of both sides.
-- **Resolved keys.** `full()` returns the key's completion. A key whose
-  `full()` is `Some` is decided against every complete key.
+- **Resolved keys.** `full()` returns the key's completion.
 - **Fences.** `fence()` represents the same completions as the key.
   `fence_admits(fence, full)` is true exactly when `full` is a completion of
   the fence.
@@ -185,8 +184,10 @@ supplied node:
 
 A comparison is decided from the stored parts first, then from an attached
 or passed full key. If a comparison needs a key that is not resolved, the
-pass returns `NeedKey(index)` for the leftmost such key and does not
-advance. If only fence comparisons remain undecided, it returns `NeedFence`
+pass returns `NeedKey(index)` for the first such key in the order above (the
+minimum fence, the adjacent pairs from the left, the ceiling, then the
+search) and does not advance. Of an undecided pair of unresolved keys, the
+left key is requested first. If only fence comparisons remain undecided, it returns `NeedFence`
 for those fences. Otherwise it returns the same step as the complete-key
 lookup and advances.
 

@@ -633,6 +633,7 @@ fn caller_owned_node_slices_and_continuations() {
                     assert!(![1, 3, 7, 10, 11, 15, 20, 22, 25, 29].contains(&key))
                 }
                 LookupStep::NeedNode(_) => {}
+                step => panic!("complete-key lookup returned {step:?}"),
             }
         }
         assert!(seen <= 2);
@@ -752,10 +753,10 @@ fn bplus_point_lookup_matches_std() {
                     {
                         LookupStep::Found(key, value) => Some((*key, *value)),
                         LookupStep::Absent => None,
-                        LookupStep::NeedNode(_) => unreachable!(),
+                        step => panic!("leaf returned {step:?}"),
                     }
                 }
-                LookupStep::Found(_, _) => unreachable!(),
+                step => panic!("branch returned {step:?}"),
             };
             assert_eq!(actual, model.get_key_value(&query).map(|(&k, &v)| (k, v)));
             assert_eq!(lookup.requested_node(), None);

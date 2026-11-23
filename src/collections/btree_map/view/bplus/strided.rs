@@ -791,7 +791,7 @@ mod proofs {
                     assert!(query == first || query == second);
                 }
                 LookupStep::Absent => assert!(query != first && query != second),
-                LookupStep::NeedNode(_) => panic!("leaf requested another node"),
+                _ => panic!("leaf returned another step"),
             }
         }
     }

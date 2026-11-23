@@ -7,6 +7,7 @@ Unannotated Rust elsewhere in the crate is outside this direct proof scope.
 """
 import argparse,hashlib,json,os,shutil,subprocess,tempfile
 from pathlib import Path
+import verus_std_specs
 ROOT=Path(__file__).resolve().parents[1]
 TARGETS={
     'array-caller':dict(entry='src/lib.rs',composition='tools/direct-verus/array-caller.rs',kernel=True,minimum=328,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Original flatten_count in both Verus word domains, composed with typed-array layout and canonical storage/slice contracts. Flattened extents are derived from the returned count, including zero width/size and overflow refusal; no product body is translated.'),
@@ -27,6 +28,7 @@ TARGETS={
     'owner-metadata':dict(entry='src/lib.rs',composition='tools/direct-verus/layout-adapters.rs',minimum=184,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Original logical capacity and standard-adoption shape for every word-sized element size, source length/capacity and limit; exact admission/error. Original required_len supplies initialized-length admission. Actual owner calls and transitions are checked on Rust separately.'),
     'buffer':dict(entry='src/lib.rs',composition='tools/direct-verus/init-adapters.rs',minimum=183,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Actual Buffer required length/growth proposal, exact overflow refusal and source-stop/error normalization; actual shared cursor over every admitted word-sized span in either word domain. Physical writes and owner publication have actual-Rust checks.'),
     'init-prefix':dict(entry='src/lib.rs',composition='tools/direct-verus/init-adapters.rs',minimum=179,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Actual generic initialization cursor for every admitted word-sized start/end in either word domain, with exact successful call history, error stopping and termination. Physical writes and typed cleanup are checked separately on actual Rust.'),
+    'fixed-bplus':dict(entry='src/lib.rs',minimum=279,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Actual FixedTree assemble/summarize/summarize_branch validation and find/floor_slot/leaf_slot/leaf_rank lookup for every pool content, child ID and key order in both Verus word domains. The type invariant established by assemble (children precede their parent one level lower, root last) bounds every unchecked pool, child, leaf, value and summary-slot access. Key comparisons arrive as closures whose results are not assumed; core::hint::select_unpredictable is the one specification imported from tools/direct-verus/std-specs.rs. The unverified try_new/get wrappers only allocate and build those closures.'),
     'integer':dict(entry='src/lib.rs',minimum=162,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Original TryArithmetic implementations: mathematical add/sub/mul value and exact overflow contracts for all 12 integer types, with no input restriction. Original checked division/remainder bodies and companion annotated kernels are also verified; Generic Checked add/sub/mul and the Vec length/growth kernels have direct contracts; wrapping/division/remainder forwarding semantics have separate actual-Rust Kani checks.'),
     'local-budget':dict(entry='src/lib.rs',composition='tools/direct-verus/local-budget.rs',minimum=150,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Actual local-budget pending, admission, credit and retirement functions with all-word contracts; logical ownership ledger calls their compiler-generated dual specifications. Cell/RAII transitions and ownership framing have actual-Rust Kani checks.'),
     'vec-geometry':dict(entry='src/lib.rs',composition='tools/direct-verus/vec-adapters.rs',minimum=167,sources=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs')),scope='Original Vec required_len and growth_capacity, including checked addition, exact Capacity errors, inclusive/exclusive endpoint normalization and the shared range validator for every machine-word input. Native callers preserve getter order. Caller memory and edit loops remain separate.'),
@@ -67,6 +69,8 @@ def run_target(root,out,name,binary,expect_failure=False):
         '--cfg','feature="alloc"',
         '--no-cheating','--output-json']
     for cfg in target.get('cfgs',[]):command += ['--cfg',cfg]
+    # The product crate imports the checked core specifications vstd lacks.
+    command += verus_std_specs.build(binary)
     env = dict(os.environ)
     if target.get('composition'):
         command += ['--cfg', 'jzap_proof_composition']
@@ -193,6 +197,13 @@ def verify(root=ROOT,out=None,targets=None,mutations=False):
             ('query-unlimited-value','vec-queries','src/vec.rs','fn max_len(self) -> usize {\n        usize::MAX','fn max_len(self) -> usize {\n        0'),
             ('query-configured-value','vec-queries','src/vec.rs','fn max_len(self) -> usize {\n        self.0','fn max_len(self) -> usize {\n        0'),
             ('query-configured-view','vec-queries','src/vec.rs','pub closed spec fn view(self) -> usize { self.0 }','pub closed spec fn view(self) -> usize { 0 }'),
+            ('fixed-child-past-prefix','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','if id >= prefix.len() {','if id > prefix.len() {'),
+            ('fixed-mixed-child-heights','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','Some(expected) => expected != child.height,','Some(expected) => false,'),
+            ('fixed-branch-height','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','Some(value) => match value.checked_add(1) {','Some(value) => match value.checked_add(2) {'),
+            ('fixed-leaf-height','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','            height: 0,\n            has_parent: false,\n        });','            height: 1,\n            has_parent: false,\n        });'),
+            ('fixed-root-past-end','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','root: Some(wrapping_sub(count, 1)),','root: Some(count),'),
+            ('fixed-route-past-middle','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','base = select_unpredictable(admits(key), middle, base);','base = select_unpredictable(admits(key), wrapping_add(middle, 1), base);'),
+            ('fixed-value-past-match','fixed-bplus','src/collections/btree_map/view/bplus/fixed.rs','                Some(base)\n','                Some(wrapping_add(base, 1))\n'),
             ('layout-reject','layout','src/layout/numeric.rs','if count > ceiling {','if count < ceiling {'),
             ('layout-product','layout','src/layout/numeric.rs','size.checked_mul(count)','size.checked_add(count)'),
             ('layout-error-kind','layout','src/layout/numeric.rs','return Err(Error::Layout);','return Err(Error::Bounds);'),
@@ -252,7 +263,7 @@ def verify(root=ROOT,out=None,targets=None,mutations=False):
                 controls.append(dict(name=name,detected=True,method='actual product-source solver counterexample',result=row))
     assert fingerprint()==before,'direct verification source changed during execution'
     report=dict(status='pass',kind='direct-product-source',source_sha256=before,source_unchanged=True,targets=rows,controls=controls,
-        mutations_run=mutations,scope='Only the named annotated product functions are directly verified. No claim about unannotated Rust, full ownership/provenance or arbitrary callbacks follows from this result. Verus and vstd specifications remain trusted tools; no additional assumed function bodies or disabled proof checks are used.')
+        mutations_run=mutations,scope='Only the named annotated product functions are directly verified. No claim about unannotated Rust, full ownership/provenance or arbitrary callbacks follows from this result. Verus, vstd and the source-checked core specifications in tools/direct-verus/std-specs.rs remain trusted; no assumed product function bodies or disabled proof checks are used.')
     (out/'summary.json').write_text(json.dumps(report,indent=2)+'\n');return report
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--target',action='append',choices=TARGETS);p.add_argument('--mutations',action='store_true');p.add_argument('--output',type=Path,default=ROOT/'target/verification/direct-verus');a=p.parse_args()

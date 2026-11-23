@@ -14,6 +14,7 @@ import re
 import subprocess
 import tempfile
 import shutil
+import verus_std_specs
 from datetime import datetime, timezone
 from verus_composition import run as compose
 from arithmetic_projection import bounded_projection, validate_bounded
@@ -228,9 +229,14 @@ def coverage(census):
         ("src/vec/convenience.rs", "Vec", "split_at_spare_mut"): (1, ["owner_spare_capacity", "spare_view_before_slice"]),
         ("src/vec/edit.rs", "Vec", "try_dedup_by"): (1, ["c_previous_kept"]),
         ("src/vec/edit.rs", "Drain", "restore_tail"): (1, ["drain_before_tail_restore"]),
-        # FixedTree::try_new places every branch after the leaves, and get
-        # reaches this only for nodes of nonzero height; bplus_fixed.rs proves it.
-        ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "branch_unchecked"): (1, ["fixed_branch_offset"]),
+        # Calls inside functions verified directly on the product source: Verus
+        # checks each call's bounded precondition there (verify_direct_verus.py
+        # target fixed-bplus); coverage requires the enclosing verus_spec.
+        ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "assemble"): (1, ["direct:fixed-bplus"]),
+        ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "find"): (3, ["direct:fixed-bplus"]),
+        ("src/collections/btree_map/view/bplus/fixed.rs", "", "leaf_rank"): (1, ["direct:fixed-bplus"]),
+        ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize"): (3, ["direct:fixed-bplus"]),
+        ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize_branch"): (2, ["direct:fixed-bplus"]),
     }
     found, ledger = {}, []
     for row in census:
@@ -298,11 +304,23 @@ def main():
     without_main = lambda text: re.sub(r"fn main\(\)\s*\{\}", "", text)
     combined = without_main(base) + generated
     for row in ledger:
-        for contract in row["contracts"]: assert re.search(r"\bfn\s+" + contract + r"\(", combined + (ROOT / "tools/direct-verus/state-adapters.rs").read_text() + (ROOT / "tools/direct-verus/budget-adapters.rs").read_text() + (ROOT / "tools/direct-verus/vec-adapters.rs").read_text() + (ROOT / "tools/direct-verus/layout-adapters.rs").read_text() + (ROOT / "tools/direct-verus/init-adapters.rs").read_text()), contract
+        direct = [c for c in row["contracts"] if c.startswith("direct:")]
+        for contract in direct:
+            # The enclosing product function itself carries the Verus
+            # specification that the named direct target verifies.
+            from verify_direct_verus import TARGETS
+            assert contract[len("direct:"):] in TARGETS, contract
+            site = row["site"]
+            source = (ROOT / site["file"]).read_text()
+            head = re.search(r"\bfn\s+" + site["function"] + r"\b", source)
+            assert head and "verus_spec(" in source[source.rfind("\n\n", 0, head.start()):head.start()], \
+                ("direct contract without a verus_spec on the enclosing function", site)
+        for contract in [c for c in row["contracts"] if not c.startswith("direct:")]: assert re.search(r"\bfn\s+" + contract + r"\(", combined + (ROOT / "tools/direct-verus/state-adapters.rs").read_text() + (ROOT / "tools/direct-verus/budget-adapters.rs").read_text() + (ROOT / "tools/direct-verus/vec-adapters.rs").read_text() + (ROOT / "tools/direct-verus/layout-adapters.rs").read_text() + (ROOT / "tools/direct-verus/init-adapters.rs").read_text()), contract
     path = OUT / "memory.generated.rs"; path.write_text(combined)
     report["results"]["verus"] = run("memory-verus", [str(VERUS), str(ROOT / "src/lib.rs"),
         "--crate-type", "lib", "--edition=2024", "--cfg", 'feature="alloc"',
-        "--cfg", "jzap_proof_composition", "--crate-name", "jzap_wrapping_memory", "--no-cheating"],
+        "--cfg", "jzap_proof_composition", "--crate-name", "jzap_wrapping_memory", "--no-cheating",
+        *verus_std_specs.build(VERUS)],
         {"JZAP_PROOF_COMPOSITION": str(path)})
     # Verus's unpinned usize domain is Either32Or64. Original state methods and
     # caller contracts are checked together; no usize -> u32 text translation.

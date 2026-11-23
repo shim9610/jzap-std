@@ -28,24 +28,24 @@ WIDTH_TWO = PROOFS + "fixed_get_reads_only_pool_values_for_any_order_width_two"
 FLOOR = PROOFS + "floor_slot_stays_below_every_width_for_any_order"
 LEAF = PROOFS + "fixed_leaf_search_reads_only_pool_values_for_any_order"
 STABLE = PROOFS + "fixed_get_matches_checked_and_linear_lookup_at_height_one"
-ROUTE = "base = select_unpredictable(key.borrow() <= query, middle, base);"
+ROUTE = "base = select_unpredictable(admits(key), middle, base);"
 CONTROLS = (
     # Validation accepts children of different heights, so a descent can
     # treat a leaf ID as a branch.
-    ("mixed-child-heights", "height.is_some_and(|expected| expected != child.height)",
-     "false", WIDTH_TWO),
+    ("mixed-child-heights", "Some(expected) => expected != child.height,",
+     "Some(expected) => false,", WIDTH_TWO),
     # The descent runs one level past the validated height.
     ("height-past-root", "let mut remaining = self.height;",
      "let mut remaining = self.height.wrapping_add(1);", WIDTH_TWO),
     # The routed slot can reach the width.
     ("slot-past-floor", ROUTE,
-     "base = select_unpredictable(key.borrow() <= query, middle.wrapping_add(1), base);", FLOOR),
+     "base = select_unpredictable(admits(key), middle.wrapping_add(1), base);", FLOOR),
     # The value index can pass the last key of a leaf.
-    ("value-past-match", "keys.binary_search_by(|key| key.borrow().cmp(query)).ok()",
-     "keys.binary_search_by(|key| key.borrow().cmp(query)).ok().map(|i| i.wrapping_add(1))", LEAF),
+    ("value-past-match", "                Some(base)\n",
+     "                Some(base.wrapping_add(1))\n", LEAF),
     # A strict separator comparison routes equal queries to the wrong child.
-    ("strict-routing", ROUTE,
-     "base = select_unpredictable(key.borrow() < query, middle, base);", STABLE),
+    ("strict-routing", "&|key: &K| key.borrow() <= query,",
+     "&|key: &K| key.borrow() < query,", STABLE),
 )
 
 

@@ -887,7 +887,7 @@ mod proofs {
     }
 
     fn floor_slot_below_width<const N: usize>() {
-        assert!(floor_slot(&chaos::<N>(), &Chaos(0)) < N);
+        assert!(floor_slot(&chaos::<N>(), &|key: &Chaos| *key <= Chaos(0)) < N);
     }
 
     #[kani::proof]
@@ -956,7 +956,7 @@ mod proofs {
         let index = if N <= SMALL_NODE_KEYS {
             keys.binary_search_by(|key| key.cmp(query)).ok()
         } else {
-            leaf_index(keys, query)
+            super::super::leaf_index(keys, query)
         };
         index
             .map(|i| values.get(i).ok_or(Error::InvalidStructure))
@@ -1057,30 +1057,45 @@ mod proofs {
         let right_height = kani::any::<usize>();
         let used = kani::any();
         let mut prefix = [
-            Summary {
+            MaybeUninit::new(Summary {
                 minimum: &2,
                 maximum: &first_maximum,
                 height: left_height,
                 has_parent: used,
-            },
-            Summary {
+            }),
+            MaybeUninit::new(Summary {
                 minimum: &right_minimum,
                 maximum: &12,
                 height: right_height,
                 has_parent: false,
-            },
+            }),
         ];
         let expected = !used
             && first_maximum < 7
             && right_minimum == 7
             && left_height == right_height
             && left_height != usize::MAX;
-        let result = summarize_branch(&minima, &[0, 1], &mut prefix);
+        let mut next = MaybeUninit::uninit();
+        let result = summarize_branch(
+            &minima,
+            &[0, 1],
+            &mut prefix,
+            &mut next,
+            branch_minimum,
+            fences_fail,
+        );
         assert!(result.is_ok() == expected);
-        if let Ok(summary) = result {
+        if result.is_ok() {
+            // SAFETY: a successful check writes the parent summary.
+            let summary = unsafe { next.assume_init() };
             assert!(*summary.minimum == 2 && *summary.maximum == 12);
             assert!(summary.height == left_height + 1 && !summary.has_parent);
-            assert!(prefix.iter().all(|child| child.has_parent));
+            // SAFETY: both children were initialized above.
+            assert!(
+                prefix
+                    .iter()
+                    .all(|child| unsafe { child.assume_init_ref() }.has_parent)
+            );
         }
     }
 }

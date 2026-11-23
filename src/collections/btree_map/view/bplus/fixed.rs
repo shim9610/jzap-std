@@ -54,9 +54,9 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
                 leaves,
                 branches,
                 &mut [],
-                &leaf_bounds,
-                &branch_minimum,
-                &fences_fail,
+                leaf_bounds,
+                branch_minimum,
+                fences_fail,
             )?);
         }
         let mut summaries = Vec::try_with_capacity(count)?;
@@ -66,9 +66,9 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             leaves,
             branches,
             summaries.spare_capacity_mut(),
-            &leaf_bounds,
-            &branch_minimum,
-            &fences_fail,
+            leaf_bounds,
+            branch_minimum,
+            fences_fail,
         )
     }
 
@@ -79,14 +79,14 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
         leaves: &'a [([K; N], [V; N])],
         branches: &'a [([K; N], [usize; N])],
         slots: &mut [MaybeUninit<Summary<'a, K>>],
-        leaf: &A,
-        branch: &B,
-        fences: &F,
+        leaf: A,
+        branch: B,
+        fences: F,
     ) -> Result<Self, Error>
     where
-        A: Fn(&'a [K; N], &'a [V; N]) -> Result<(&'a K, &'a K), Error>,
-        B: Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
-        F: Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
+        A: Copy + Fn(&'a [K; N], &'a [V; N]) -> Result<(), Error>,
+        B: Copy + Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
+        F: Copy + Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
     {
         let count = match leaves.len().checked_add(branches.len()) {
             Some(count) => count,
@@ -194,12 +194,8 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
 fn leaf_bounds<'a, K: Ord, V, const N: usize>(
     keys: &'a [K; N],
     values: &'a [V; N],
-) -> Result<(&'a K, &'a K), Error> {
-    Node::<_, _, usize>::leaf(keys, values)?;
-    Ok((
-        keys.first().ok_or(Error::InvalidStructure)?,
-        keys.last().ok_or(Error::InvalidStructure)?,
-    ))
+) -> Result<(), Error> {
+    Node::<_, _, usize>::leaf(keys, values).map(|_| ())
 }
 
 #[inline(always)]
@@ -319,20 +315,21 @@ fn summarize<'a, K, V, A, B, F, const N: usize>(
     leaves: &'a [([K; N], [V; N])],
     branches: &'a [([K; N], [usize; N])],
     slots: &mut [MaybeUninit<Summary<'a, K>>],
-    leaf: &A,
-    branch: &B,
-    fences: &F,
+    leaf: A,
+    branch: B,
+    fences: F,
 ) -> Result<usize, Error>
 where
-    A: Fn(&'a [K; N], &'a [V; N]) -> Result<(&'a K, &'a K), Error>,
-    B: Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
-    F: Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
+    A: Copy + Fn(&'a [K; N], &'a [V; N]) -> Result<(), Error>,
+    B: Copy + Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
+    F: Copy + Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
 {
     let mut written = 0usize;
-    while written < leaves.len() {
-        // SAFETY: written < leaves.len().
-        let (keys, values) = unsafe { leaves.get_unchecked(written) };
-        let (minimum, maximum) = leaf(keys, values)?;
+    for (keys, values) in leaves.iter() {
+        leaf(keys, values)?;
+        let (Some(minimum), Some(maximum)) = (keys.first(), keys.last()) else {
+            return Err(Error::InvalidStructure);
+        };
         // SAFETY: written < leaves.len() <= slots.len().
         unsafe { slots.get_unchecked_mut(written) }.write(Summary {
             minimum,
@@ -366,13 +363,12 @@ where
     };
     // Every earlier node must have exactly one parent. A backward edge cannot
     // name the last record, so that record is the unique root.
-    let mut i = 0usize;
-    while i < root {
-        // SAFETY: i < root < written; every slot below `written` is written.
-        if !unsafe { slots.get_unchecked(i).assume_init_ref() }.has_parent {
+    // SAFETY: root < written <= slots.len().
+    for slot in unsafe { slots.get_unchecked(..root) }.iter() {
+        // SAFETY: every slot below `written` is written.
+        if !unsafe { slot.assume_init_ref() }.has_parent {
             return Err(Error::InvalidStructure);
         }
-        i = wrapping_add(i, 1);
     }
     // SAFETY: root < written.
     Ok(unsafe { slots.get_unchecked(root).assume_init_ref() }.height)
@@ -384,12 +380,12 @@ fn summarize_branch<'a, K, B, F, const N: usize>(
     children: &[usize; N],
     prefix: &mut [MaybeUninit<Summary<'a, K>>],
     next: &mut MaybeUninit<Summary<'a, K>>,
-    branch: &B,
-    fences: &F,
+    branch: B,
+    fences: F,
 ) -> Result<(), Error>
 where
-    B: Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
-    F: Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
+    B: Copy + Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
+    F: Copy + Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
 {
     let minimum = branch(keys, children)?;
     let mut height = None;

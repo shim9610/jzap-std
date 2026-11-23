@@ -58,7 +58,7 @@ fn dedup_loop<F: Fn(usize, usize) -> Result<bool, ()>>(
     ensures r.1 <= len, r.1 <= cap,
 {
         let mut state=c_first_kept(len);
-    let result=crate::vec::compaction_driver::run::<true,(),_,_>(
+    let result=crate::vec::compaction_driver::run::<false,(),_,_>(
         &mut state,len,
         |read:usize,write:usize|
             requires 0<write<=read<len,

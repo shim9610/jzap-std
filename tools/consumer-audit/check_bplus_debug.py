@@ -18,12 +18,9 @@ LAYOUT = "core::alloc::layout::Layout::"
 GUARD = "::precondition_check"
 ZERO = ("core::alloc::global::GlobalAlloc::alloc_zeroed", "__rustc::__rust_alloc_zeroed")
 VEC_SLICE = ("core::slice::raw::from_raw_parts", "jzap::vec::Vec<T,P,L>::as_slice")
-VEC_MUT_SLICE = ("core::slice::raw::from_raw_parts_mut", "jzap::vec::Vec<T,P,L>::as_mut_slice")
 CAPACITY = (LAYOUT + "from_size_align_unchecked", "jzap::capacity::Capacity<T>::layout")
 RESERVE = "jzap::budget::concurrent::ConcurrentMemoryBudget::reserve"
 SEARCH = {
-    # The inlined FixedTree lookup calls binary_search_by directly.
-    (SLICE + "binary_search_by", "jzap_consumer_audit::consumer::check_width"),
     (SLICE + "binary_search_by", SLICE + "binary_search",
      "jzap_consumer_audit::consumer::check_width"),
     (SLICE + "binary_search_by", SLICE + "partition_point",
@@ -33,6 +30,20 @@ SEARCH = {
     (SLICE + "binary_search_by", SLICE + "partition_point",
      "jzap::collections::btree_map::view::bplus::fixed::range::prefix_len"),
 }
+
+# FixedTree validation and lookup: the direct product-source Verus proof
+# (verify_direct_verus.py, target fixed-bplus) establishes the vstd
+# precondition of each call -- index below the length, split point at most
+# the length -- at every unchecked slice access in these functions.
+FIXED = "jzap::collections::btree_map::view::bplus::fixed::"
+FIXED_ROOTS = (FIXED + "FixedTree<K,V,_>::try_new", FIXED + "summarize_branch",
+               "jzap_consumer_audit::consumer::check_width")
+USIZE_INDEX = "<usize as core::slice::index::SliceIndex<[T]>>::"
+SPLIT = (SLICE + "split_at_mut_unchecked", FIXED + "FixedTree<K,V,_>::try_new")
+# Vec spare storage: the owner-protocol proof covers spare_capacity_mut.
+SPARE = ("core::slice::raw::from_raw_parts_mut",
+         "jzap::vec::convenience::<impl jzap::vec::Vec<T,P,L>>::spare_capacity_mut",
+         FIXED + "FixedTree<K,V,_>::try_new")
 
 ZIP = (
     "<core::slice::iter::Iter<T> as core::iter::traits::iterator::Iterator>::size_hint",
@@ -46,7 +57,19 @@ ZIP = (
 CALLERS = {
     PAIR_WINDOW_NEXT: {PAIR_WINDOW_PATH},
     "core::hint::assert_unchecked" + GUARD: SEARCH,
-    "<usize as core::slice::index::SliceIndex<[T]>>::get_unchecked" + GUARD: SEARCH,
+    USIZE_INDEX + "get_unchecked" + GUARD: SEARCH | {
+        (USIZE_INDEX + "get_unchecked", SLICE + "get_unchecked", root) for root in FIXED_ROOTS
+    },
+    USIZE_INDEX + "get_unchecked_mut" + GUARD: {
+        (USIZE_INDEX + "get_unchecked_mut", SLICE + "get_unchecked_mut", root)
+        for root in FIXED_ROOTS[:2]
+    },
+    "<core::ops::range::Range<usize> as core::slice::index::SliceIndex<[T]>>::get_unchecked" + GUARD: {
+        ("<core::ops::range::Range<usize> as core::slice::index::SliceIndex<[T]>>::get_unchecked",
+         "<core::ops::range::RangeTo<usize> as core::slice::index::SliceIndex<[T]>>::get_unchecked",
+         SLICE + "get_unchecked", FIXED + "FixedTree<K,V,_>::try_new"),
+    },
+    SLICE + "split_at_mut_unchecked" + GUARD: {SPLIT},
     "core::ptr::const_ptr::<impl *const T>::offset_from_unsigned" + GUARD: {
         (*ZIP, "jzap_consumer_audit::consumer::check_width"),
     },
@@ -63,14 +86,18 @@ CALLERS = {
     "core::ptr::const_ptr::<impl *const T>::is_aligned_to": {
         ("core::ptr::write_bytes" + GUARD, *ZERO),
         ("core::slice::raw::from_raw_parts" + GUARD, *VEC_SLICE),
-        ("core::slice::raw::from_raw_parts_mut" + GUARD, *VEC_MUT_SLICE),
+        ("core::slice::raw::from_raw_parts_mut" + GUARD, *SPLIT),
+        ("core::slice::raw::from_raw_parts_mut" + GUARD, *SPARE),
     },
+    # storage::reallocate is always inlined, so its null check is reached
+    # from the Vec growth paths that call it.
     "core::ptr::non_null::NonNull<T>::new_unchecked" + GUARD: {
-        ("core::ptr::non_null::NonNull<T>::new", "jzap::storage::" + operation)
-        for operation in ("allocate_impl", "reallocate")
+        ("core::ptr::non_null::NonNull<T>::new", "jzap::storage::allocate_impl"),
+        ("core::ptr::non_null::NonNull<T>::new", "jzap::vec::Vec<T,P,L>::grow_to"),
+        ("core::ptr::non_null::NonNull<T>::new", "jzap::vec::grow_for_push"),
     },
     "core::slice::raw::from_raw_parts" + GUARD: {VEC_SLICE},
-    "core::slice::raw::from_raw_parts_mut" + GUARD: {VEC_MUT_SLICE},
+    "core::slice::raw::from_raw_parts_mut" + GUARD: {SPLIT, SPARE},
     "core::sync::atomic::atomic_load": {
         ("core::sync::atomic::AtomicUsize::load", RESERVE),
     },

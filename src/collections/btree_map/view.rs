@@ -177,7 +177,7 @@ impl<'a, K, V, I> NodeSlice<'a, K, V, I> {
     }
 }
 #[derive(Debug, PartialEq, Eq)]
-pub enum LookupStep<'a, K, V, I> {
+pub enum LookupStep<'a, K: ?Sized, V: ?Sized, I> {
     NeedNode(I),
     Found(&'a K, &'a V),
     Absent,

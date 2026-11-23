@@ -11,12 +11,17 @@ from check_bplus_prefix import HERE, ROOT, item
 FIXED = ROOT / "src/collections/btree_map/view/bplus/fixed.rs"
 # The child lookup reads the completed prefix, the flag claims a single
 # parent, and the checked height and separators describe the new record.
+# summarize holds the unique-root check over the earlier records. The lookup's
+# memory safety is verified directly on the source (verify_direct_verus.py,
+# target fixed-bplus); these lemmas cover the remaining unique-parent and
+# range reasoning.
 BOUND = {
     "pub struct FixedTree<": "5fd18d87f241a7b8dc83c0c3156fcddd14edd7c294276d48d56fc8b66d37b8a7",
     "struct Summary<": "0e770ad9e97dd75f4f5bc7096603c6218760988620abc5a9fa05c92e275f1153",
-    "pub fn try_new(": "74ca71d91e5c1c3d366b81b7fcbea9ee2f3ef98451f6ed8be4555ebfebd472f2",
-    "pub fn get<": "a156680d97c2379a42d5e359d837ee5709cde01fba6ff5b2b42422402343a746",
-    "fn summarize_branch<": "77c261f16f9e0620e8885d0914a3bc923a631952ba80e1f94bf1fd5b4cebf239",
+    "pub fn try_new(": "3f10399b54818fd18de2f8d1c66855c159eac18641673f2744fa349bf8dd5c82",
+    "pub fn get<": "673f603f210413767d72861e39d6d1f6fe764f15765e725eb4b19c1d31d67f9f",
+    "fn summarize<": "bae443874a72ad986f9382728b274215e26cd94472fd13923ee8e08a210e3053",
+    "fn summarize_branch<": "4f529519675b1e16e928b9617b89f09ecfa1cf9a9c5c775ad5a07971717a521a",
 }
 
 

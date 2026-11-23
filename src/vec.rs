@@ -340,20 +340,26 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     pub fn try_shrink_to_fit(&mut self) -> Result<(), Error> {
         self.try_shrink_to(self.len.get())
     }
-    // Keep the uncommon reallocation branch out of each hot element write,
-    // while bulk operations may inline grow when creating fresh storage.
-    #[cold]
-    #[inline(never)]
-    fn grow_for_push(&mut self) -> Result<(), Error> {
-        self.grow(1, false)
-    }
     /// Refusal retains the exact pointer, capacity, contents and input value.
     #[inline]
     pub fn try_push(&mut self, value: T) -> Result<(), Rejected<T>> {
-        if self.len.get() >= self.cap.get()
-            && let Err(error) = self.grow_for_push()
-        {
-            return Err(Rejected { value, error });
+        if self.len.get() >= self.cap.get() {
+            // The cold growth takes the storage words by value. Passing `&mut self`
+            // would keep the owner in memory and store `len` on every push.
+            // The new words come back through these locals: a returned
+            // `Result<(NonNull<T>, Capacity<T>), Error>` exhausts the Kani solver.
+            let (mut ptr, mut cap, len, max_len) =
+                (self.ptr, self.cap, self.len.get(), self.max_len());
+            let budget = self.policy.budget();
+            // SAFETY: ptr and cap describe this owner's unique storage, charged to
+            // this policy's accounting; both are replaced only on success.
+            match unsafe { grow_for_push(&mut ptr, &mut cap, len, max_len, budget) } {
+                Ok(()) => {
+                    self.ptr = ptr;
+                    self.cap = cap;
+                }
+                Err(error) => return Err(Rejected { value, error }),
+            }
         }
         self.push_within_capacity(value).map(|_| ())
     }
@@ -773,3 +779,35 @@ const _: () = ();
 #[cfg(kani)]
 #[path = "vec/metadata_proofs.rs"]
 mod metadata_proofs;
+
+/// The storage transition of `Vec::grow(1, false)` on the pointer and capacity
+/// words: the same length admission, growth proposal and layout, then a fresh
+/// allocation or a reallocation. Refusal leaves the caller's words unchanged.
+///
+/// # Safety
+/// `ptr` and `cap` are a live owner's unique storage (dangling when `cap` is
+/// zero), charged to `budget`. Only success writes the new words; the caller
+/// then replaces its own with them and must not use the old pointer.
+#[cold]
+#[inline(never)]
+unsafe fn grow_for_push<T>(
+    ptr: &mut NonNull<T>,
+    cap: &mut crate::capacity::Capacity<T>,
+    len: usize,
+    max_len: usize,
+    budget: crate::budget::Accounting<'_>,
+) -> Result<(), Error> {
+    let needed = required_len(len, 1, max_len)?;
+    let grown =
+        geometry::growth_for_layout(cap.get(), needed, max_len, mem::size_of::<T>(), false)?;
+    let (capacity, new_layout) = crate::capacity::Capacity::try_new(grown)?;
+    let new = if cap.get() == 0 {
+        storage::allocate(new_layout, budget)?
+    } else {
+        // SAFETY: caller's unique allocation, same alignment, initialized prefix retained.
+        unsafe { storage::reallocate(ptr.cast(), cap.layout(), new_layout, budget) }?
+    };
+    *ptr = new.cast();
+    *cap = capacity;
+    Ok(())
+}

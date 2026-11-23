@@ -73,6 +73,7 @@ GROUPS = {
     )], verus=['shared-numeric','shared-numeric-reduced'], scope='Original admission and retired word encoding/decoding for all admitted word inputs, native/reduced constants and both Verus word domains. Existing actual Rust checks cover all-word admission, local cells, retired payload bytes and sequential atomic retirement/weak credit; concurrency/platform models remain separate.'),
     'vec-layout-growth': dict(harnesses=[
         'vec::growth_proofs::storage_growth_publishes_only_the_admitted_capacity_for_every_numeric_owner',
+        'vec::growth_proofs::push_growth_matches_grow_one_for_every_full_numeric_owner',
         'capacity::proofs::constructors_and_reconstructed_layout_preserve_each_byte_bound',
         'wrapping_memory_proofs::every_wrapping_result_is_checked_before_reservation_or_reallocation',
     ], verus=['vec-layout-growth'], scope='Original array ceiling and Vec size-aware growth proposal for all admitted word input states in both Verus word domains. Actual grow_to publication checks all valid growing unit-owner metadata under both sealed policies; actual Capacity constructors retain all-word byte-layout domains, and the existing two-byte reservation witness retains arbitrary incoming-word refusal checks.'),
@@ -230,6 +231,14 @@ CONTROLS = [
      'self.0.store(retired_state(bytes), Ordering::Release);',
      'self.0.store(retired_state(0), Ordering::Release);',
      'shared::proofs::retirement_preserves_every_valid_weak_credit'),
+    # Changing the push's additional count to zero is an equivalent mutant: the
+    # doubling proposal or the later capacity refusal gives the same result.
+    ('push-growth-current-capacity-argument', 'vec-layout-growth', 'src/vec.rs',
+     'growth_for_layout(cap.get(), needed, max_len', 'growth_for_layout(0, needed, max_len',
+     'vec::growth_proofs::push_growth_matches_grow_one_for_every_full_numeric_owner'),
+    ('push-growth-exact-argument', 'vec-layout-growth', 'src/vec.rs',
+     'mem::size_of::<T>(), false)?;', 'mem::size_of::<T>(), true)?;',
+     'vec::growth_proofs::push_growth_matches_grow_one_for_every_full_numeric_owner'),
     ('layout-growth-size-argument', 'vec-layout-growth', 'src/vec.rs',
      '            mem::size_of::<T>(),\n            exact,', '            1,\n            exact,',
      'vec::growth_proofs::storage_growth_publishes_only_the_admitted_capacity_for_every_numeric_owner'),

@@ -3125,3 +3125,41 @@ python3 scripts/source_certificate.py --resume --output target/verification/repl
 
 Not run in this session: ASan and timing benchmarks. The Miri runs of the new
 tests are recorded in the linked document.
+
+## FixedTree validation and lookup on the product source (2026-11-23)
+
+`FixedTree::get` reads its pools with unchecked indexing. The validated shape
+that bounds those reads is now a Verus type invariant on the product source,
+not a lemma file bound by digest. The unverified public wrappers `try_new` and
+`get` allocate the summary storage and build the key comparisons as closures;
+`assemble`, `summarize`, `summarize_branch`, `find`, `floor_slot`, `leaf_slot`
+and `leaf_rank` carry `verus_spec` annotations and are checked by the
+`fixed-bplus` direct target under `--no-cheating`.
+
+| Item | Result |
+| --- | --- |
+| Direct target `fixed-bplus` | whole crate 279 verified, 0 errors |
+| Source defect controls | 7 of 7 leave a solver error |
+| Wrapping calls in `fixed.rs` | 10, covered as `direct:fixed-bplus`; coverage requires the enclosing `verus_spec` |
+| New trusted specification | `core::hint::select_unpredictable` in `tools/direct-verus/std-specs.rs`, checked against the Rust 1.95 core source by `scripts/verus_std_specs.py` |
+| Projection retired | the descent and address lemmas in `tools/consumer-audit/bplus_fixed.rs`; its unique-parent and range lemmas remain, bound by digest |
+
+Trust boundary added by this checkpoint: the imported crate holds
+`assume_specification` entries in the same role as vstd's `std_specs`. It
+currently has one entry, stating the documented equivalence of
+`select_unpredictable` to `if c { a } else { b }`. `scripts/verus_std_specs.py`
+rejects any other entry, an `external_body`, `admit` or `assume`, a changed
+`ensures`, or a core source whose declaration or documentation no longer
+matches. The product crate keeps `--no-cheating`. Key comparisons stay in the
+unverified wrappers and their results are not assumed.
+
+The registration that this checkpoint replaces, `fixed_branch_offset` in
+`tools/direct-verus/layout-adapters.rs`, only restated the premise of the
+bounded subtraction; it proved nothing about the call site and was removed.
+The broader name-membership counting it exposed is tracked in
+[shim9610/jzap-std#16](https://github.com/shim9610/jzap-std/issues/16).
+
+```sh
+python3 scripts/verus_std_specs.py
+python3 scripts/verify_direct_verus.py --target fixed-bplus --mutations
+```

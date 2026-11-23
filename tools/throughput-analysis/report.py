@@ -13,7 +13,7 @@ import statistics
 import sys
 import math
 
-from compare import BOX_LABELS, VEC_LABELS, labels_for, summarize, validate_equal_work
+from compare import BOX_LABELS, VEC_LABELS, labels_for, merge_offsets, summarize, validate_equal_work
 
 
 def validated_records(protocol, completed, records):
@@ -23,8 +23,11 @@ def validated_records(protocol, completed, records):
     keys = [(c["profile"], c["task"], c["seed"]) for c in completed]
     assert len(keys) == len(set(keys)) and set(keys) == expected, "incomplete/duplicate completed groups"
     selected = {(c["profile"], c["task"], c["seed"], c["attempt"]) for c in completed}
-    accepted = [r for r in records if r["phase"] == "measurement" and
-                (r["profile"], r["task"], r["seed"], r["attempt"]) in selected]
+    accepted = merge_offsets([r for r in records if r["phase"] == "measurement" and
+                              (r["profile"], r["task"], r["seed"], r["attempt"]) in selected])
+    # Every stack-offset process must itself meet the interval minimum.
+    assert all(r.get("minimum_offset_seconds", r["elapsed_seconds"]) >= protocol["minimum_seconds"]
+               for r in accepted), "short stack-offset interval"
     for profile, task, variants in protocol["plan"]:
         labels = labels_for(task)
         for seed in protocol["seeds"]:

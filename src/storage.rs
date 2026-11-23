@@ -59,7 +59,9 @@ pub(crate) unsafe fn deallocate(ptr: NonNull<u8>, layout: Layout, budget: Accoun
 /// request while the old charge is still held. Failure leaves the old owner intact.
 /// # Safety
 /// ptr uniquely owns exactly old; no references into the allocation may survive.
-#[inline]
+// Always inlined into the cold growth paths: an outlined call kept the policy's
+// budget branches and a stack-passed result for unmetered owners.
+#[inline(always)]
 pub(crate) unsafe fn reallocate(
     ptr: NonNull<u8>,
     old: Layout,

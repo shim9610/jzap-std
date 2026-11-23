@@ -35,7 +35,7 @@ BODIES={
  ('node.rs', '', 'fn fix<'):
   'letmuti=from;whilei<=to{unsafe{set_child(node,i,child(node,i))};i=add(i,1);}',
  ('node.rs', '', 'fn insert<'):
-  'unsafe{letn=len(node);let(after,tail,_,_)=super::geometry::insert_span(n,i);pairs(node,i,node,after,tail);key(node,i).write(k);val(node,i).write(v);ifletSome(right)=right{edges(node,after,node,super::geometry::insert_span(n,i).3,tail,);edge(node,after).write(right);fix(node,after,super::geometry::insert_span(n,i).2);}set_len(node,super::geometry::insert_span(n,i).2);}',
+  'unsafe{letn=len(node);let(after,tail,_,_)=super::geometry::insert_span(n,i);iftail!=0{pairs(node,i,node,after,tail);}key(node,i).write(k);val(node,i).write(v);ifletSome(right)=right{iftail!=0{edges(node,after,node,super::geometry::insert_span(n,i).3,tail,);}edge(node,after).write(right);fix(node,after,super::geometry::insert_span(n,i).2);}set_len(node,super::geometry::insert_span(n,i).2);}',
  ('node.rs', '', 'fn splitpoint('):
   'ifedge<5{4}elseifedge<=6{5}else{6}',
  ('node.rs', '', 'fn split<'):
@@ -73,7 +73,9 @@ BODIES={
  ('btree_map.rs', '', 'pub fn get_mut<'):
   'matchself.search(key){Search::Found(c)=>{Some(unsafe{&mut*node::val(c.node,c.index())})}_=>None,}',
  ('btree_map.rs', '', 'fn try_insert_at('):
-  'ifletSome(at)=at{ifunsafe{node::len(at.node)}<CAP{letnew_len=matchself.len+Checked::new(1){Ok(n)=>n,Err(_)=>{returnErr(Rejected{value:(key,value),error:Error::Capacity,});}};returnOk(unsafe{self.commit_fit(at,new_len,key,value)});}}letplan=matchself.plan_insert(at){Ok(plan)=>plan,Err(error)=>{returnErr(Rejected{value:(key,value),error,});}};Ok(self.commit_insert(plan,key,value))',
+  'ifletSome(at)=at{ifunsafe{node::len(at.node)}<CAP{letnew_len=matchself.len+Checked::new(1){Ok(n)=>n,Err(_)=>{returnErr(Rejected{value:(key,value),error:Error::Capacity,});}};returnOk(unsafe{self.commit_fit(at,new_len,key,value)});}}self.try_insert_split(at,key,value)',
+ ('btree_map.rs', '', 'fn try_insert_split('):
+  'letplan=matchself.plan_insert(at){Ok(plan)=>plan,Err(error)=>{returnErr(Rejected{value:(key,value),error,});}};Ok(self.commit_insert(plan,key,value))',
  ('btree_map.rs', '', 'unsafe fn commit_fit('):
   'unsafe{node::insert(at.node,at.index(),key,value,None)};self.len=new_len;at',
  ('btree_map.rs', '', 'fn plan_insert('):
@@ -119,7 +121,7 @@ BODIES={
  ('iter.rs', 'impl<K, V> BorrowState<K, V> {', 'unsafe fn interval('):
   'letmutresult=Self::remaining(state);unsafe{ifresult.front.height()>0{letc=result.front;result.front=Self::edge(node::child(c.node,c.index()),sub(c.height(),1),true);}ifresult.back.height()>0{letc=result.back;result.back=Self::edge(node::child(c.node,add(c.index(),1)),sub(c.height(),1),false,);}}result',
  ('iter.rs', 'impl<K, V> BorrowState<K, V> {', 'unsafe fn take<const EXACT: bool>'):
-  'letremaining=self.remaining.get();ifremaining==0{returnNone;}if!EXACT&&self.front==self.back{self.remaining=Checked::new(0);returnNone;}letmutc=ifback{self.back}else{self.front};letlast=EXACT&&remaining==1;unsafe{letnext;ifc.height()>0{next=iflast{c}else{Self::edge(node::child(c.node,ifback{c.index()}else{add(c.index(),1)}),sub(c.height(),1),back,)};}elseif(back&&c.index()>0)||(!back&&c.index()<node::len(c.node)){let(i,edge)=super::geometry::leaf_edge(c.index(),node::len(c.node),back);next=BorrowEdge::new(c.node,edge,0);c.set_index(i);}else{letmutn=c.node;letmuth=0;loop{let(parent,i)=node::parent(n)?;h=add(h,1);if(back&&i>0)||(!back&&i<node::len(parent)){letat=ifback{sub(i,1)}else{i};c=BorrowEdge::new(parent,at,h);next=iflast{c}else{Self::edge(node::child(parent,ifback{at}else{add(at,1)}),sub(h,1),back,)};break;}n=parent;}}ifEXACT{self.remaining=Checked::new(sub(remaining,1));}ifback{self.back=next;}else{self.front=next;}}Some(c)',
+  'letremaining=self.remaining.get();ifremaining==0{returnNone;}if!EXACT&&self.front==self.back{self.remaining=Checked::new(0);returnNone;}letmutc=ifback{self.back}else{self.front};letlast=EXACT&&remaining==1;unsafe{letnext;ifc.height()>0{next=iflast{c}else{Self::edge(node::child(c.node,ifback{c.index()}else{add(c.index(),1)}),sub(c.height(),1),back,)};}elseif(back&&c.index()>0)||(!back&&c.index()<node::len(c.node)){let(i,edge)=super::geometry::leaf_edge(c.index(),node::len(c.node),back);next=BorrowEdge::new(c.node,edge,0);c.set_index(i);}else{core::hint::cold_path();letmutn=c.node;letmuth=0;loop{let(parent,i)=node::parent(n)?;h=add(h,1);if(back&&i>0)||(!back&&i<node::len(parent)){letat=ifback{sub(i,1)}else{i};c=BorrowEdge::new(parent,at,h);next=iflast{c}else{Self::edge(node::child(parent,ifback{at}else{add(at,1)}),sub(h,1),back,)};break;}n=parent;}}ifEXACT{self.remaining=Checked::new(sub(remaining,1));}ifback{self.back=next;}else{self.front=next;}}Some(c)',
  ('iter.rs', "impl<'a, K, V> Iterator for Iter<'a, K, V> {", 'fn next('):
   'unsafe{letc=self.state.take::<true>(false)?;Some((&*node::key(c.node,c.index()),&*node::val(c.node,c.index()),))}',
  ('iter.rs', "impl<K, V> DoubleEndedIterator for Iter<'_, K, V> {", 'fn next_back('):

@@ -166,8 +166,7 @@ contains a reference still borrows its referent. A `Found` result borrows the
 supplied leaf and a rejected node can be replaced without restarting the
 lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
 
-The B+ streaming API covers point lookups with complete keys. The design issue
-tracks partial-key comparison and traversal over individually supplied pages. [B+ tree lookup design](https://github.com/shim9610/jzap-std/issues/4)
+The B+ streaming API covers point lookups with complete keys. [Partial-key comparison](https://github.com/shim9610/jzap-std/issues/10) · [Streaming range traversal](https://github.com/shim9610/jzap-std/issues/13)
 
 The point-lookup benchmark compares the same resident node slices against a
 checked Rust reference, with and without local node validation in the timed
@@ -186,6 +185,278 @@ done
 On Linux, build with `bplus-memory` to record lookup allocation counts and bytes
 using the instrumented system allocator. Use the uninstrumented `bplus-bench`
 build for timing. Both builds report the size of the lookup continuation.
+
+#### Fixed-stride byte pages
+
+`StridedNode::branch` and `StridedNode::leaf` borrow a page's entry region
+and take its entry count. `StridedLayout` describes the nonzero record
+stride and the key and payload byte ranges within each record. Construction
+checks the occupied span, field geometry, and strict lexical order of
+complete keys. A leaf may be empty. A branch requires at least one entry.
+
+Implement `StridedFormat` to borrow the complete key from its field, copy
+the selected fence keys, and decode a child ID from its payload. This lets
+a field carry metadata such as inline key length. The format must return
+consistent key slices and fences with the same byte ordering. Fence storage
+must own the bytes if the caller reuses the page buffer. Keys and values are
+accessed as bytes and require no typed alignment.
+
+Create a `Lookup` with the format's fence and ID types and a `&[u8]` query.
+Supply each expected ID and checked page view to `Lookup::provide_strided`.
+`NeedNode` returns the decoded child ID. `Found` borrows the matching key
+and value from the leaf page. The lookup retains height, fence, and cycle
+checks, and a rejected page leaves the request retryable. Only the selected
+child field is decoded by the lookup. The caller owns page identity,
+integrity checks, I/O, and any interpretation of the returned value bytes.
+
+The byte view handles complete keys of any length the format can represent
+and retain in a fence. Out-of-line key resolution and streaming range
+traversal are tracked separately. [Raw pages and partial keys](https://github.com/shim9610/jzap-std/issues/10) · [Streaming ranges](https://github.com/shim9610/jzap-std/issues/13)
+
+##### Fixed-stride page timing
+
+The Linux x86-64 benchmark at `7b3f49d` used Rust 1.95.0 on an AMD EPYC
+9V74 virtual machine, pinned to CPU 2. The generated fixture uses 4 KiB
+pages, 80-byte leaf records, 52-byte branch records, and complete 8–16 byte
+inline keys. Node occupancy varies, and the query corpus contains hits
+and misses. The timed paths share page bytes, query order, strict key-order
+checks and visited-path checks. The decoder builds typed arrays per page,
+with copied or borrowed values. Page I/O, checksums and Varlit-specific
+metadata validation are outside the benchmark. [Varlit reuse-page layout](https://github.com/shim9610/varlit/blob/f9e9c79e3cf50da07d03487bb469d940c1a298c6/crates/varlit-core/src/disk_index/tree.rs)
+
+The table divides total elapsed time by total lookups. Three independent
+seeds contributed 36 page-lookup intervals. The shortest was 1.105 s
+rounded to milliseconds. Counts and checksums matched within each seed and
+condition. The largest repeat difference for the same decoder was 5.58%.
+
+| Condition | Decode time (ns/lookup) | Direct time (ns/lookup) | Direct − decode (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · 27/40 maximum leaf/branch entries · copy values | 984.761 | 421.862 | −562.899 |
+| 2,048 keys · 27/40 maximum leaf/branch entries · borrow values | 886.841 | 421.862 | −464.979 |
+| 2,048 keys · 50/78 maximum leaf/branch entries · copy values | 1,208.706 | 443.277 | −765.429 |
+| 2,048 keys · 50/78 maximum leaf/branch entries · borrow values | 1,071.788 | 443.277 | −628.511 |
+| 181,267 keys · 50/78 maximum leaf/branch entries · copy values | 2,221.105 | 890.605 | −1,330.500 |
+| 181,267 keys · 50/78 maximum leaf/branch entries · borrow values | 2,143.495 | 890.605 | −1,252.890 |
+
+For the borrowed-value decoder, the paired gaps across seeds were
+−496.073 to −431.833, −657.489 to −593.204, and −1,335.179 to −1,189.450
+ns/lookup in fixture order. The optimized x86-64 decoder instruction
+sequences match the pre-change ones after normalizing addresses. The
+direct path eliminates per-entry scratch-array stores and reserves
+1,048 bytes in its prologue, compared with 4,096 bytes when borrowing
+values and 5,944 bytes when copying values, excluding register saves
+and padding pushes.
+
+The resident `std::collections::BTreeMap` check queries a prebuilt
+in-memory index directly. Its observed gaps were
++346.075, +366.202, and +716.075 ns/lookup, with the direct page lookup
+taking longer. All three conditions exceeded 10% on a standard-map repeat
+in at least one seed, with a maximum of 20.81%, so these comparisons are
+held. Every generated query's result was checked against the standard
+map before timing.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --bin bplus_strided
+mkdir -p target/verification/bplus-strided
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" \
+    > "target/verification/bplus-strided/seed-$seed.csv"
+  round=$((round + 1))
+done
+```
+
+##### Whole-index reference against brie-tree
+
+The `brie-tree` 0.1.2 comparison uses the same resident fixtures, byte
+queries, and 52-byte values as the fixed-stride page benchmark. It builds
+an integer index before timing. The adapter pads each query to 16 bytes
+on the right and interprets it as a big-endian `NonMaxU128`. The harness
+checks that this encoding preserves strict order across the complete
+generated hit and miss domain, including every stored key. Each timed
+`brie-tree` call includes that conversion. [Integer key contract](https://docs.rs/brie-tree/0.1.2/brie_tree/trait.BTreeKey.html)
+
+`brie-tree` searches its own prebuilt index. The jzap path uses the
+original page bytes and checks local key order and the visited path
+during the lookup. The leaf and branch capacities in the table refer
+to the jzap fixture.
+
+The Linux x86-64 virtual machine ran all three seeds on CPU 2 with Rust
+1.95.0. The 27 matched intervals each lasted at least 1.130 s. Lookup
+counts and checksums matched within each condition and seed. Repeating
+the same `brie-tree` path gave at most 9.40% variation. Times use total
+elapsed time divided by total lookups.
+
+| Condition | brie-tree (ns/lookup) | jzap direct (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max leaf/branch entries | 80.021 | 479.893 | +399.873 |
+| 2,048 keys · height 1 · 50/78 max leaf/branch entries | 78.944 | 463.802 | +384.858 |
+| 181,267 keys · height 2 · 50/78 max leaf/branch entries | 213.894 | 1,090.463 | +876.570 |
+
+The paired gaps across seeds were +391.971 to +412.954, +377.748 to
++388.377, and +766.361 to +1,052.305 ns/lookup in table order.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_strided
+mkdir -p target/verification/bplus-strided/brie
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --brie \
+    > "target/verification/bplus-strided/brie/seed-$seed.csv"
+  round=$((round + 1))
+done
+```
+
+##### Prevalidated fixed-stride snapshots
+
+For repeated lookups over stable page bytes, construct a `StridedNode` for
+each page and pass the descriptor slice, root slot, and height to
+`StridedTree::try_new`. Decoded child identifiers address slots in the
+slice. Parents and children may appear in any order.
+
+Construction checks every edge, expected node kind and level, child minimum,
+inherited exclusive ceiling, and unique reachability from the root. It
+releases temporary validation allocations before returning. The view borrows
+the descriptor slice and page bytes. Callers keep that snapshot stable
+throughout its lifetime, including consistent format decoding.
+
+`StridedTree::get` follows the validated edges and returns the original
+leaf value slice. Lookup uses checked access and allocates no storage.
+`Lookup::provide_strided` remains available for callers that supply pages
+individually. Both paths compare complete byte keys. Keys of at least eight
+bytes compare their first eight bytes as big-endian words before examining
+equal-prefix suffixes.
+
+The Linux x86-64 campaign used three processes with seeds 617, 6203, and
+96011 on CPU 2 of the AMD EPYC 9V74 virtual machine, with Rust 1.95.0 and
+the same 4 KiB fixtures as the earlier comparison. Snapshot preparation
+and reference index construction took place before timing. The shuffled
+campaign used batches of 32,768 lookups and accumulated at least 1.2 timed
+seconds per implementation, fixture, and seed. Counts and checksums matched
+within each group. The largest repeat differences were 9.52% for
+`brie-tree`, 2.90% for snapshot lookup, and 3.52% for streaming lookup
+with cached page views.
+
+| Shuffled whole-index condition | brie-tree (ns/lookup) | jzap snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries | 81.325 | 103.074 | +21.748 |
+| 2,048 keys · height 1 · 50/78 max entries | 85.329 | 95.408 | +10.079 |
+| 181,267 keys · height 2 · 50/78 max entries | 261.383 | 284.521 | +23.138 |
+
+The separate validation comparison reuses the same raw pages across all
+paths. Uncached streaming constructs a checked page view on every visit.
+Cached streaming reuses those views and still validates the visited path.
+The snapshot checks the whole tree during construction and then performs
+point lookup through the same byte views.
+
+| Validation condition | Uncached streaming (ns/lookup) | Cached streaming (ns/lookup) | Snapshot (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries | 350.651 | 195.387 | 112.186 |
+| 2,048 keys · height 1 · 50/78 max entries | 295.080 | 132.878 | 94.718 |
+| 181,267 keys · height 2 · 50/78 max entries | 674.428 | 309.361 | 241.236 |
+
+Optimized x86-64 code uses a byte-swapped word comparison for long keys.
+The search loop is inlined in the snapshot lookup so its position result
+stays inside the caller. Smaller keys and equal-prefix suffixes retain
+lexical byte comparison.
+
+The continuous campaign times each path in its own interval, using the
+same data and at least one second per interval. Two conditions exceeded
+the 10% repeat limit and are held. The shuffled results above carry the
+primary comparison. Snapshot repeats differed by 15.57% at height two with
+2,048 keys and 20.82% with 181,267 keys. The height-one fixture stayed
+within 8.27% for both implementations.
+
+| Continuous whole-index condition | brie-tree (ns/lookup) | jzap snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries (held) | 79.123 | 83.229 | +4.106 |
+| 2,048 keys · height 1 · 50/78 max entries | 77.989 | 71.512 | −6.476 |
+| 181,267 keys · height 2 · 50/78 max entries (held) | 201.949 | 214.141 | +12.192 |
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_strided
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --snapshot
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --snapshot-steady
+  round=$((round + 1))
+done
+```
+
+The focused Kani harnesses check queue claims, byte comparison, and
+lookup over a fixed valid snapshot. Native tests and Miri exercise the
+public constructor against arbitrary page order and malformed topology.
+The optimized link fixture also exercises allocation failure during
+construction.
+
+##### Validated word prefixes
+
+Formats with keys stored inline can set
+`StridedFormat::WORD_PREFIX_OFFSET`. The view validates the hint against
+each decoded key while it checks page ordering. It can search the
+original records using three or eight key bytes. For pages where all
+keys share their first eight bytes, the lookup compares that word once
+and searches the following bytes. The lookup decodes the candidate on
+a prefix match and compares the remaining bytes. Colliding prefixes
+retain the exact full-key result and insertion position. Pages that
+cannot use the hint fall back to complete-key comparison.
+
+The measurements below describe the original eight-byte optimization.
+
+The residual-cost comparison uses the same page bytes and queries within
+each group. The dense-child control reads a fixture-only ordinal stored
+beside the raw byte offset. The fixed-width control reads the padded
+16-byte key field and pads each query once. The eight-byte control uses a
+corpus where the first eight bytes distinguish all generated keys and
+misses. It measures the cost of that restricted comparison. The hinted
+path supports the complete byte-key ordering, including shared prefixes.
+
+Before the lookup change, the fixed-width control shortened the three
+fixtures by 5.630, 2.350, and 4.556 ns/lookup. The restricted eight-byte
+control shortened them by 12.902, 11.536, and 20.727 ns/lookup. Dense child
+IDs varied from −2.390 to +22.595 ns/lookup across seeds on the large
+fixture. These are separate controls with different generated code.
+Their effects are measured independently.
+
+In the final binary, the validated prefix path was 7.546, 5.505, and
+4.165 ns/lookup shorter than the full-field decode path in the diagnostic
+group. A separate whole-index group compares the hinted snapshot with
+`brie-tree` 0.1.2. The Linux x86-64 runs used three seeds, matched counts
+and checksums, and at least 1.2 timed seconds per label and seed. Maximum
+same-path repeat differences were 1.34% for `brie-tree` and 4.12% for jzap.
+
+| Condition | brie-tree (ns/lookup) | jzap hinted snapshot (ns/lookup) | jzap − brie-tree (ns/lookup) |
+| --- | ---: | ---: | ---: |
+| 2,048 keys · height 2 · 27/40 max entries | 79.901 | 92.801 | +12.900 |
+| 2,048 keys · height 1 · 50/78 max entries | 77.684 | 77.583 | −0.101 |
+| 181,267 keys · height 2 · 50/78 max entries | 227.779 | 229.225 | +1.447 |
+
+The latter two differences crossed zero across seeds. All three
+height-two, 2,048-key pairs favored `brie-tree` by 9.291 to 15.921
+ns/lookup. The two 2,048-key fixtures also have different leaf and
+branch capacities, so they leave the cost of an extra level unresolved.
+
+The continuous run measured 194.522 ns/lookup for `brie-tree` and
+181.092 ns/lookup for the hinted snapshot on the 181,267-key fixture.
+The paired difference was −13.431 ns/lookup in aggregate and ranged
+from −23.540 to −4.252 across seeds. The largest repeats differed by
+5.02% for `brie-tree` and 9.27% for jzap. Snapshot repeats exceeded
+10% on both smaller fixtures, so their continuous results are held.
+
+```sh
+cargo build --locked --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --features bplus-bench --bin bplus_strided
+round=0
+for seed in 617 6203 96011; do
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --residual
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --residual-target
+  taskset -c 2 tools/throughput-analysis/target/release/bplus_strided "$seed" "$round" --residual-steady
+  round=$((round + 1))
+done
+```
 
 #### Complete-key prototype timing
 
@@ -440,7 +711,10 @@ fn lookup_snapshot() -> Result<(), Error> {
 ```
 
 Lookup performs bounded descent through the borrowed pools, allocates no memory,
-and returns a value borrowed from a leaf. Use the streaming `Lookup` when the
+and returns a value borrowed from a leaf. A tree accepted by `try_new` never
+makes `get` return an error. An `Ord` that breaks the stable-order contract can
+make the result unspecified, but the lookup still reads only the borrowed
+pools. Use the streaming `Lookup` when the
 caller supplies pages individually during each lookup.
 
 For a range over an already validated snapshot, use
@@ -718,8 +992,11 @@ normal case and `Err` for every allocation refusal. The overflow, bounds,
 and abort controls were detected in both profiles.
 
 The strict debug link retains the unresolved panic sink. The diagnostic
-ELF has 19 resolved panic edges, including forwarding edges. The replay
-binds all 14 guard kinds to their exact static callers in this fixture.
+ELF has 22 resolved panic edges, including forwarding edges. The replay
+binds all 17 guard kinds to their exact static callers in this fixture.
+The `FixedTree` unchecked slice accesses reach their precondition checks
+from `try_new`, `summarize_branch` and the inlined lookup; the direct Verus
+proof establishes each precondition.
 The ordering guard takes the suffix at index 1 after obtaining a window
 of length 2. The binary-search callers, including range endpoints, keep
 their indices in bounds. The range initializes paired iterators from
@@ -741,12 +1018,22 @@ proof. Allowing a child to point at the page being appended caused the
 Verus proof to fail. All three pool tests passed natively and in x86-64
 and i686 Miri.
 
-`FixedTree` reuses the Vec storage and slice-borrow contracts. Its source-bound
-Verus check adds parent uniqueness, connectivity, and the descent and address
-invariants. Three Kani harnesses covered all `u8` queries over a two-leaf tree,
-arbitrary machine-word child IDs in that constructor, and the branch-summary
-checks. Removing the duplicate-parent test yielded a Kani counterexample.
-The snapshot regression passed natively and in x86-64 and i686 Miri.
+`FixedTree` reuses the Vec storage and slice-borrow contracts. Its validation
+and lookup are verified directly on the product source with Verus
+(`verify_direct_verus.py`, target `fixed-bplus`): a type invariant established
+by `assemble` (children precede their parent one level lower, root last)
+bounds every unchecked pool, child, leaf, value and summary-slot access for
+every pool content, child ID and key order, and seven source defects each
+leave a solver error. The digest-bound Verus lemmas still cover parent
+uniqueness and connectivity. Kani runs the lookup under a key whose
+comparisons return arbitrary results at widths two and three, the routing and
+leaf searches at widths up to 64, and `u8` equivalence with a linear search
+and the previous checked lookup; five source defects each yield a
+counterexample. The width-one harness has a Kani counterexample that does not
+replay natively and is recorded as a known false counterexample; every
+width-one tree of its shapes runs natively and in x86-64 and i686 Miri
+instead. Details are in the [Linux
+bottleneck follow-up](verification/linux-bottlenecks.md#fixedtree-point-lookup-reads-the-validated-pools-unchecked).
 
 ```sh
 python3 tools/consumer-audit/check_bplus_debug.py

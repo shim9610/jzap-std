@@ -49,6 +49,7 @@ def audit_operations(rows,out):
         'Layout::from_size_align_unchecked','mem::align_of','crate::capacity::Capacity::from_validated_raw','core::mem::MaybeUninit::new',
         'crate::error::InitError::Storage','crate::arithmetic::bounded::wrapping_sub',
         'crate::init::prefix::initialize','prefix::initialize','initialize_one','write_next','crate::init::collection::fill',
+        'grow_for_push',
     }
     allowed_methods={'as_ptr','as_mut_ptr','as_ref','as_mut','cast','add','read','write','drop_in_place','get_unchecked','get_unchecked_mut',
         'get','len','front','read','written','remaining','unvisited_len','is_aligned','mark_initialized','disarm_field','into_bytes','into_std_vec',
@@ -82,6 +83,8 @@ WRITES={
  ('src/span.rs','next'):('kani:both_transitions_preserve_order_and_exact_length',['self.front=next']),
  ('src/span.rs','next_back'):('kani:both_transitions_preserve_order_and_exact_length',['self.back=next']),
  ('src/vec.rs','resize_storage'):('resized_owner',['self.ptr=ptr.cast()','self.cap=capacity']),
+ ('src/vec.rs','try_push'):('resized_owner',['self.ptr=ptr','self.cap=cap']),
+ ('src/vec.rs','grow_for_push'):('resized_owner',['*ptr=new.cast()','*cap=capacity']),
  ('src/vec.rs','try_insert'):('insertion_before_moves',['self.len=Checked::new(needed)']),
  ('src/vec.rs','pop'):('shortened_owner',['self.len=next']),
  ('src/vec.rs','remove'):('removal_before_moves',['self.len=next']),
@@ -122,14 +125,15 @@ def compaction_leaves(root, unsafe_rows, state_rows):
     transfer=canonical("""unsafe { if retain {
         core::ptr::copy_nonoverlapping(pointer.as_ptr().add(read),pointer.as_ptr().add(write),1);
     } else {core::ptr::drop_in_place(pointer.as_ptr().add(read));}}""")
-    for name,paired in [('try_retain_mut','false'),('try_dedup_by','true')]:
+    # Dedup uses the unpaired sweep: its loop then matches std's block layout.
+    for name,paired,dedup in [('try_retain_mut','false',False),('try_dedup_by','false',True)]:
         body=canonical(block(source,'pub fn '+name+'<'))
         assert body.count('super::compaction_driver::run::<'+paired+',E,_,_>(&mutg.state,original,')==1, ('compaction driver routing',name)
         assert body.count('letpointer=g.owner.ptr;')==1, ('compaction allocation identity',name)
         actual=[canonical(row['expression']) for row in unsafe_rows
                 if row['file']=='src/vec/edit.rs' and row['function']==name and row['kind']=='unsafe_block']
         expected=[canonical('unsafe {&mut*pointer.as_ptr().add(read)}')]
-        if paired=='true':
+        if dedup:
             expected.append(canonical('unsafe {&mut*pointer.as_ptr().add(previous)}'))
             assert 'letprevious=crate::arithmetic::bounded::wrapping_sub(write,1);' in body
             assert '.map(|duplicate|!duplicate)' in body
@@ -143,12 +147,12 @@ def compaction_leaves(root, unsafe_rows, state_rows):
         assert len(bodies)==1, ('compaction adapter body',name)
         normalize=lambda value:re.sub(r',(?=[)}])','',canonical(value))
         scan='|read,_write|{keep(unsafe{&mut*pointer.as_ptr().add(read)})}'
-        if paired=='true':
+        if dedup:
             scan='|read,write|{let previous=crate::arithmetic::bounded::wrapping_sub(write,1);same(unsafe{&mut*pointer.as_ptr().add(read)},unsafe{&mut*pointer.as_ptr().add(previous)}).map(|duplicate|!duplicate)}'
         action='|read,write,retain|{'+transfer+'}'
         shape=['let original=self.len.get();']
-        if paired=='true':shape+=['if original<2{return Ok(());}']
-        constructor='full' if paired=='false' else 'first_kept'
+        if dedup:shape+=['if original<2{return Ok(());}']
+        constructor='first_kept' if dedup else 'full'
         shape+=['let mut g=Compact{owner:self,state:Compaction::'+constructor+'(original)};',
                 'let pointer=g.owner.ptr;',
                 'super::compaction_driver::run::<'+paired+',E,_,_>(&mut g.state,original,'+scan+','+action+')?;',
@@ -257,7 +261,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     entries=[r for r in rows if r['kind']=='compaction_driver_reference']
     expected_entries={
         ('try_retain_mut','super::compaction_driver::run::<false,E,_,_>'):'retained_loop',
-        ('try_dedup_by','super::compaction_driver::run::<true,E,_,_>'):'dedup_loop',
+        ('try_dedup_by','super::compaction_driver::run::<false,E,_,_>'):'dedup_loop',
         ('next','super::compaction_driver::extract_next::<E,_,_>'):'extract_next_loop',
         ('stage_excess','super::staging_driver::run'):'staged_collection_loop',
     }
@@ -330,6 +334,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
       ('src/boxed/slice.rs','try_from_std_vec_in'):['storage::reallocate(ptr.cast(),old,new,crate::budget::Accounting::Unmetered)'],
       ('src/storage.rs','reallocate'):['allocate(new,budget)','deallocate(ptr,old,budget)'],
       ('src/vec.rs','resize_storage'):['storage::allocate(new_layout,self.policy.budget())','storage::reallocate(self.ptr.cast(),self.layout(),new_layout,self.policy.budget())'],
+      ('src/vec.rs','grow_for_push'):['storage::allocate(new_layout,budget)','storage::reallocate(ptr.cast(),cap.layout(),new_layout,budget)'],
       ('src/vec.rs','drop'):['storage::deallocate(self.0,self.1,self.2)'],
     }
     storage_seen={}

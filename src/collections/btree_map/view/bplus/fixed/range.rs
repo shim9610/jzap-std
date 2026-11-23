@@ -102,6 +102,31 @@ fn branch_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
     }
 }
 
+// Width-eight leaves count the keys below the bound at fixed offsets, like the
+// branch seek; other widths and key sizes keep the binary search. 32-bit
+// targets also keep it: there a u64 comparison takes two instructions and the
+// eight-comparison count grew the range code (i686 311 -> 408, armv7 363 -> 424
+// instructions) without a timing on those targets.
+#[inline(always)]
+fn leaf_prefix<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
+    keys: &[K; N],
+    query: &Q,
+    inclusive: bool,
+) -> Result<usize, Error> {
+    #[cfg(all(not(windows), target_pointer_width = "64"))]
+    if N == SMALL_NODE_KEYS && short_keys::<K, _>(query) {
+        return Iterator::try_fold(&mut keys.iter(), 0usize, |count, key| {
+            count.checked_add(usize::from(match key.borrow().cmp(query) {
+                core::cmp::Ordering::Less => true,
+                core::cmp::Ordering::Equal => inclusive,
+                core::cmp::Ordering::Greater => false,
+            }))
+        })
+        .ok_or(Error::InvalidStructure);
+    }
+    Ok(prefix_len(keys, query, inclusive))
+}
+
 // Count the keys below the bound, optionally including a matching key.
 #[inline]
 fn prefix_len<K: Borrow<Q>, Q: ?Sized + Ord>(keys: &[K], query: &Q, inclusive: bool) -> usize {
@@ -114,8 +139,8 @@ fn prefix_len<K: Borrow<Q>, Q: ?Sized + Ord>(keys: &[K], query: &Q, inclusive: b
 
 // If the first two candidate slots settle the upper bound, skip the search.
 #[inline(always)]
-fn end_slot<K: Borrow<Q>, Q: ?Sized + Ord>(
-    keys: &[K],
+fn end_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
+    keys: &[K; N],
     first: usize,
     query: &Q,
     inclusive: bool,
@@ -132,7 +157,7 @@ fn end_slot<K: Borrow<Q>, Q: ?Sized + Ord>(
     if keys.get(next).is_some_and(past_end) {
         return Ok(next);
     }
-    Ok(prefix_len(keys, query, inclusive))
+    leaf_prefix(keys, query, inclusive)
 }
 
 #[inline]
@@ -152,8 +177,8 @@ impl<'a, K: Borrow<Q>, V, Q: ?Sized + Ord, const N: usize> Range<'_, 'a, '_, K, 
         let leaf = self.tree.leaves.get(id).ok_or(Error::InvalidStructure)?;
         let keys = &leaf.0;
         let first = match start {
-            Bound::Included(query) => prefix_len(keys, query, false),
-            Bound::Excluded(query) => prefix_len(keys, query, true),
+            Bound::Included(query) => leaf_prefix(keys, query, false)?,
+            Bound::Excluded(query) => leaf_prefix(keys, query, true)?,
             Bound::Unbounded => 0,
         };
         let limit = match self.end {
@@ -255,6 +280,19 @@ mod proofs {
         let slot = branch_slot(&keys, &query).unwrap();
         assert!(slot < keys.len());
         assert_eq!(slot, prefix_len(later, &query, true));
+    }
+
+    #[cfg(not(windows))]
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn width_eight_leaf_prefix_matches_binary_search() {
+        let keys: [u8; 8] = kani::any();
+        let query: u8 = kani::any();
+        let inclusive: bool = kani::any();
+        kani::assume(keys.is_sorted());
+        let count = leaf_prefix(&keys, &query, inclusive).unwrap();
+        assert!(count <= keys.len());
+        assert_eq!(count, prefix_len(&keys, &query, inclusive));
     }
 
     #[kani::proof]

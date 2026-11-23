@@ -5,11 +5,15 @@ from pathlib import Path
 
 LOOKUP = "src/collections/btree_map/view/bplus.rs"
 SOURCES = {
-    LOOKUP: "aab3bd4cd8e77e57df7113a659e7a8d63268eda323ad38d5d0a23d5a90b74c72",
+    LOOKUP: "769200079621ed5b9538934e109397936dd9db21c987147a2a7580d3c585cc39",
     "src/collections/btree_map/view/bplus/fixed.rs":
-        "60d0dc345a3b83eda212d7310d6415db914c7707271f4c496ce0b77071222526",
+        "813c11a4f561ceddfaa839cadcdb55bf90b756e69fe9913d2b65b6ce6ad29250",
     "src/collections/btree_map/view/bplus/fixed/range.rs":
-        "0d32761a073acc10f3033facddd9410a3934e95b64315e5b5e102f4f9018d296",
+        "864e821668c07dedbaf50300f465f43ce8295280bc4f8ac95dd34e8429afd095",
+    "src/collections/btree_map/view/bplus/strided.rs":
+        "fc3e32d3769059b2630df7774a7432aacc026383f71b33e9996f69c4c13920c2",
+    "src/collections/btree_map/view/bplus/strided/tree.rs":
+        "1cd8cb37eeffa7d0d36c66f79a476f3a37e65501f622f877dd2f354e06a3779e",
 }
 
 

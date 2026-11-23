@@ -2,7 +2,7 @@
 
 use super::{Node, SMALL_NODE_KEYS, leaf_index};
 use crate::{Error, vec::Vec};
-use core::{borrow::Borrow, hint::select_unpredictable};
+use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
 mod range;
 pub use range::Range;
 
@@ -55,34 +55,13 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
         };
 
         let mut summaries = Vec::try_with_capacity(count)?;
-        for (keys, values) in leaves {
-            Node::<_, _, usize>::leaf(keys, values)?;
-            let summary = Summary {
-                minimum: keys.first().ok_or(Error::InvalidStructure)?,
-                maximum: keys.last().ok_or(Error::InvalidStructure)?,
-                height: 0,
-                has_parent: false,
-            };
-            summaries
-                .try_push(summary)
-                .map_err(|rejected| rejected.error)?;
-        }
-        for (keys, children) in branches {
-            let summary = summarize_branch(keys, children, summaries.as_mut_slice())?;
-            summaries
-                .try_push(summary)
-                .map_err(|rejected| rejected.error)?;
-        }
-        // Every earlier node must have exactly one parent. A backward edge
-        // cannot name the last record, so that record is the unique root.
-        let non_root = summaries
-            .as_slice()
-            .get(..root)
-            .ok_or(Error::InvalidStructure)?;
-        if non_root.iter().any(|node| !node.has_parent) {
+        // Summaries hold only references and integers, so the vector never
+        // drops them; it keeps length zero and only provides the storage.
+        let slots = summaries.spare_capacity_mut();
+        if slots.len() < count {
             return Err(Error::InvalidStructure);
         }
-        let height = summaries.last().ok_or(Error::InvalidStructure)?.height;
+        let height = summarize(leaves, branches, slots)?;
         Ok(Self {
             leaves,
             branches,
@@ -131,7 +110,7 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
         // SAFETY: a node of height zero is a validated leaf.
         let (keys, values) = unsafe { &*self.leaves.as_ptr().add(id) };
         let index = if N <= SMALL_NODE_KEYS {
-            keys.binary_search_by(|key| key.borrow().cmp(query)).ok()
+            leaf_slot(keys, query)
         } else {
             leaf_index(keys, query)
         };
@@ -199,11 +178,93 @@ fn floor_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(keys: &[K; N], quer
     base
 }
 
+// The position of the key equal to the query, with the iteration count and
+// conditional selection of `slice::binary_search_by` in Rust 1.95. Every slot
+// read is a checked middle position, so a result is below `N` for every order.
+#[inline(always)]
+fn leaf_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
+    keys: &[K; N],
+    query: &Q,
+) -> Option<usize> {
+    let mut base = 0usize;
+    let mut size = N;
+    while size > 1 {
+        let half = size / 2;
+        let Some(middle) = base.checked_add(half) else {
+            break;
+        };
+        let Some(key) = keys.get(middle) else {
+            break;
+        };
+        base = select_unpredictable(key.borrow().cmp(query).is_gt(), base, middle);
+        let Some(rest) = size.checked_sub(half) else {
+            break;
+        };
+        size = rest;
+    }
+    keys.get(base)
+        .filter(|key| (*key).borrow().cmp(query).is_eq())
+        .map(|_| base)
+}
+
+// Write one summary per record into `slots`, children before parents, and
+// return the height of the last record. Slot `i` is written before any read of
+// it, and `slots` holds at least `leaves.len() + branches.len()` entries.
+#[inline(always)]
+fn summarize<'a, K: Ord, V, const N: usize>(
+    leaves: &'a [([K; N], [V; N])],
+    branches: &'a [([K; N], [usize; N])],
+    slots: &mut [MaybeUninit<Summary<'a, K>>],
+) -> Result<usize, Error> {
+    let mut written = 0usize;
+    for (keys, values) in leaves {
+        Node::<_, _, usize>::leaf(keys, values)?;
+        let summary = Summary {
+            minimum: keys.first().ok_or(Error::InvalidStructure)?,
+            maximum: keys.last().ok_or(Error::InvalidStructure)?,
+            height: 0,
+            has_parent: false,
+        };
+        // SAFETY: written < leaves.len() <= slots.len().
+        unsafe { (*slots.as_mut_ptr().add(written)).write(summary) };
+        written = crate::arithmetic::bounded::wrapping_add(written, 1);
+    }
+    for (keys, children) in branches {
+        // SAFETY: written < leaves.len() + branches.len() <= slots.len(), so
+        // the written prefix and the next slot are disjoint parts of `slots`.
+        let (prefix, next) = unsafe {
+            (
+                core::slice::from_raw_parts_mut(slots.as_mut_ptr(), written),
+                &mut *slots.as_mut_ptr().add(written),
+            )
+        };
+        summarize_branch(keys, children, prefix, next)?;
+        written = crate::arithmetic::bounded::wrapping_add(written, 1);
+    }
+    let Some(root) = written.checked_sub(1) else {
+        return Err(Error::InvalidStructure);
+    };
+    // Every earlier node must have exactly one parent. A backward edge cannot
+    // name the last record, so that record is the unique root.
+    let mut i = 0usize;
+    while i < root {
+        // SAFETY: i < root < written; every slot below `written` is written.
+        if !unsafe { (*slots.as_ptr().add(i)).assume_init_ref() }.has_parent {
+            return Err(Error::InvalidStructure);
+        }
+        i = crate::arithmetic::bounded::wrapping_add(i, 1);
+    }
+    // SAFETY: root < written.
+    Ok(unsafe { (*slots.as_ptr().add(root)).assume_init_ref() }.height)
+}
+
+#[inline(never)]
 fn summarize_branch<'a, K: Ord, const N: usize>(
     keys: &'a [K; N],
     children: &[usize; N],
-    prefix: &mut [Summary<'a, K>],
-) -> Result<Summary<'a, K>, Error> {
+    prefix: &mut [MaybeUninit<Summary<'a, K>>],
+    next: &mut MaybeUninit<Summary<'a, K>>,
+) -> Result<(), Error> {
     Node::<_, (), _>::branch(keys, children)?;
     let minimum = keys.first().ok_or(Error::InvalidStructure)?;
     let mut bounds = keys.iter();
@@ -211,7 +272,11 @@ fn summarize_branch<'a, K: Ord, const N: usize>(
     let mut height = None;
     let mut maximum = minimum;
     for &id in children {
-        let child = prefix.get_mut(id).ok_or(Error::InvalidStructure)?;
+        if id >= prefix.len() {
+            return Err(Error::InvalidStructure);
+        }
+        // SAFETY: id is below the length of the written prefix.
+        let child = unsafe { (*prefix.as_mut_ptr().add(id)).assume_init_mut() };
         let upper = bounds.next();
         if child.has_parent
             || height.is_some_and(|expected| expected != child.height)
@@ -228,12 +293,13 @@ fn summarize_branch<'a, K: Ord, const N: usize>(
     let height = height
         .and_then(|value| value.checked_add(1))
         .ok_or(Error::InvalidStructure)?;
-    Ok(Summary {
+    next.write(Summary {
         minimum,
         maximum,
         height,
         has_parent: false,
-    })
+    });
+    Ok(())
 }
 
 #[cfg(kani)]

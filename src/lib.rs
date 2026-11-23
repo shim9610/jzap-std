@@ -8,6 +8,10 @@
 )]
 #[cfg(feature = "alloc")]
 extern crate alloc;
+// Verus specifications of core functions that vstd does not cover; only
+// verification builds see this crate (tools/direct-verus/std-specs.rs).
+#[cfg(verus_keep_ghost)]
+extern crate jzap_verus_std_specs;
 #[cfg(feature = "std")]
 extern crate std;
 pub mod arithmetic;

@@ -3,12 +3,15 @@
 use super::{LookupStep, search_index};
 use crate::Error;
 use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
 
 mod fixed;
 mod strided;
 pub use fixed::{FixedTree, Range};
 pub use strided::{StridedFormat, StridedLayout, StridedNode, StridedTree};
 
+#[cfg_attr(verus_keep_ghost, verus_verify)]
 const SMALL_NODE_KEYS: usize = 8;
 
 #[cfg(not(windows))]

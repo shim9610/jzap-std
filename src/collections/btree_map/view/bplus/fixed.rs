@@ -1,8 +1,12 @@
 //! Snapshots with fixed-width records borrowed from the caller.
 
-use super::{Node, SMALL_NODE_KEYS, leaf_index};
-use crate::{Error, vec::Vec};
-use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
+use super::{Node, SMALL_NODE_KEYS};
+use crate::{
+    Error,
+    arithmetic::bounded::{wrapping_add, wrapping_sub},
+    vec::Vec,
+};
+use core::{borrow::Borrow, cmp::Ordering, hint::select_unpredictable, mem::MaybeUninit};
 mod range;
 pub use range::Range;
 
@@ -45,28 +49,66 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
             .len()
             .checked_add(branches.len())
             .ok_or(Error::InvalidStructure)?;
-        let Some(root) = count.checked_sub(1) else {
+        if count == 0 {
+            return Ok(Self::assemble(
+                leaves,
+                branches,
+                &mut [],
+                &leaf_bounds,
+                &branch_minimum,
+                &fences_fail,
+            )?);
+        }
+        let mut summaries = Vec::try_with_capacity(count)?;
+        // Summaries hold only references and integers, so the vector never
+        // drops them; it keeps length zero and only provides the storage.
+        Self::assemble(
+            leaves,
+            branches,
+            summaries.spare_capacity_mut(),
+            &leaf_bounds,
+            &branch_minimum,
+            &fences_fail,
+        )
+    }
+
+    // Validate into `slots` and build the tree. Key checks arrive as closures;
+    // every structural fact the lookup relies on is decided here.
+    #[inline(always)]
+    fn assemble<A, B, F>(
+        leaves: &'a [([K; N], [V; N])],
+        branches: &'a [([K; N], [usize; N])],
+        slots: &mut [MaybeUninit<Summary<'a, K>>],
+        leaf: &A,
+        branch: &B,
+        fences: &F,
+    ) -> Result<Self, Error>
+    where
+        A: Fn(&'a [K; N], &'a [V; N]) -> Result<(&'a K, &'a K), Error>,
+        B: Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
+        F: Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
+    {
+        let count = match leaves.len().checked_add(branches.len()) {
+            Some(count) => count,
+            None => return Err(Error::InvalidStructure),
+        };
+        if count == 0 {
             return Ok(Self {
                 leaves,
                 branches,
                 height: 0,
                 root: None,
             });
-        };
-
-        let mut summaries = Vec::try_with_capacity(count)?;
-        // Summaries hold only references and integers, so the vector never
-        // drops them; it keeps length zero and only provides the storage.
-        let slots = summaries.spare_capacity_mut();
-        if slots.len() < count {
+        }
+        if N == 0 || slots.len() < count {
             return Err(Error::InvalidStructure);
         }
-        let height = summarize(leaves, branches, slots)?;
+        let height = summarize(leaves, branches, slots, leaf, branch, fences)?;
         Ok(Self {
             leaves,
             branches,
             height,
-            root: Some(root),
+            root: Some(wrapping_sub(count, 1)),
         })
     }
 
@@ -82,83 +124,105 @@ impl<'a, K: Ord, V, const N: usize> FixedTree<'a, K, V, N> {
     where
         K: Borrow<Q>,
     {
+        Ok(self.find(
+            &|key: &K| key.borrow() > query,
+            &|key: &K| key.borrow() <= query,
+            &|key: &K| key.borrow().cmp(query),
+        ))
+    }
+
+    #[inline(always)]
+    fn find<G, L, C>(&self, above: &G, admits: &L, order: &C) -> Option<&'a V>
+    where
+        G: Fn(&K) -> bool,
+        L: Fn(&K) -> bool,
+        C: Fn(&K) -> Ordering,
+    {
         let Some(mut id) = self.root else {
-            return Ok(None);
+            return None;
         };
         let mut remaining = self.height;
         if remaining != 0 {
             // SAFETY: a root of nonzero height is a validated branch.
-            let (keys, _) = unsafe { self.branch_unchecked(id) };
+            let (keys, _) = unsafe {
+                self.branches
+                    .get_unchecked(wrapping_sub(id, self.leaves.len()))
+            };
             // Separators are the minima of their children, so with a stable
             // order only the root can rule out a query below every key.
-            if keys.first().is_none_or(|key| key.borrow() > query) {
-                return Ok(None);
+            match keys.first() {
+                Some(key) => {
+                    if above(key) {
+                        return None;
+                    }
+                }
+                None => return None,
             }
         }
-        while let Some(next_height) = remaining.checked_sub(1) {
-            remaining = next_height;
+        while remaining != 0 {
+            remaining = wrapping_sub(remaining, 1);
             // SAFETY: `id` has height `remaining + 1`, so it is a validated
             // branch, and its children all have height `remaining`.
-            let (keys, children) = unsafe { self.branch_unchecked(id) };
+            let (keys, children) = unsafe {
+                self.branches
+                    .get_unchecked(wrapping_sub(id, self.leaves.len()))
+            };
             // Conditional selection at every width: on the pinned Linux x86-64
             // CPU the width-eight branch search took 32.50 ns/lookup against
             // 19.64 ns with selection (docs/verification/linux-bottlenecks.md).
-            let slot = floor_slot(keys, query);
+            let slot = floor_slot(keys, admits);
             // SAFETY: `floor_slot` returns a slot below `N` for every order.
-            id = unsafe { *children.as_ptr().add(slot) };
+            id = unsafe { *children.get_unchecked(slot) };
         }
         // SAFETY: a node of height zero is a validated leaf.
-        let (keys, values) = unsafe { &*self.leaves.as_ptr().add(id) };
+        let (keys, values) = unsafe { self.leaves.get_unchecked(id) };
         let index = if N <= SMALL_NODE_KEYS {
-            leaf_slot(keys, query)
+            leaf_slot(keys, order)
         } else {
-            leaf_index(keys, query)
+            leaf_rank(keys, order)
         };
-        // SAFETY: both searches return only indices of existing keys, and a
-        // leaf holds `N` keys and `N` values.
-        Ok(index.map(|i| unsafe { &*values.as_ptr().add(i) }))
-    }
-
-    /// Borrow the branch record with node ID `id`.
-    ///
-    /// # Safety
-    ///
-    /// `id` must be the root of a tree of nonzero height, or a child reached
-    /// from a branch of height at least two. `try_new` guarantees that such a
-    /// node lies after the leaves and before the end of the branch pool.
-    ///
-    /// The unchecked reads use `as_ptr().add()` rather than `get_unchecked`:
-    /// Kani 0.68 with CBMC 6.11 reported a wrong value for a pointer that
-    /// `get_unchecked` derived from a pool returned by `try_new`, while Miri and
-    /// native runs read the right record. Both forms perform the same loads;
-    /// the x86-64 release lookups have the same instruction counts, with
-    /// identical code at width eight and a different block order at widths
-    /// 16 and 32.
-    ///
-    /// The offset uses the library's bounded subtraction, whose non-wrapping
-    /// contract is registered for this call in the wrapping-memory coverage.
-    #[inline(always)]
-    unsafe fn branch_unchecked(&self, id: usize) -> &'a ([K; N], [usize; N]) {
-        // SAFETY: the caller guarantees leaves.len() <= id < leaves.len() +
-        // branches.len(), so the subtraction does not wrap and the record lies
-        // inside the borrowed pool.
-        unsafe {
-            &*self
-                .branches
-                .as_ptr()
-                .add(crate::arithmetic::bounded::wrapping_sub(
-                    id,
-                    self.leaves.len(),
-                ))
+        match index {
+            // SAFETY: both searches return only slots of existing keys, and a
+            // leaf holds `N` keys and `N` values.
+            Some(i) => Some(unsafe { values.get_unchecked(i) }),
+            None => None,
         }
     }
+}
+
+#[inline(always)]
+fn leaf_bounds<'a, K: Ord, V, const N: usize>(
+    keys: &'a [K; N],
+    values: &'a [V; N],
+) -> Result<(&'a K, &'a K), Error> {
+    Node::<_, _, usize>::leaf(keys, values)?;
+    Ok((
+        keys.first().ok_or(Error::InvalidStructure)?,
+        keys.last().ok_or(Error::InvalidStructure)?,
+    ))
+}
+
+#[inline(always)]
+fn branch_minimum<'a, K: Ord, const N: usize>(
+    keys: &'a [K; N],
+    children: &[usize; N],
+) -> Result<&'a K, Error> {
+    Node::<_, (), _>::branch(keys, children)?;
+    keys.first().ok_or(Error::InvalidStructure)
+}
+
+// Reject a child whose minimum is not its separator or whose maximum reaches
+// the next separator.
+#[inline(always)]
+fn fences_fail<K: Ord>(lower: Option<&K>, upper: Option<&K>, minimum: &K, maximum: &K) -> bool {
+    lower != Some(minimum) || upper.is_some_and(|bound| maximum >= bound)
 }
 
 // Select the last child whose minimum does not exceed the query, defaulting to
 // child zero. The base slot only ever takes checked middle positions, so the
 // result is below `N` for every order whenever `N` is nonzero.
 #[inline(always)]
-fn floor_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(keys: &[K; N], query: &Q) -> usize {
+fn floor_slot<K, L: Fn(&K) -> bool, const N: usize>(keys: &[K; N], admits: &L) -> usize {
     let mut base = 0usize;
     let mut remaining = N;
     while remaining > 1 {
@@ -169,7 +233,7 @@ fn floor_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(keys: &[K; N], quer
         let Some(key) = keys.get(middle) else {
             break;
         };
-        base = select_unpredictable(key.borrow() <= query, middle, base);
+        base = select_unpredictable(admits(key), middle, base);
         let Some(rest) = remaining.checked_sub(half) else {
             break;
         };
@@ -182,10 +246,7 @@ fn floor_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(keys: &[K; N], quer
 // conditional selection of `slice::binary_search_by` in Rust 1.95. Every slot
 // read is a checked middle position, so a result is below `N` for every order.
 #[inline(always)]
-fn leaf_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
-    keys: &[K; N],
-    query: &Q,
-) -> Option<usize> {
+fn leaf_slot<K, C: Fn(&K) -> Ordering, const N: usize>(keys: &[K; N], order: &C) -> Option<usize> {
     let mut base = 0usize;
     let mut size = N;
     while size > 1 {
@@ -196,50 +257,109 @@ fn leaf_slot<K: Borrow<Q>, Q: ?Sized + Ord, const N: usize>(
         let Some(key) = keys.get(middle) else {
             break;
         };
-        base = select_unpredictable(key.borrow().cmp(query).is_gt(), base, middle);
+        base = select_unpredictable(order(key).is_gt(), base, middle);
         let Some(rest) = size.checked_sub(half) else {
             break;
         };
         size = rest;
     }
-    keys.get(base)
-        .filter(|key| (*key).borrow().cmp(query).is_eq())
-        .map(|_| base)
+    match keys.get(base) {
+        Some(key) => {
+            if order(key).is_eq() {
+                Some(base)
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
+// The first key not below the query, found as `slice::partition_point` does in
+// Rust 1.95, and its slot when that key equals the query.
+#[inline(always)]
+fn leaf_rank<K, C: Fn(&K) -> Ordering, const N: usize>(keys: &[K; N], order: &C) -> Option<usize> {
+    let mut base = 0usize;
+    let mut size = N;
+    while size > 1 {
+        let half = size / 2;
+        let Some(middle) = base.checked_add(half) else {
+            break;
+        };
+        let Some(key) = keys.get(middle) else {
+            break;
+        };
+        base = select_unpredictable(!order(key).is_lt(), base, middle);
+        let Some(rest) = size.checked_sub(half) else {
+            break;
+        };
+        size = rest;
+    }
+    let index = match keys.get(base) {
+        Some(key) => wrapping_add(base, usize::from(order(key).is_lt())),
+        None => return None,
+    };
+    match keys.get(index) {
+        Some(key) => {
+            if order(key).is_eq() {
+                Some(index)
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
 }
 
 // Write one summary per record into `slots`, children before parents, and
 // return the height of the last record. Slot `i` is written before any read of
 // it, and `slots` holds at least `leaves.len() + branches.len()` entries.
 #[inline(always)]
-fn summarize<'a, K: Ord, V, const N: usize>(
+fn summarize<'a, K, V, A, B, F, const N: usize>(
     leaves: &'a [([K; N], [V; N])],
     branches: &'a [([K; N], [usize; N])],
     slots: &mut [MaybeUninit<Summary<'a, K>>],
-) -> Result<usize, Error> {
+    leaf: &A,
+    branch: &B,
+    fences: &F,
+) -> Result<usize, Error>
+where
+    A: Fn(&'a [K; N], &'a [V; N]) -> Result<(&'a K, &'a K), Error>,
+    B: Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
+    F: Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
+{
     let mut written = 0usize;
-    for (keys, values) in leaves {
-        Node::<_, _, usize>::leaf(keys, values)?;
-        let summary = Summary {
-            minimum: keys.first().ok_or(Error::InvalidStructure)?,
-            maximum: keys.last().ok_or(Error::InvalidStructure)?,
+    while written < leaves.len() {
+        // SAFETY: written < leaves.len().
+        let (keys, values) = unsafe { leaves.get_unchecked(written) };
+        let (minimum, maximum) = leaf(keys, values)?;
+        // SAFETY: written < leaves.len() <= slots.len().
+        unsafe { slots.get_unchecked_mut(written) }.write(Summary {
+            minimum,
+            maximum,
             height: 0,
             has_parent: false,
-        };
-        // SAFETY: written < leaves.len() <= slots.len().
-        unsafe { (*slots.as_mut_ptr().add(written)).write(summary) };
-        written = crate::arithmetic::bounded::wrapping_add(written, 1);
+        });
+        written = wrapping_add(written, 1);
     }
-    for (keys, children) in branches {
+    let mut j = 0usize;
+    while j < branches.len() {
+        // SAFETY: j < branches.len().
+        let (keys, children) = unsafe { branches.get_unchecked(j) };
         // SAFETY: written < leaves.len() + branches.len() <= slots.len(), so
         // the written prefix and the next slot are disjoint parts of `slots`.
-        let (prefix, next) = unsafe {
-            (
-                core::slice::from_raw_parts_mut(slots.as_mut_ptr(), written),
-                &mut *slots.as_mut_ptr().add(written),
-            )
-        };
-        summarize_branch(keys, children, prefix, next)?;
-        written = crate::arithmetic::bounded::wrapping_add(written, 1);
+        let (prefix, next) = unsafe { slots.split_at_mut_unchecked(written) };
+        // SAFETY: the suffix starts at `written` and is not empty.
+        summarize_branch(
+            keys,
+            children,
+            prefix,
+            unsafe { next.get_unchecked_mut(0) },
+            branch,
+            fences,
+        )?;
+        written = wrapping_add(written, 1);
+        j = wrapping_add(j, 1);
     }
     let Some(root) = written.checked_sub(1) else {
         return Err(Error::InvalidStructure);
@@ -249,50 +369,63 @@ fn summarize<'a, K: Ord, V, const N: usize>(
     let mut i = 0usize;
     while i < root {
         // SAFETY: i < root < written; every slot below `written` is written.
-        if !unsafe { (*slots.as_ptr().add(i)).assume_init_ref() }.has_parent {
+        if !unsafe { slots.get_unchecked(i).assume_init_ref() }.has_parent {
             return Err(Error::InvalidStructure);
         }
-        i = crate::arithmetic::bounded::wrapping_add(i, 1);
+        i = wrapping_add(i, 1);
     }
     // SAFETY: root < written.
-    Ok(unsafe { (*slots.as_ptr().add(root)).assume_init_ref() }.height)
+    Ok(unsafe { slots.get_unchecked(root).assume_init_ref() }.height)
 }
 
 #[inline(never)]
-fn summarize_branch<'a, K: Ord, const N: usize>(
+fn summarize_branch<'a, K, B, F, const N: usize>(
     keys: &'a [K; N],
     children: &[usize; N],
     prefix: &mut [MaybeUninit<Summary<'a, K>>],
     next: &mut MaybeUninit<Summary<'a, K>>,
-) -> Result<(), Error> {
-    Node::<_, (), _>::branch(keys, children)?;
-    let minimum = keys.first().ok_or(Error::InvalidStructure)?;
-    let mut bounds = keys.iter();
-    let mut lower = bounds.next();
+    branch: &B,
+    fences: &F,
+) -> Result<(), Error>
+where
+    B: Fn(&'a [K; N], &[usize; N]) -> Result<&'a K, Error>,
+    F: Fn(Option<&K>, Option<&K>, &K, &K) -> bool,
+{
+    let minimum = branch(keys, children)?;
     let mut height = None;
     let mut maximum = minimum;
-    for &id in children {
+    let mut s = 0usize;
+    while s < N {
+        // SAFETY: s < N.
+        let id = unsafe { *children.get_unchecked(s) };
         if id >= prefix.len() {
             return Err(Error::InvalidStructure);
         }
         // SAFETY: id is below the length of the written prefix.
-        let child = unsafe { (*prefix.as_mut_ptr().add(id)).assume_init_mut() };
-        let upper = bounds.next();
+        let child = unsafe { prefix.get_unchecked_mut(id).assume_init_mut() };
         if child.has_parent
             || height.is_some_and(|expected| expected != child.height)
-            || lower != Some(child.minimum)
-            || upper.is_some_and(|bound| child.maximum >= bound)
+            || fences(
+                keys.get(s),
+                keys.get(wrapping_add(s, 1)),
+                child.minimum,
+                child.maximum,
+            )
         {
             return Err(Error::InvalidStructure);
         }
         child.has_parent = true;
         height = Some(child.height);
         maximum = child.maximum;
-        lower = upper;
+        s = wrapping_add(s, 1);
     }
-    let height = height
-        .and_then(|value| value.checked_add(1))
-        .ok_or(Error::InvalidStructure)?;
+    let height = match height {
+        Some(value) => match value.checked_add(1) {
+            Some(height) => height,
+            None => return Err(Error::InvalidStructure),
+        },
+        None => return Err(Error::InvalidStructure),
+    };
     next.write(Summary {
         minimum,
         maximum,

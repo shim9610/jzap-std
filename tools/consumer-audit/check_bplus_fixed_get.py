@@ -83,15 +83,21 @@ def replay_width_one(out):
         for file in ("Cargo.toml", "Cargo.lock"):
             shutil.copyfile(ROOT / file, work / file)
         env = dict(os.environ, CARGO_TARGET_DIR=str(work / "target"))
-        generated = kani(work / "Cargo.toml", WIDTH_ONE, "--exact", "-Z", "concrete-playback",
-                         "--concrete-playback=inplace", env=env, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True)
+        original = (ROOT / FIXED).read_bytes()
+        # Run inside the copy: in-place playback writes tests into the source
+        # path as Kani resolves it from the working directory.
+        generated = subprocess.run(["cargo", "kani", "--lib", "--harness", WIDTH_ONE, "--exact",
+                                    "-Z", "concrete-playback", "--concrete-playback=inplace"],
+                                   cwd=work, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True)
         (out / "width-one-playback-generate.log").write_text(generated.stdout)
+        if (ROOT / FIXED).read_bytes() != original:
+            raise SystemExit("concrete playback modified the checked-out source")
         path = work / FIXED
         text = path.read_text()
         # Kani may emit the same test more than once; keep the first copy.
         seen = set()
-        for match in list(re.finditer(r"\n#\[test\]\nfn (kani_concrete_playback_\w+)\(\) \{.*?\n\}\n",
+        for match in list(re.finditer(r"(?:\n///[^\n]*)*\n#\[test\]\nfn (kani_concrete_playback_\w+)\(\) \{.*?\n\}\n",
                                       text, re.S)):
             if match.group(1) in seen:
                 text = text.replace(match.group(0), "\n", 1)

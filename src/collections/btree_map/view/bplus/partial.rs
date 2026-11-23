@@ -242,6 +242,9 @@ struct Fence<T, I> {
     index: usize,
 }
 
+/// The node and separator index a fence was copied from.
+type Origin<I> = Option<(I, usize)>;
+
 /// The outcome of one comparison within a pass.
 enum Decision {
     Order(Ordering),
@@ -258,9 +261,9 @@ fn order_keys<K: PartialKey>(a: &K, left: usize, b: &K, right: usize) -> Decisio
     }
     match (a.full(), b.full()) {
         (Some(a), Some(b)) => Decision::Order(a.cmp(b)),
-        (Some(a), None) => b
-            .cmp_full(a)
-            .map_or(Decision::Key(right), |order| Decision::Order(order.reverse())),
+        (Some(a), None) => b.cmp_full(a).map_or(Decision::Key(right), |order| {
+            Decision::Order(order.reverse())
+        }),
         (None, Some(b)) => a.cmp_full(b).map_or(Decision::Key(left), Decision::Order),
         (None, None) => Decision::Key(left),
     }
@@ -280,14 +283,19 @@ fn order_fence<K: PartialKey>(
         (Some(key), Some(fence)) => Decision::Order(key.cmp(fence)),
         (Some(key), None) => K::fence_cmp_full(fence, key)
             .map_or(Decision::Fence, |order| Decision::Order(order.reverse())),
-        (None, Some(fence)) => key.cmp_full(fence).map_or(Decision::Key(index), Decision::Order),
+        (None, Some(fence)) => key
+            .cmp_full(fence)
+            .map_or(Decision::Key(index), Decision::Order),
         (None, None) => Decision::Key(index),
     }
 }
 
 #[inline]
 fn order_query<K: PartialKey>(key: &K, index: usize, query: &K::Full) -> Decision {
-    match key.cmp_full(query).or_else(|| key.full().map(|full| full.cmp(query))) {
+    match key
+        .cmp_full(query)
+        .or_else(|| key.full().map(|full| full.cmp(query)))
+    {
         Some(order) => Decision::Order(order),
         None => Decision::Key(index),
     }
@@ -337,7 +345,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
 
     /// The node and separator index that the minimum and ceiling fences of
     /// the requested node were copied from.
-    pub fn fence_origins(&self) -> (Option<(I, usize)>, Option<(I, usize)>) {
+    pub fn fence_origins(&self) -> (Origin<I>, Origin<I>) {
         (
             self.minimum.map(|fence| (fence.node, fence.index)),
             self.ceiling.map(|fence| (fence.node, fence.index)),
@@ -347,8 +355,9 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
     /// Validate and search one node.
     ///
     /// Returns `NeedKey(index)` when the key at `index` must be attached and
-    /// the node provided again, and `NeedFence` when the fences' full keys
-    /// must be passed with [`provide_fenced`](Self::provide_fenced).
+    /// the node provided again, and `NeedFence` when the full keys of the
+    /// fences reported by [`fence_origins`](Self::fence_origins) must be
+    /// passed with [`provide_fenced`](Self::provide_fenced).
     pub fn provide<'a, K, V>(
         &mut self,
         id: I,
@@ -394,7 +403,8 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
     where
         K: PartialKey<Full = F, Fence = T>,
     {
-        if self.pending != Some(id) || (self.height == 0) != matches!(node.contents, Contents::Leaf(_))
+        if self.pending != Some(id)
+            || (self.height == 0) != matches!(node.contents, Contents::Leaf(_))
         {
             return Err(Error::InvalidStructure);
         }
@@ -463,10 +473,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
             }
         }
         if fences.0 || fences.1 {
-            return Ok(Pass::Step(LookupStep::NeedFence {
-                minimum: fences.0,
-                ceiling: fences.1,
-            }));
+            return Ok(Pass::Step(LookupStep::NeedFence));
         }
         Ok(match node.contents {
             Contents::Leaf(values) => match equal {
@@ -543,16 +550,20 @@ mod proofs {
 
     const P: usize = 2;
     const MAX: usize = 4;
+    // The lookup harnesses use one inline byte and keys of up to two bytes:
+    // keys longer than the prefix and pairs with equal prefixes remain.
+    const SMALL_P: usize = 1;
+    const SMALL: usize = 2;
 
-    /// An arbitrary byte string of at most `MAX` bytes.
-    fn bytes() -> ([u8; MAX], usize) {
+    /// An arbitrary byte string of at most `M` bytes.
+    fn bytes<const M: usize>() -> ([u8; M], usize) {
         let len = usize::from(kani::any::<u8>());
-        kani::assume(len <= MAX);
+        kani::assume(len <= M);
         (kani::any(), len)
     }
 
-    fn stored<'a>(full: &[u8]) -> PrefixKey<'a, P> {
-        let mut prefix = [0; P];
+    fn stored<'a, const Q: usize>(full: &[u8]) -> PrefixKey<'a, Q> {
+        let mut prefix = [0; Q];
         for (slot, byte) in prefix.iter_mut().zip(full) {
             *slot = *byte;
         }
@@ -577,15 +588,18 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(6)]
     fn prefix_key_comparisons_hold_for_every_completion() {
-        let (a, a_len) = bytes();
-        let (b, b_len) = bytes();
+        let (a, a_len) = bytes::<MAX>();
+        let (b, b_len) = bytes::<MAX>();
         let (a, b) = (&a[..a_len], &b[..b_len]);
-        let (stored_a, stored_b) = (stored(a), stored(b));
+        let (stored_a, stored_b) = (stored::<P>(a), stored::<P>(b));
         let actual = a.cmp(b);
         assert!(agrees(stored_a.cmp_stored(&stored_b), actual));
         assert!(agrees(stored_a.cmp_full(b), actual));
         assert!(agrees(stored_a.cmp_fence(&stored_b.fence()), actual));
-        assert!(agrees(PrefixKey::<P>::fence_cmp_full(&stored_a.fence(), b), actual));
+        assert!(agrees(
+            PrefixKey::<P>::fence_cmp_full(&stored_a.fence(), b),
+            actual
+        ));
         // Complete keys are always decided.
         if a_len <= P && b_len <= P {
             assert!(stored_a.cmp_stored(&stored_b) == Some(actual));
@@ -603,7 +617,7 @@ mod proofs {
         if admitted {
             assert!(attached.full() == Some(b));
         }
-        assert!(PrefixKey::from_full(a).full() == Some(a));
+        assert!(PrefixKey::<P>::from_full(a).full() == Some(a));
         assert!(PrefixKey::from_full(a).fence() == stored_a.fence());
     }
 
@@ -614,17 +628,18 @@ mod proofs {
     fn partial_leaf_matches_complete_lookup() {
         let count = usize::from(kani::any::<u8>());
         kani::assume(count <= 3);
-        let fulls: [([u8; MAX], usize); 3] = [bytes(), bytes(), bytes()];
+        let fulls: [([u8; SMALL], usize); 3] = [bytes(), bytes(), bytes()];
         let full = |i: usize| &fulls[i].0[..fulls[i].1];
         let completed = [full(0), full(1), full(2)];
-        let mut keys = [stored(full(0)), stored(full(1)), stored(full(2))];
+        let mut keys: [PrefixKey<'_, SMALL_P>; 3] =
+            [stored(full(0)), stored(full(1)), stored(full(2))];
         for (i, key) in keys.iter_mut().enumerate() {
             if kani::any() {
                 key.attach(completed[i]).unwrap();
             }
         }
         let values = [10u8, 11, 12];
-        let (query, query_len) = bytes();
+        let (query, query_len) = bytes::<SMALL>();
         let query = &query[..query_len];
 
         let mut lookup = PartialLookup::new(0usize, 0, query).unwrap();
@@ -663,21 +678,24 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(9)]
     fn partial_two_levels_match_complete_lookup() {
-        let fulls: [([u8; MAX], usize); 6] =
+        let fulls: [([u8; SMALL], usize); 6] =
             [bytes(), bytes(), bytes(), bytes(), bytes(), bytes()];
         let completed: [&[u8]; 6] = core::array::from_fn(|i| &fulls[i].0[..fulls[i].1]);
-        let mut keys: [PrefixKey<'_, P>; 6] = core::array::from_fn(|i| stored(completed[i]));
+        let mut keys: [PrefixKey<'_, SMALL_P>; 6] = core::array::from_fn(|i| stored(completed[i]));
         for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
                 key.attach(full).unwrap();
             }
         }
-        let counts = [usize::from(kani::any::<u8>()), usize::from(kani::any::<u8>())];
+        let counts = [
+            usize::from(kani::any::<u8>()),
+            usize::from(kani::any::<u8>()),
+        ];
         kani::assume(counts[0] <= 2 && counts[1] <= 2);
         let ranges = [0..2, 2..2 + counts[0], 4..4 + counts[1]];
         let children = [1usize, 2];
         let values = [0u8, 1, 2, 3, 4, 5];
-        let (query, query_len) = bytes();
+        let (query, query_len) = bytes::<SMALL>();
         let query = &query[..query_len];
         let fence_full = |origin: Option<(usize, usize)>| {
             origin.map(|(node, index)| {
@@ -715,9 +733,8 @@ mod proofs {
                     continue;
                 }
                 Ok(LookupStep::NeedKey(index)) => start + index,
-                Ok(LookupStep::NeedFence { minimum: need_min, ceiling: need_ceiling }) => {
-                    assert!(!fenced && id != 0);
-                    assert!(need_min <= minimum.is_some() && need_ceiling <= ceiling.is_some());
+                Ok(LookupStep::NeedFence) => {
+                    assert!(!fenced && id != 0 && (minimum.is_some() || ceiling.is_some()));
                     fenced = true;
                     continue;
                 }
@@ -750,10 +767,13 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(6)]
     fn requests_and_refusals_keep_the_lookup_state() {
-        let fulls: [([u8; MAX], usize); 2] = [bytes(), bytes()];
-        let keys = [stored(&fulls[0].0[..fulls[0].1]), stored(&fulls[1].0[..fulls[1].1])];
+        let fulls: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
+        let keys: [PrefixKey<'_, SMALL_P>; 2] = [
+            stored(&fulls[0].0[..fulls[0].1]),
+            stored(&fulls[1].0[..fulls[1].1]),
+        ];
         let children = [1usize, 2];
-        let (query, query_len) = bytes();
+        let (query, query_len) = bytes::<SMALL>();
         let query = &query[..query_len];
         let node = PartialNode::<_, (), _>::branch(&keys, &children).unwrap();
         let mut lookup = PartialLookup::new(0usize, 1, query).unwrap();

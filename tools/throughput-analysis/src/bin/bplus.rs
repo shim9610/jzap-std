@@ -108,7 +108,7 @@ where
             LookupStep::Found(_, value) => return Ok(Some(*value)),
             LookupStep::Absent => return Ok(None),
             LookupStep::NeedNode(child) => id = child,
-            LookupStep::NeedKey(_) | LookupStep::NeedFence { .. } => {
+            LookupStep::NeedKey(_) | LookupStep::NeedFence => {
                 return Err(Error::InvalidStructure);
             }
         }

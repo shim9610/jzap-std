@@ -62,12 +62,12 @@ fn check_width<const N: usize>(query: u64) -> Result<(), Error> {
             match lookup.provide(id, &leaf)? {
                 LookupStep::Found(_, value) => Some(*value),
                 LookupStep::Absent => None,
-                LookupStep::NeedNode(_) | LookupStep::NeedKey(_) | LookupStep::NeedFence { .. } => {
+                LookupStep::NeedNode(_) | LookupStep::NeedKey(_) | LookupStep::NeedFence => {
                     return Err(Error::InvalidStructure);
                 }
             }
         }
-        LookupStep::Found(_, _) | LookupStep::NeedKey(_) | LookupStep::NeedFence { .. } => {
+        LookupStep::Found(_, _) | LookupStep::NeedKey(_) | LookupStep::NeedFence => {
             return Err(Error::InvalidStructure);
         }
     };

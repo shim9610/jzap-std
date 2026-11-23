@@ -138,9 +138,8 @@ fn lookup(
                     requests += 1;
                     assert!(requests <= incomplete);
                 }
-                LookupStep::NeedFence { minimum: a, ceiling: b } => {
-                    assert!(!fenced && (a || b));
-                    assert!(a <= minimum.is_some() && b <= ceiling.is_some());
+                LookupStep::NeedFence => {
+                    assert!(!fenced && (minimum.is_some() || ceiling.is_some()));
                     counts.fences += 1;
                     fenced = true;
                 }
@@ -189,6 +188,7 @@ fn partial_lookup_matches_std_with_shared_prefixes() {
             assert_eq!(actual, expected, "query {query:?}");
         }
     }
+    eprintln!("requests: {totals:?}");
     if !cfg!(miri) {
         assert!(totals.keys > 0 && totals.fences > 0, "{totals:?}");
     }
@@ -238,7 +238,10 @@ fn damage_off_the_search_path_is_refused() {
     let keys: [&[u8]; 3] = [b"abcd1", b"abcd1", b"abcd7"];
     assert_eq!(leaf_result(&keys, b"abcd7"), Err(Error::InvalidStructure));
     let keys: [&[u8]; 4] = [b"abcd1", b"abcd3", b"abcd5", b"abcd7"];
-    assert_eq!(leaf_result(&keys, b"abcd5"), Ok(LookupStep::Found(&(), &())));
+    assert_eq!(
+        leaf_result(&keys, b"abcd5"),
+        Ok(LookupStep::Found(&(), &()))
+    );
     assert_eq!(leaf_result(&keys, b"abcd4"), Ok(LookupStep::Absent));
 }
 
@@ -259,20 +262,23 @@ fn attachments_and_fences_must_match_the_stored_key() {
     let query: &[u8] = b"abcdzz";
     let mut lookup = PartialLookup::new(0usize, 1, query).unwrap();
     let root = PartialNode::<_, u32, _>::branch(&separators, &children).unwrap();
-    assert!(matches!(lookup.provide(0, &root), Ok(LookupStep::NeedNode(1))));
+    assert!(matches!(
+        lookup.provide(0, &root),
+        Ok(LookupStep::NeedNode(1))
+    ));
     assert_eq!(lookup.fence_origins(), (Some((0, 0)), None));
 
     let mut leaf_keys = [PrefixKey::<P>::from_full(b"abcdeg")];
     let values = [7u32];
     let leaf = PartialNode::leaf(&leaf_keys, &values).unwrap();
     // Out of turn: the root is no longer requested.
-    assert!(matches!(lookup.provide(0, &leaf), Err(Error::InvalidStructure)));
+    assert!(matches!(
+        lookup.provide(0, &leaf),
+        Err(Error::InvalidStructure)
+    ));
     assert!(matches!(
         lookup.provide(1, &leaf),
-        Ok(LookupStep::NeedFence {
-            minimum: true,
-            ceiling: false
-        })
+        Ok(LookupStep::NeedFence)
     ));
     // A full key the fence does not admit, or one for a missing fence.
     let fence: &[u8] = b"abcdef";
@@ -302,7 +308,9 @@ fn attachments_and_fences_must_match_the_stored_key() {
 
 #[test]
 fn prefix_keys_order_by_bytes() {
-    let words: [&[u8]; 9] = [b"", b"a", b"abcd", b"abcda", b"abcdb", b"abce", b"abcd\0", b"b", b"abcdaa"];
+    let words: [&[u8]; 9] = [
+        b"", b"a", b"abcd", b"abcda", b"abcdb", b"abce", b"abcd\0", b"b", b"abcdaa",
+    ];
     for a in words {
         for b in words {
             let actual = a.cmp(b);

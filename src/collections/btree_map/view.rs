@@ -183,11 +183,8 @@ pub enum LookupStep<'a, K: ?Sized, V: ?Sized, I> {
     /// current node, then provide the node again.
     NeedKey(usize),
     /// Partial-key lookups only: provide the current node again together with
-    /// the full keys of the listed fences.
-    NeedFence {
-        minimum: bool,
-        ceiling: bool,
-    },
+    /// the full keys of the fences that `fence_origins` reports.
+    NeedFence,
     Found(&'a K, &'a V),
     Absent,
 }

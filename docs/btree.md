@@ -992,8 +992,11 @@ normal case and `Err` for every allocation refusal. The overflow, bounds,
 and abort controls were detected in both profiles.
 
 The strict debug link retains the unresolved panic sink. The diagnostic
-ELF has 19 resolved panic edges, including forwarding edges. The replay
-binds all 14 guard kinds to their exact static callers in this fixture.
+ELF has 22 resolved panic edges, including forwarding edges. The replay
+binds all 17 guard kinds to their exact static callers in this fixture.
+The `FixedTree` unchecked slice accesses reach their precondition checks
+from `try_new`, `summarize_branch` and the inlined lookup; the direct Verus
+proof establishes each precondition.
 The ordering guard takes the suffix at index 1 after obtaining a window
 of length 2. The binary-search callers, including range endpoints, keep
 their indices in bounds. The range initializes paired iterators from
@@ -1015,19 +1018,21 @@ proof. Allowing a child to point at the page being appended caused the
 Verus proof to fail. All three pool tests passed natively and in x86-64
 and i686 Miri.
 
-`FixedTree` reuses the Vec storage and slice-borrow contracts. Its source-bound
-Verus check adds parent uniqueness, connectivity, and the descent and address
-invariants, including that every descent of exactly the root height ends at a
-leaf. `get` reads the validated pools without bounds checks, so its Kani
-harnesses also run under a key whose comparisons return arbitrary results:
-every tree `try_new` accepts with arbitrary child IDs, up to height four at
-width one and height two at width two, returns `Ok` and only values from its
-own pool. For `u8` keys `get` equals a linear search and the previous checked
-lookup at heights one and two. Five source defects, among them accepting mixed
-child heights and routing past the last slot, each yield a Kani
-counterexample; removing the duplicate-parent test does too. The snapshot
-regressions, including one whose order turns pseudo-random after validation,
-passed natively and in x86-64 and i686 Miri. Details are in the [Linux
+`FixedTree` reuses the Vec storage and slice-borrow contracts. Its validation
+and lookup are verified directly on the product source with Verus
+(`verify_direct_verus.py`, target `fixed-bplus`): a type invariant established
+by `assemble` (children precede their parent one level lower, root last)
+bounds every unchecked pool, child, leaf, value and summary-slot access for
+every pool content, child ID and key order, and seven source defects each
+leave a solver error. The digest-bound Verus lemmas still cover parent
+uniqueness and connectivity. Kani runs the lookup under a key whose
+comparisons return arbitrary results at widths two and three, the routing and
+leaf searches at widths up to 64, and `u8` equivalence with a linear search
+and the previous checked lookup; five source defects each yield a
+counterexample. The width-one harness has a Kani counterexample that does not
+replay natively and is recorded as a known false counterexample; every
+width-one tree of its shapes runs natively and in x86-64 and i686 Miri
+instead. Details are in the [Linux
 bottleneck follow-up](verification/linux-bottlenecks.md#fixedtree-point-lookup-reads-the-validated-pools-unchecked).
 
 ```sh

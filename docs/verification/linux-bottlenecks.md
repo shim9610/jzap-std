@@ -242,95 +242,145 @@ of these are guaranteed by `try_new`: leaves have height zero, a branch has
 the checked successor of its children's common height, every child ID is
 below its parent's ID, and the root is the last record.
 
-`get` now reads the branch, child, leaf and value records through
-`as_ptr().add()`, with the branch read in the private `unsafe fn
-branch_unchecked`. A new
-`floor_slot` keeps the conditional binary search but starts at slot zero and
-returns a plain `usize`, so its result is below `N` for every order. The
-first-key fence runs at the root only: with a stable order every lower node's
-minimum equals its separator, so the removed fences could not reject a query
-that the root admitted. The routing `Option` came from that per-level fence,
-which is why the two earlier source forms that removed only the `Option`
-compiled to the same code. `range` keeps its checks. The public signature is
-unchanged and the method contains no public `unsafe`.
+`get` now reads the branch, child, leaf and value records with
+`get_unchecked`; the branch offset is the library's bounded
+`wrapping_sub(id, leaves.len())`. `floor_slot` keeps the conditional binary
+search but starts at slot zero and returns a plain `usize`, so its result is
+below `N` for every order. The first-key fence runs at the root only: with a
+stable order every lower node's minimum equals its separator, so the removed
+fences could not reject a query that the root admitted. The routing `Option`
+came from that per-level fence, which is why the two earlier source forms that
+removed only the `Option` compiled to the same code. `range` keeps its checks.
 
-In the release build of a width-eight `u64` lookup, a branch level is now 14
+The public `try_new` and `get` are thin wrappers. `try_new` allocates the
+validation summaries and hands their spare slots to `assemble`; `get` builds
+the key comparisons as closures and calls `find`. `assemble`, `summarize`,
+`summarize_branch`, `find`, `floor_slot`, `leaf_slot` and `leaf_rank` carry
+Verus specifications on the product source (next subsection). Leaves of at
+most eight keys use `leaf_slot`, the iteration count and conditional selection
+of `slice::binary_search_by` in Rust 1.95; wider leaves use `leaf_rank`, the
+`slice::partition_point` algorithm of the same release followed by an equality
+check. `summarize` writes one summary per record into the vector's spare
+capacity after a single length check, `summarize_branch` reads the written
+prefix and writes the next slot, and the summaries are never dropped because
+they hold only references and integers. The public signature is unchanged and
+the methods contain no public `unsafe`.
+
+In the release build of a width-eight `u64` lookup, a branch level is 14
 instructions with no stack access and no branch other than the loop, and the
 leaf search is branch-free; in the benchmark executable the three `fixed`
-lookup closures went from 106, 103 and 103 to 74, 68 and 68 instructions.
-Widths 16 and 32 keep the leaf's `leaf_index` match checks.
+lookup closures went from 106, 103 and 103 to 74, 68 and 68 instructions. The
+lookup closures of the current source have the same machine code, function by
+function after address normalization, as the `as_ptr().add()` form measured
+below; `leaf_slot` compiles to the same code as `binary_search_by`.
 
-A first form used `get_unchecked`. On width-one chains of height two or more,
-Kani 0.68 with CBMC 6.11 read a wrong value through a pointer that
-`get_unchecked` derived from a pool returned by `try_new`: the same record read
-correctly through checked indexing, `ptr::eq` placed the pointer at that
-record, and the same input passed natively and under Miri. The same tree built
-as a struct literal, or the same record read through `as_ptr().add()`, verified.
-A reduced crate without `try_new` did not reproduce it, so the cause inside the
-verifier was not isolated. The product uses `as_ptr().add()`, which performs the
-same loads: the width-eight lookup compiles to identical code, and widths 16
-and 32 keep their instruction counts (66 and 72) with a different block order.
-
-Paired A/B of the `get_unchecked` form against the previous branch build
-(`1c1a689`) in one run, on a
-cloud Intel Xeon at 2.30 GHz pinned with `taskset` to one CPU, without
-frequency control. Seeds 1, 2, 3 and 10, two rounds with alternating build
-order, batches 60000/20000/17000, every interval at least 1.54 s,
+Paired A/B of that lookup code against the previous branch build (`1c1a689`)
+in one run, on a cloud Intel Xeon at 2.30 GHz pinned with `taskset` to one CPU,
+without frequency control. Seeds 1, 2, 3 and 10, two rounds with alternating
+build order, batches 60000/20000/17000, every interval at least 1.53 s,
 call-weighted ns/lookup:
 
 | Width / height | `FixedTree`, previous | `FixedTree`, unchecked | Ratio | Seed ratios |
 | --- | ---: | ---: | ---: | --- |
-| 8 / 2 | 16.49 | 12.75 | 0.773 | 0.703–0.820 |
-| 32 / 2 | 24.11 | 20.76 | 0.861 | 0.741–0.936 |
-| 16 / 3 | 43.47 | 27.50 | 0.632 | 0.598–0.653 |
+| 8 / 2 | 14.95 | 12.48 | 0.835 | 0.721–0.905 |
+| 32 / 2 | 24.45 | 21.76 | 0.890 | 0.763–0.997 |
+| 16 / 3 | 39.66 | 24.69 | 0.622 | 0.607–0.648 |
 
-The other 15 lookup closures, including `brie-tree` and `packed`, have the
-same instructions in both executables at shifted addresses. They still moved:
-`brie-tree` 12.34 → 23.32, 30.32 → 40.30 and 42.44 → 55.52 ns, and `packed`
-32.40 → 26.34 ns at width eight. These cloud numbers therefore show the
+The other lookup closures, including `brie-tree` and `packed`, have the same
+instructions in both executables at shifted addresses and still moved
+(`brie-tree` 11.61 → 15.71 ns at width eight). These cloud numbers show the
 direction of the change only and are not comparable with the pinned-PC
-figures or with `brie-tree` across executables. Timings on the pinned Linux
-PC have not been run.
+figures. Timings on the pinned Linux PC have not been run.
 
-Verification of the unchecked reads:
+`try_new` was measured on its own: the pools are prepared outside the interval
+and the interval repeats `FixedTree::try_new` only. Against `e25b03b` (the
+summaries pushed into a vector), the current form executes, per Cachegrind:
 
-- Kani, actual product source (`fixed::proofs`, 11 harnesses, all verified;
-  `tools/consumer-audit/check_bplus_fixed_get.py`). A key type
-  whose every comparison returns an arbitrary result models every order,
-  including inconsistent ones. For widths one, two and three, `try_new` gets
-  arbitrary child IDs below the record count on concrete shapes of every
-  height the pools allow (width one up to height four, width two up to height
-  two); every accepted tree returns `Ok` from `get` and any value is one of the
-  pool's own values. Larger IDs are rejected by the prefix lookup, which
-  `fixed_tree_rejects_invalid_child_ids` covers for every machine word. A
-  cover property per shape confirms that the expected height is reached.
-  `floor_slot` stays below the width for widths 1–5, 7–9, 16, 17, 32, 33 and
-  64, and the leaf search stays in the value array for widths 7, 8, 9 and 16.
-  For `u8` keys with arbitrary keys, values and queries, `get` equals both a
-  linear search of all leaves and the previous checked implementation at
-  heights one and two, including leaves stored out of ID order. A single-leaf
-  instance of that comparison exhausted CBMC memory in this environment and is
-  not included; height zero only skips the descent.
-- Kani defect controls, each in a copied crate, all rejected: accepting
-  children of different heights (pointer-bounds, invalid-dereference and
-  `unchecked_sub` failures), descending one level past the root height
-  (`unchecked_sub` overflow and offset failures), routing one slot past the
-  floor (the slot bound), reading the value after the matching key (invalid
-  dereference) and a strict separator comparison (the equivalence assertion).
-  The three earlier fixed harnesses (two-leaf lookup, every machine-word child
-  ID, branch summaries) still pass.
-- Verus (`tools/consumer-audit/bplus_fixed.rs`, bound to the reviewed `get`,
-  `branch_unchecked`, `floor_slot`, `try_new` and `summarize_branch` bodies by
-  digest): pushing leaves and branches as `try_new` does preserves the height
-  invariant, every descent of exactly the root height through any child slots
-  ends at a leaf, every intermediate node is in the branch pool, and each
-  `floor_slot` step keeps its middle position below the width (24 verified,
-  0 errors). Letting a child sit at any lower height, or a floor step past
-  the width, leaves a solver error. These lemmas are a model bound to source
-  digests, not a direct product-source proof.
-- Miri: the fixed B+ tests include a width-two, height-three tree whose order
-  becomes pseudo-random after validation; every lookup returns `Ok` and only
-  values from the pool.
+| Width / height | Instructions | Loads | Stores | L1/LL misses |
+| --- | ---: | ---: | ---: | --- |
+| 8 / 2 | −4.4% | −4.7% | +4.0% | same |
+| 32 / 2 | −12.0% | −2.0% | −1.1% | same |
+| 16 / 3 | −17.4% | −3.7% | −3.4% | same |
+
+The width-eight stores are the register saves of the outlined
+`summarize_branch` call; inlining it removes them but adds loads and stores in
+the child loop at every width. Paired three-way timing on the same cloud CPU,
+six seeds by four rounds with rotating order, every interval at least
+1.147 s:
+
+| Width / height | `e25b03b` | Current | Ratio | Current faster |
+| --- | ---: | ---: | ---: | ---: |
+| 8 / 2 | 252.9 ns | 229.9 ns | 0.909 | 23/24 |
+| 32 / 2 | 8,116.0 ns | 7,621.4 ns | 0.939 | 20/24 |
+| 16 / 3 | 24,998.5 ns | 22,701.6 ns | 0.908 | 17/24 |
+
+Rejected `try_new` forms: checked slot access (instructions +9.3%, 3.0–7.0%
+slower), unchecked access with two stack reloads per child, and index-driven
+leaf and parent loops that recompute each record address (+8.6% instructions
+at width eight); slice iterators and taking the leaf's first and last keys in
+the loop restored the advantage.
+
+#### Verification of the unchecked reads
+
+- Verus, directly on the product source (`verify_direct_verus.py`, target
+  `fixed-bplus`, `--no-cheating`; whole crate 279 verified, 0 errors). The
+  type invariant of `FixedTree` states that the root is the last record and
+  every branch names only earlier records exactly one level lower. `assemble`
+  establishes it from the summaries; `find` uses it to prove that every branch
+  read has `leaves.len() <= id`, every record index stays inside its pool and
+  the descent ends at a leaf, for every pool content, child ID and key order.
+  `summarize` and `summarize_branch` write slot `written` only after
+  `written` slots and read only below it. Key comparisons reach the verified
+  code as closures whose results are not assumed. `core::hint::select_unpredictable`
+  is the one core function vstd does not specify; its documented equivalence
+  to `if c { a } else { b }` is an `assume_specification` in the separate
+  crate `tools/direct-verus/std-specs.rs`, checked against the installed core
+  source by `scripts/verus_std_specs.py` and imported by every product-crate
+  Verus run. Seven source defects (reading a child at the written prefix,
+  accepting mixed child heights, a branch height of +2, a leaf height of one,
+  a root past the last record, a route past the middle slot, a value past the
+  match) each leave a solver error.
+- The ten wrapping calls in `fixed.rs` are covered as `direct:fixed-bplus`;
+  the coverage check requires the enclosing function to carry a `verus_spec`.
+- Kani, actual product source (`fixed::proofs`, 11 harnesses,
+  `tools/consumer-audit/check_bplus_fixed_get.py`). A key whose every
+  comparison returns an arbitrary result models every order. Ten harnesses
+  verify: width two up to height two and width three up to height one with
+  arbitrary child IDs, `floor_slot` for widths 1–5, 7–9, 16, 17, 32, 33 and
+  64, the leaf searches for widths 7, 8, 9 and 16, `u8` equivalence with a
+  linear search and the previous checked lookup at heights one and two, and
+  the three earlier fixed harnesses. Five source defect controls are rejected.
+- Kani 0.68.0 with CBMC 6.11.0 reports a counterexample for the width-one
+  harness (single-key chains up to height four): two `get_unchecked`
+  precondition assumptions and the `wrapping_sub` assertion. Every concrete
+  playback of it diverges natively ("Not enough det vals found"): the real
+  execution needs more comparison results than the trace holds, so the trace
+  is not an execution of the program. Building the pools as literals, or
+  widening the key to two bytes, still fails; reading the same records through
+  `as_ptr().add()` verified. This is the class of the open
+  [model-checking/kani#5104](https://github.com/model-checking/kani/issues/5104)
+  (false counterexamples for pointer reads), whose stated trigger does not
+  match ours, so the cause inside the verifier is not identified. The check
+  requires exactly these failed checks and native divergence of every
+  playback, never counts the harness as verified, and stops for review if the
+  failure changes, a playback reproduces or the harness passes.
+- The width-one shapes are covered by the Verus proof and by
+  `fixed_bplus_width_one_chains_read_only_their_pools`: every width-one tree
+  of the harness shapes, every child ID below the record count and every
+  comparison outcome sequence (5,641 runs, 292 accepted trees) return `Ok`
+  and only values from the pool, natively with debug precondition checks and
+  in x86-64 and i686 Miri.
+- Miri: the fixed B+ tests, including a width-two, height-three tree whose
+  order becomes pseudo-random after validation and the width-one test, pass
+  in x86-64 and i686 Miri (8 tests each).
+- The debug consumer audit binds the new `get_unchecked`, `get_unchecked_mut`,
+  range `get_unchecked` and `split_at_mut_unchecked` precondition checks from
+  `try_new`, `summarize_branch` and the inlined lookup to their callers (22
+  resolved panic edges, 17 guard kinds).
+- `tools/consumer-audit/bplus_fixed.rs` keeps the unique-parent and range
+  lemmas bound to the `try_new`, `get`, `summarize` and `summarize_branch`
+  items by digest (15 verified); the lookup's descent and address facts are
+  now the direct proof above rather than lemmas over a model.
 
 ## Code placement
 
@@ -397,7 +447,17 @@ try_insert_split`. Paired A/B on CPU 6 against the merged build:
 | BTreeMap `build`, mixed | 35.90 µs | 36.95 µs | −2.4% after |
 
 The mixed BTreeMap build is 2.9% slower in absolute time and still 2.4%
-faster than std; its cause is examined below.
+faster than std. It does not execute more work. In Callgrind on the same
+mixed corpus (20 epochs, 722,744 insertions), the insertion code went from
+261.6 to 232.2 instructions per insertion, the split path runs for 11.9% of
+insertions (85,734 calls) and the std control executes identical instruction
+counts in both executables. A paired run of the two executables on a cloud
+Intel Xeon at 2.30 GHz (one CPU, three seeds, two rounds, every interval at
+least 1.13 s) measured the split build at 0.904 (mixed) and 0.863 (small) of
+the merged build, while the unchanged std control moved by +4.9% and −9.2%
+between the executables. The pinned-PC slowdown is within that placement
+range; it was not traced with counters on that PC, so its physical cause
+there is not established.
 
 ## Examined and left unchanged
 
@@ -464,6 +524,42 @@ including zero.
 Not run locally: Miri in all three configurations, fuzzing, coverage and the
 global certificate, which runs in pull-request CI. Targets other than x86-64
 Linux were compared in assembly only, not timed.
+
+### Follow-up verification (`06d8b7f`)
+
+The cold split, the inlined storage free and the `FixedTree` direct proof
+were checked as follows. Commits are those the results come from; the
+product changes after `584a08a` touch only `fixed.rs`, `bplus.rs` (one Verus
+attribute) and `lib.rs` (the verification-only import).
+
+| Check | Commit | Result |
+| --- | --- | --- |
+| Quick verify, areas `btree`, `btree-set`, `hash-map`, `hash-set`, `vec` | `1c1a689` plus the first lookup form | pass |
+| Miri x86-64, i686 and Tree Borrows, the same five areas | `2835f63`, `bad541a`, `584a08a` | 15 of 15 pass |
+| Fixed B+ Miri x86-64 and i686 (8 tests each) | `06d8b7f` | pass (certificate stage `bplus`) |
+| Fixed B+ Miri, Tree Borrows (8 tests) | `06d8b7f` | pass (`-Zmiri-strict-provenance -Zmiri-tree-borrows`) |
+| Direct Verus `fixed-bplus` with 7 source defects | `06d8b7f` | 279 verified, 0 errors; 7 of 7 detected |
+| Kani `fixed::proofs` with 5 source defects | `06d8b7f` | 10 verified, the width-one harness recorded as a false counterexample (5 playbacks diverge), 5 of 5 rejected |
+| Debug consumer audit | `06d8b7f` | 22 resolved panic edges, 17 guard kinds, caller mutations rejected |
+| Clippy, all features | `06d8b7f` | no warnings |
+| Global certificate, pull-request CI ([run 45127296343](https://github.com/shim9610/jzap-std/actions/runs/45127296343)) | merge of `06d8b7f` into `main` (`2a703f3`) | 17 stages and the composition pass; `complete`, no reused models, 0 open source obligations, 0 unproved link edges |
+| Certificate stages run locally one at a time | `06d8b7f` | the first 15 stages pass; stopped during `link` once the CI composition had passed |
+
+The CI composition checks the pull-request merge commit, not `06d8b7f` alone.
+Its source obligations do not include the B+ files: their unchecked reads are
+bound by the direct proof, Kani, Miri and the debug audit above, not by the
+obligation count ([shim9610/jzap-std#16](https://github.com/shim9610/jzap-std/issues/16)
+tracks how that count is reported).
+
+Pins updated: the `btree_map.rs` review seal and the split insertion bodies
+(`scripts/btree_bindings.py`, `scripts/btree_callers.py`), the HashMap
+`raw.rs` seal, the B+ source seals, the fixed item seals and the debug-audit
+caller paths. The unsafe inventory counts G16 at 131 (117 before; the 14 unsafe
+blocks of `fixed.rs`) against its expected 116 and G17 at 72 against 63; the
+expected values predate this work and were not changed.
+
+Not run: fuzzing, coverage, timings on the pinned Linux PC, and targets other
+than x86-64 Linux.
 
 ## Reproduction
 

@@ -25,7 +25,16 @@ current status. Each entry names the report that holds the measurements.
 - **Status: implemented for `get` only (approved 2026-11-22).** `get` reads
   the branch, child, leaf and value records without bounds checks, routes
   each branch with a branch-free `floor_slot` that returns no `Option`, and
-  checks the first-key fence at the root only. `range` keeps its checks. The
-  proofs, defect controls and paired measurements are in the [Linux
-  bottleneck follow-up](verification/linux-bottlenecks.md#fixedtree-point-lookup-reads-the-validated-pools-unchecked).
-  Timings on the pinned Linux PC are a separate step and have not been run.
+  checks the first-key fence at the root only. `range` keeps its checks.
+- **Direct proof (2026-11-23).** The bounded node-ID offset first registered
+  a contract that only restated its premise; it was replaced by a Verus proof
+  on the product source. `try_new` and `get` became thin wrappers around
+  verified `assemble` and `find`, `try_new` writes its summaries into the
+  vector's spare slots, and leaf search uses library functions with the
+  algorithms of `binary_search_by` and `partition_point`. Lookup machine code
+  is unchanged and `try_new` executes fewer instructions; one core function
+  (`select_unpredictable`) is specified in a separate trusted crate. Kani
+  reports a counterexample for the width-one harness that does not replay
+  natively; it is recorded as a known false counterexample, not as verified.
+  Proofs, controls and measurements are in the [Linux bottleneck
+  follow-up](verification/linux-bottlenecks.md#fixedtree-point-lookup-reads-the-validated-pools-unchecked).

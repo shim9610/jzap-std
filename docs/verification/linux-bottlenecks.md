@@ -555,8 +555,12 @@ Pins updated: the `btree_map.rs` review seal and the split insertion bodies
 (`scripts/btree_bindings.py`, `scripts/btree_callers.py`), the HashMap
 `raw.rs` seal, the B+ source seals, the fixed item seals and the debug-audit
 caller paths. The unsafe inventory counts G16 at 131 (117 before; the 14 unsafe
-blocks of `fixed.rs`) against its expected 116 and G17 at 72 against 63; the
-expected values predate this work and were not changed.
+blocks of `fixed.rs`) and G17 at 72; G17 and the `unsafe fn` count (117 at
+`d1a04e7`, 118 with `grow_for_push`) had been above their recorded values
+since before `d1a04e7`, the HashMap increase coming from the ARM64 control-group
+commits. The expected values now record 608 blocks (G16 131, G17 72), 118
+`unsafe fn`s, 2 macro `unsafe fn`s and 42 `unsafe impl`s, and
+`check_unsafe_inventory.py` passes.
 
 Not run: fuzzing, coverage, timings on the pinned Linux PC, and targets other
 than x86-64 Linux.

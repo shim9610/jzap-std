@@ -963,6 +963,18 @@ mod proofs {
         (bytes, full.len())
     }
 
+    /// Byte order, as the replacement of the word-wise comparisons in the
+    /// lookup harnesses. `short_comparison_is_byte_order` and
+    /// `prefix_comparison_is_byte_order` prove the product functions equal
+    /// to it, so harnesses with these stubs compose with those lemmas.
+    fn cmp_short_by_bytes(a: &[u8], b: &[u8]) -> Ordering {
+        a.cmp(b)
+    }
+
+    fn cmp_prefixes_by_bytes<const Q: usize>(a: &[u8; Q], b: &[u8; Q]) -> Ordering {
+        a.cmp(b)
+    }
+
     fn agrees(decided: Option<Ordering>, actual: Ordering) -> bool {
         decided.is_none_or(|order| order == actual)
     }
@@ -994,6 +1006,8 @@ mod proofs {
     /// up to 9 bytes, stored and attached. The remainder bytes of longer
     /// prefixes are covered by `prefix_comparison_is_byte_order`.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(11)]
     fn eight_byte_prefix_comparisons_hold_for_every_completion() {
         let (a, a_len) = bytes::<9>();
@@ -1017,6 +1031,8 @@ mod proofs {
     /// completions. Both completions are arbitrary, so this covers every
     /// completion of the stored parts.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(6)]
     fn prefix_key_comparisons_hold_for_every_completion() {
         let (a, a_len) = bytes::<MAX>();
@@ -1133,12 +1149,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_leaf_of_one_matches_complete_lookup() {
         leaf_matches_complete_lookup::<1>();
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_leaf_of_two_matches_complete_lookup() {
         leaf_matches_complete_lookup::<2>();
@@ -1243,24 +1263,32 @@ mod proofs {
     // The attachment choice is fixed per harness to keep each one within
     // memory; together they cover every choice.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_branch_routes_with_no_separator_attached() {
         branch_routes_as_complete_lookup([false, false]);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_branch_routes_with_the_first_separator_attached() {
         branch_routes_as_complete_lookup([true, false]);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_branch_routes_with_the_second_separator_attached() {
         branch_routes_as_complete_lookup([false, true]);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_branch_routes_with_both_separators_attached() {
         branch_routes_as_complete_lookup([true, true]);
@@ -1353,12 +1381,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_child_with_both_fences_in_advance() {
         child_fences_match_complete_lookup(0, true);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_child_with_minimum_in_advance() {
         child_fences_match_complete_lookup(1, true);
@@ -1450,12 +1482,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_child_call_without_both_fences() {
         child_call_without_fences(0);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn partial_child_call_without_minimum() {
         child_call_without_fences(1);
@@ -1508,12 +1544,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn listed_keys_of_a_one_key_leaf_leave_no_request() {
         listed_leaf_keys_leave_no_request::<1>();
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn listed_keys_of_a_two_key_leaf_leave_no_request() {
         listed_leaf_keys_leave_no_request::<2>();
@@ -1521,6 +1561,8 @@ mod proofs {
 
     /// After every listed separator is attached, the root pass requests no key.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn listed_separators_leave_no_request() {
         let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
@@ -1622,12 +1664,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn listed_child_key_with_both_fences_leaves_no_request() {
         listed_child_key_leaves_no_request(0);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn listed_child_key_with_the_minimum_leaves_no_request() {
         listed_child_key_leaves_no_request(1);
@@ -1707,12 +1753,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn visit_of_a_one_key_leaf_matches_complete_lookup() {
         visit_leaf_matches_complete_lookup::<1>();
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn visit_of_a_two_key_leaf_matches_complete_lookup() {
         visit_leaf_matches_complete_lookup::<2>();
@@ -1722,6 +1772,8 @@ mod proofs {
     /// `branch_routes_to_the_last_admitted_minimum` proves for the
     /// complete-key lookup.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn visit_of_a_branch_routes_as_complete_lookup() {
         let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
@@ -1818,12 +1870,16 @@ mod proofs {
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn visit_of_a_child_with_both_fences_on_request() {
         visit_child_matches_complete_lookup(0, false);
     }
 
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn visit_of_a_child_with_the_minimum_in_advance() {
         visit_child_matches_complete_lookup(1, true);
@@ -1833,6 +1889,8 @@ mod proofs {
     /// unchanged and a resolved key is a completion of them; a refusal
     /// refuses the visit.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
     fn visit_accepts_only_attachments_that_keep_the_stored_parts() {
         let (old, old_len) = bytes::<SMALL>();
@@ -1870,6 +1928,8 @@ mod proofs {
 
     /// Refused and requesting calls leave the lookup unchanged.
     #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(6)]
     fn requests_and_refusals_keep_the_lookup_state() {
         let fulls: [([u8; SMALL], usize); 2] = [bytes(), bytes()];

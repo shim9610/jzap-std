@@ -248,6 +248,29 @@ requests costs `r + 1` passes of `O(n)` comparisons. Attaching the keys that
 share a prefix with a neighbour before the first call, as varlit's parser
 already does, needs no request.
 
+### Listing the keys a pass could request
+
+`PartialLookup::unresolved_keys(&node)` lists, in index order, every
+unresolved key of a node that a pass over it could request:
+
+- both unresolved keys of each adjacent pair the stored parts cannot decide;
+- the first key, when its stored part cannot decide against the minimum
+  fence, and the last key against the ceiling;
+- each key whose stored part cannot decide against the query.
+
+Attaching all of them leaves no `NeedKey` for that node: one pass then
+answers, refuses or returns `NeedFence`. Whether a key is listed depends on
+that key, its neighbours' stored parts, the fences and the query, and not on
+whether other keys are attached, so a caller can collect the indexes, fetch
+those keys in one round and attach them in any order. The list is computed
+without fence keys, which can only list more keys than a pass with fence
+keys requests. The lookup still keeps no resolution state; a node supplied
+later is validated in full again.
+
+The list can contain keys the pass would not reach, for example keys
+undecided against the query outside the search path. It trades those extra
+fetches for one round per node.
+
 ## Errors and guarantees
 
 - No allocation and no panic paths, on the same terms as the link-audited
@@ -285,8 +308,9 @@ Miri and link checks below.
 | Kani, branch step | Two separators, each attachment choice in its own harness: the route, `Absent` or error matches the specification that `branch_routes_to_the_last_admitted_minimum` proves for the complete-key lookup, and the stored fences, origins, depth and path are the state the child step starts from | Pass (4 harnesses) |
 | Kani, child step | From that state, a one-key leaf with both fences or the minimum only: with fence keys passed in advance, the result equals the complete-key checks; one call without fence keys either gives that result or requests or refuses with the state unchanged | Pass (4 harnesses) |
 | Kani, protocol | Out-of-turn identifiers, fence keys passed without a fence, and requests leave the lookup unchanged | Pass |
-| Native exhaustive test | Leaves of 0 to 3 keys over bytes {0, 1, 2, 3}, lengths 0 to 2, 1 inline byte, every attachment choice and query: 1,593,795 cases equal `bplus::Lookup`. Four byte values realize every order of three keys and a query at each position | Pass |
-| Property test | 300 random trees (leaf width 2 to 6, branch width 2 to 5) of keys with shared prefixes up to 8 bytes and 4 inline bytes, 40 queries each, against `std::collections::BTreeMap`; 41,064 key and 8,042 fence requests; each node requests at most its incomplete keys | Pass |
+| Kani, listed keys | Leaves of 1 and 2 keys, the branch step and the child step with both fences or the minimum only, arbitrary attachments: after attaching every key `unresolved_keys` lists, the pass returns no `NeedKey` (with and without fence keys in the child step) | Pass (5 harnesses) |
+| Native exhaustive test | Leaves of 0 to 3 keys over bytes {0, 1, 2, 3}, lengths 0 to 2, 1 inline byte, every attachment choice and query: 1,593,795 cases equal `bplus::Lookup`, and in each case a single pass after attaching the listed keys gives the same answer. Four byte values realize every order of three keys and a query at each position | Pass |
+| Property test | 300 random trees (leaf width 2 to 6, branch width 2 to 5) of keys with shared prefixes up to 8 bytes and 4 inline bytes, 40 queries each, against `std::collections::BTreeMap`; half of the trees attach the listed keys of each node first. 19,337 key and 8,424 fence requests and 19,844 listed keys; each node requests at most its incomplete keys, and a node whose listed keys were attached requests none | Pass |
 | Damage tests | Off-path order damage (`[1, 5, 3, 7]`, plain and behind equal prefixes), duplicate keys, attachments contradicting length or prefix, a fence key the fence does not admit, a fence key for a missing fence, and a child minimum that differs from its separator after the prefix | Refused with `InvalidStructure` |
 | Miri | The integration tests on x86-64 and i686 with strict provenance, and with Tree Borrows | Pass |
 | Final link | `tools/consumer-audit/cases/bplus_partial.rs` in the release-checked and release-LTO-checked profiles: no retained panic or exit edge; the overflow, bounds and abort controls are detected | Pass |
@@ -311,6 +335,14 @@ Kani limits and how they were handled:
   `keys[requested]`. The harnesses select the requested key with a concrete
   loop instead. This counterexample is not counted as a product defect, and
   the native exhaustive test checks the same property.
+- Two listed-key harnesses that consumed the `unresolved_keys` iterator
+  failed. Kani's concrete playback of each counterexample, inserted into a
+  copy of the source and run natively, passes: the assertion holds for the
+  reported inputs. The harnesses now evaluate the iterator's filter
+  predicate (`needs_key`) for each index and pass; the iterator is
+  `(0..len).filter(needs_key)`. The failures are recorded as Kani false
+  counterexamples, not product defects, and the native exhaustive and
+  property tests use the iterator itself.
 
 ## Benchmarks
 

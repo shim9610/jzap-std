@@ -463,7 +463,7 @@ def main():
             assert re.search(r'test result: ok\. 7 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         for name in STAGES['bplus-partial'][1]:
             assert run(name)==0
-        assert 'Complete - 12 successfully verified harnesses, 0 failures, 12 total.' in evidence(out/'bplus-partial-kani.log').read_text()
+        assert 'Complete - 17 successfully verified harnesses, 0 failures, 17 total.' in evidence(out/'bplus-partial-kani.log').read_text()
         for name in ('bplus-partial-miri','bplus-partial-miri-32'):
             assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}

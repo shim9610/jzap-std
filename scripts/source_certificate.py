@@ -36,8 +36,7 @@ STAGES={
     'bplus': ('verus kani miri consumer-audit', ('bplus-debug','bplus-kani',
               'fixed-bplus-kani','bplus-range-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release',
               'bplus-strided-kani','bplus-strided-miri','bplus-strided-miri-32','bplus-strided-release')),
-    # Partial-key lookup: its harnesses need up to about 13 GB each, so they
-    # run in their own job.
+    # Partial-key lookup: its harnesses run in their own job.
     'bplus-partial': ('kani miri consumer-audit', ('bplus-partial-kani','bplus-partial-miri',
                       'bplus-partial-miri-32','bplus-partial-release')),
 }
@@ -253,7 +252,8 @@ def commands(out,profiles):
         'bplus-strided-release': (['python3','scripts/check_consumer_link.py',
                                   '--source','tools/consumer-audit/cases/bplus_strided.rs',
                                   '--require-success','--output',str(out/'bplus-strided-release')],{}),
-        'bplus-partial-kani': (['cargo','kani','--lib','--harness',BPLUS+'partial::proofs::',
+        # Kissat keeps the largest partial-key harness near 4 GB; CaDiCaL needed about 13 GB.
+        'bplus-partial-kani': (['cargo','kani','--lib','--harness',BPLUS+'partial::proofs::','--solver','kissat',
                                 '-Z','unstable-options','--cbmc-args','--object-bits','12'],{}),
         'bplus-partial-miri': ([*miri,'--target','x86_64-unknown-linux-gnu','--all-features',
                                '--test','bplus_partial'],miri_env),
@@ -463,7 +463,7 @@ def main():
             assert re.search(r'test result: ok\. 7 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         for name in STAGES['bplus-partial'][1]:
             assert run(name)==0
-        assert 'Complete - 9 successfully verified harnesses, 0 failures, 9 total.' in evidence(out/'bplus-partial-kani.log').read_text()
+        assert 'Complete - 12 successfully verified harnesses, 0 failures, 12 total.' in evidence(out/'bplus-partial-kani.log').read_text()
         for name in ('bplus-partial-miri','bplus-partial-miri-32'):
             assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}

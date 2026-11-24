@@ -197,7 +197,7 @@ fn btree_operations<P:AllocationPolicy>(seed:usize,policy:P)->Result<(),Error>{
     let keys=black_box([3u64,9,17]);let vals=black_box([7u64,19,35]);
     let node=NodeSlice::<_,_,usize>::new(&keys,&vals,None)?;let query=black_box(seed as u64);
     let mut lookup=Lookup::new(0,0,&query)?;
-    match lookup.provide(0,node)?{LookupStep::Found(k,v)=>{black_box((k,v));},LookupStep::Absent=>{},LookupStep::NeedNode(_)|LookupStep::NeedKey(_)|LookupStep::NeedFence=>return Err(Error::InvalidStructure)}
+    match lookup.provide(0,node)?{LookupStep::Found(k,v)=>{black_box((k,v));},LookupStep::Absent=>{},LookupStep::NeedNode(_)=>return Err(Error::InvalidStructure)}
     let mut traversal=Traversal::new(0,0)?;traversal.provide(0,node)?;
     loop{match traversal.advance()?{Visit::Item(k,v)=>{black_box((k,v));},Visit::Done=>break,Visit::NeedNode(_)=>return Err(Error::InvalidStructure)}}
     Ok(())

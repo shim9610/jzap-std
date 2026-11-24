@@ -7,7 +7,6 @@
 //! node again, so every answer comes from one pass whose comparisons were all
 //! decided.
 
-use super::super::LookupStep;
 use super::Contents;
 use crate::Error;
 use core::cmp::Ordering;
@@ -234,6 +233,23 @@ impl<'a, K, V, I> PartialNode<'a, K, V, I> {
     }
 }
 
+/// A step of a [`PartialLookup`].
+///
+/// Complete-key lookups use [`LookupStep`](super::super::LookupStep); this
+/// separate type adds the two requests without changing that type's layout.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PartialStep<'a, K, V, I> {
+    NeedNode(I),
+    /// Attach the full key at this index of the current node, then provide
+    /// the node again.
+    NeedKey(usize),
+    /// Provide the current node again with the full keys of the fences that
+    /// [`PartialLookup::fence_origins`] reports.
+    NeedFence,
+    Found(&'a K, &'a V),
+    Absent,
+}
+
 /// A fence and the node and separator index it was copied from.
 #[derive(Clone, Copy)]
 struct Fence<T, I> {
@@ -318,7 +334,7 @@ pub struct PartialLookup<'q, F: ?Sized, T, I> {
 
 /// A step of one pass, before the lookup state is updated.
 enum Pass<'a, K, V, I> {
-    Step(LookupStep<'a, K, V, I>),
+    Step(PartialStep<'a, K, V, I>),
     Descend(usize, I),
 }
 
@@ -362,7 +378,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         &mut self,
         id: I,
         node: &PartialNode<'a, K, V, I>,
-    ) -> Result<LookupStep<'a, K, V, I>, Error>
+    ) -> Result<PartialStep<'a, K, V, I>, Error>
     where
         K: PartialKey<Full = F, Fence = T>,
     {
@@ -378,13 +394,13 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         node: &PartialNode<'a, K, V, I>,
         minimum: Option<&F>,
         ceiling: Option<&F>,
-    ) -> Result<LookupStep<'a, K, V, I>, Error>
+    ) -> Result<PartialStep<'a, K, V, I>, Error>
     where
         K: PartialKey<Full = F, Fence = T>,
     {
         match self.pass(id, node, minimum, ceiling)? {
             Pass::Step(step) => {
-                if matches!(step, LookupStep::Found(..) | LookupStep::Absent) {
+                if matches!(step, PartialStep::Found(..) | PartialStep::Absent) {
                     self.pending = None;
                 }
                 Ok(step)
@@ -424,7 +440,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
             match order_fence(first, 0, &fence.key, minimum) {
                 Decision::Order(Ordering::Equal) => {}
                 Decision::Order(_) => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Pass::Step(LookupStep::NeedKey(index))),
+                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
                 Decision::Fence => fences.0 = true,
             }
         }
@@ -437,7 +453,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
             match order_keys(a, left, b, right) {
                 Decision::Order(Ordering::Less) => {}
                 Decision::Order(_) | Decision::Fence => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Pass::Step(LookupStep::NeedKey(index))),
+                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
             }
             left = right;
         }
@@ -445,7 +461,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
             match order_fence(last, left, &fence.key, ceiling) {
                 Decision::Order(Ordering::Less) => {}
                 Decision::Order(_) => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Pass::Step(LookupStep::NeedKey(index))),
+                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
                 Decision::Fence => fences.1 = true,
             }
         }
@@ -468,12 +484,12 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                     equal = Some(middle);
                     break;
                 }
-                Decision::Key(index) => return Ok(Pass::Step(LookupStep::NeedKey(index))),
+                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
                 Decision::Fence => return Err(Error::InvalidStructure),
             }
         }
         if fences.0 || fences.1 {
-            return Ok(Pass::Step(LookupStep::NeedFence));
+            return Ok(Pass::Step(PartialStep::NeedFence));
         }
         Ok(match node.contents {
             Contents::Leaf(values) => match equal {
@@ -482,9 +498,9 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                         .get(index)
                         .zip(values.get(index))
                         .ok_or(Error::InvalidStructure)?;
-                    Pass::Step(LookupStep::Found(key, value))
+                    Pass::Step(PartialStep::Found(key, value))
                 }
-                None => Pass::Step(LookupStep::Absent),
+                None => Pass::Step(PartialStep::Absent),
             },
             Contents::Branch(children) => {
                 // The last separator at or below the query.
@@ -492,7 +508,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                     Some(index) => index,
                     None => match low.checked_sub(1) {
                         Some(index) => index,
-                        None => return Ok(Pass::Step(LookupStep::Absent)),
+                        None => return Ok(Pass::Step(PartialStep::Absent)),
                     },
                 };
                 let child = *children.get(index).ok_or(Error::InvalidStructure)?;
@@ -507,7 +523,7 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         index: usize,
         minima: &[K],
         child: I,
-    ) -> Result<LookupStep<'a, K, V, I>, Error>
+    ) -> Result<PartialStep<'a, K, V, I>, Error>
     where
         K: PartialKey<Full = F, Fence = T>,
     {
@@ -539,12 +555,13 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
             });
         }
         self.pending = Some(child);
-        Ok(LookupStep::NeedNode(child))
+        Ok(PartialStep::NeedNode(child))
     }
 }
 
 #[cfg(kani)]
 mod proofs {
+    use super::super::super::LookupStep;
     use super::super::{Lookup, Node};
     use super::*;
 
@@ -621,146 +638,381 @@ mod proofs {
         assert!(PrefixKey::from_full(a).fence() == stored_a.fence());
     }
 
-    /// A leaf lookup, resolving each requested key with its completion,
-    /// returns what the complete-key lookup returns over the completions.
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn partial_leaf_matches_complete_lookup() {
-        let count = usize::from(kani::any::<u8>());
-        kani::assume(count <= 3);
-        let fulls: [([u8; SMALL], usize); 3] = [bytes(), bytes(), bytes()];
-        let full = |i: usize| &fulls[i].0[..fulls[i].1];
-        let completed = [full(0), full(1), full(2)];
-        let mut keys: [PrefixKey<'_, SMALL_P>; 3] =
-            [stored(full(0)), stored(full(1)), stored(full(2))];
-        for (i, key) in keys.iter_mut().enumerate() {
+    /// A leaf of `N` keys, resolving each requested key with its completion,
+    /// gives what the complete-key lookup gives over the completions. The key
+    /// count is fixed per harness so that every loop has a concrete bound.
+    fn leaf_matches_complete_lookup<const N: usize>() {
+        let fulls: [([u8; SMALL], usize); N] = core::array::from_fn(|_| bytes());
+        let completed: [&[u8]; N] = core::array::from_fn(|i| &fulls[i].0[..fulls[i].1]);
+        let mut keys: [PrefixKey<'_, SMALL_P>; N] = core::array::from_fn(|i| stored(completed[i]));
+        for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
-                key.attach(completed[i]).unwrap();
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
             }
         }
-        let values = [10u8, 11, 12];
+        let values: [u8; N] = core::array::from_fn(|i| i as u8);
         let (query, query_len) = bytes::<SMALL>();
         let query = &query[..query_len];
 
-        let mut lookup = PartialLookup::new(0usize, 0, query).unwrap();
-        let mut requests = 0;
-        let result = loop {
-            let node = PartialNode::leaf(&keys[..count], &values[..count]).unwrap();
+        let Ok(mut lookup) = PartialLookup::new(0usize, 0, query) else {
+            panic!("partial lookup not created")
+        };
+        let mut result = None;
+        // Each request resolves one more key, so N + 1 passes suffice.
+        for _ in 0..=N {
+            let Ok(node) = PartialNode::leaf(&keys, &values) else {
+                panic!("partial leaf refused")
+            };
             let requested = match lookup.provide(0, &node) {
-                Ok(LookupStep::Found(key, value)) => break Ok(Some((key.full().map(own), *value))),
-                Ok(LookupStep::Absent) => break Ok(None),
-                Ok(LookupStep::NeedKey(index)) => index,
+                Ok(PartialStep::Found(key, value)) => {
+                    result = Some(Ok(Some((key.full().map(own), *value))));
+                    break;
+                }
+                Ok(PartialStep::Absent) => {
+                    result = Some(Ok(None));
+                    break;
+                }
+                Ok(PartialStep::NeedKey(index)) => index,
                 Ok(_) => panic!("leaf returned another step"),
-                Err(error) => break Err(error),
+                Err(error) => {
+                    result = Some(Err(error));
+                    break;
+                }
             };
             // Only an unresolved key is requested, so each key at most once.
-            assert!(requested < count && keys[requested].full().is_none());
+            // The key is selected by a concrete loop: indexing the key array
+            // with the symbolic index produced a contradictory counterexample
+            // (see docs/bplus-partial-keys.md).
+            assert!(requested < N);
             assert!(lookup.requested_node() == Some(0));
-            requests += 1;
-            assert!(requests <= count);
-            keys[requested].attach(completed[requested]).unwrap();
-        };
+            for (i, key) in keys.iter_mut().enumerate() {
+                if i == requested {
+                    assert!(key.full().is_none());
+                    let Ok(()) = key.attach(completed[i]) else {
+                        panic!("requested attachment refused")
+                    };
+                }
+            }
+        }
 
-        let mut complete = Lookup::new(0usize, 0, query).unwrap();
-        let expected = Node::leaf(&completed[..count], &values[..count]).and_then(|node| {
+        let Ok(mut complete) = Lookup::new(0usize, 0, query) else {
+            panic!("complete lookup not created")
+        };
+        let expected = Node::leaf(&completed, &values).and_then(|node| {
             complete.provide(0, &node).map(|step| match step {
                 LookupStep::Found(key, value) => Some((Some(own(key)), *value)),
                 LookupStep::Absent => None,
                 _ => panic!("leaf returned another step"),
             })
         });
-        assert!(result == expected);
+        assert!(result == Some(expected));
     }
 
-    /// A root branch over two leaves, with arbitrary attachments and fences
-    /// passed on request or in advance, returns what the complete-key lookup
-    /// returns over the completions.
     #[kani::proof]
-    #[kani::unwind(9)]
-    fn partial_two_levels_match_complete_lookup() {
-        let fulls: [([u8; SMALL], usize); 6] =
-            [bytes(), bytes(), bytes(), bytes(), bytes(), bytes()];
-        let completed: [&[u8]; 6] = core::array::from_fn(|i| &fulls[i].0[..fulls[i].1]);
-        let mut keys: [PrefixKey<'_, SMALL_P>; 6] = core::array::from_fn(|i| stored(completed[i]));
-        for (key, full) in keys.iter_mut().zip(completed) {
-            if kani::any() {
-                key.attach(full).unwrap();
+    #[kani::unwind(5)]
+    fn partial_leaf_of_one_matches_complete_lookup() {
+        leaf_matches_complete_lookup::<1>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_leaf_of_two_matches_complete_lookup() {
+        leaf_matches_complete_lookup::<2>();
+    }
+
+    /// Attach the completion of the key at `requested`, selecting it with a
+    /// concrete loop rather than a symbolic index.
+    fn resolve<'a, const N: usize>(
+        keys: &mut [PrefixKey<'a, SMALL_P>; N],
+        completed: &[&'a [u8]; N],
+        requested: usize,
+    ) {
+        assert!(requested < N);
+        for (i, key) in keys.iter_mut().enumerate() {
+            if i == requested {
+                assert!(key.full().is_none());
+                let Ok(()) = key.attach(completed[i]) else {
+                    panic!("requested attachment refused")
+                };
             }
         }
-        let counts = [
-            usize::from(kani::any::<u8>()),
-            usize::from(kani::any::<u8>()),
-        ];
-        kani::assume(counts[0] <= 2 && counts[1] <= 2);
-        let ranges = [0..2, 2..2 + counts[0], 4..4 + counts[1]];
+    }
+
+    /// The root step over a branch of two separators, with arbitrary
+    /// attachments, routes as the complete-key lookup does and records the
+    /// separators it descends between as fences.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_branch_routes_as_complete_lookup() {
+        let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
+        let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
+        for (key, full) in keys.iter_mut().zip(completed) {
+            if kani::any() {
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
+            }
+        }
         let children = [1usize, 2];
-        let values = [0u8, 1, 2, 3, 4, 5];
         let (query, query_len) = bytes::<SMALL>();
         let query = &query[..query_len];
-        let fence_full = |origin: Option<(usize, usize)>| {
-            origin.map(|(node, index)| {
-                assert!(node == 0);
-                completed[index]
-            })
+        let Ok(mut lookup) = PartialLookup::new(0usize, 1, query) else {
+            panic!("partial lookup not created")
         };
-
-        let mut lookup = PartialLookup::new(0usize, 1, query).unwrap();
-        let mut fenced = kani::any::<bool>();
-        let mut steps = 0;
-        let result = loop {
-            steps += 1;
-            assert!(steps <= 10);
-            let id = lookup.requested_node().unwrap();
-            let range = ranges[id].clone();
-            let start = range.start;
-            let node = if id == 0 {
-                PartialNode::branch(&keys[range], &children).unwrap()
-            } else {
-                PartialNode::leaf(&keys[range.clone()], &values[range]).unwrap()
+        let mut result = None;
+        for _ in 0..3 {
+            let Ok(node) = PartialNode::<_, u8, _>::branch(&keys, &children) else {
+                panic!("branch refused")
             };
-            let (minimum, ceiling) = lookup.fence_origins();
-            let step = if fenced {
-                lookup.provide_fenced(id, &node, fence_full(minimum), fence_full(ceiling))
-            } else {
-                lookup.provide(id, &node)
-            };
-            let requested = match step {
-                Ok(LookupStep::Found(key, value)) => break Ok(Some((key.full().map(own), *value))),
-                Ok(LookupStep::Absent) => break Ok(None),
-                Ok(LookupStep::NeedNode(child)) => {
-                    assert!(id == 0 && lookup.requested_node() == Some(child));
-                    fenced = kani::any();
-                    continue;
+            let requested = match lookup.provide(0, &node) {
+                Ok(PartialStep::NeedNode(child)) => {
+                    result = Some(Ok(Some(child)));
+                    break;
                 }
-                Ok(LookupStep::NeedKey(index)) => start + index,
-                Ok(LookupStep::NeedFence) => {
-                    assert!(!fenced && id != 0 && (minimum.is_some() || ceiling.is_some()));
-                    fenced = true;
-                    continue;
+                Ok(PartialStep::Absent) => {
+                    result = Some(Ok(None));
+                    break;
                 }
-                Err(error) => break Err(error),
+                Ok(PartialStep::NeedKey(index)) => index,
+                Ok(_) => panic!("root returned another step"),
+                Err(error) => {
+                    result = Some(Err(error));
+                    break;
+                }
             };
-            assert!(keys[requested].full().is_none());
-            keys[requested].attach(completed[requested]).unwrap();
+            assert!(lookup.requested_node() == Some(0));
+            resolve(&mut keys, &completed, requested);
+        }
+        // The specification that `branch_routes_to_the_last_admitted_minimum`
+        // proves for the complete-key lookup: strictly increasing separators,
+        // and the last separator at or below the query.
+        let expected: Result<Option<usize>, Error> = if completed[0] >= completed[1] {
+            Err(Error::InvalidStructure)
+        } else if completed[1] <= query {
+            Ok(Some(2))
+        } else if completed[0] <= query {
+            Ok(Some(1))
+        } else {
+            Ok(None)
         };
-
-        let mut complete = Lookup::new(0usize, 1, query).unwrap();
-        let expected = Node::<_, u8, _>::branch(&completed[..2], &children).and_then(|root| {
-            match complete.provide(0, &root)? {
-                LookupStep::Absent => Ok(None),
-                LookupStep::NeedNode(child) => {
-                    let range = ranges[child].clone();
-                    let leaf = Node::leaf(&completed[range.clone()], &values[range])?;
-                    Ok(match complete.provide(child, &leaf)? {
-                        LookupStep::Found(key, value) => Some((Some(own(key)), *value)),
-                        LookupStep::Absent => None,
-                        _ => panic!("leaf returned another step"),
-                    })
-                }
-                _ => panic!("root returned another step"),
+        assert!(result == Some(expected));
+        // The state the child step starts from: the fences are the
+        // separators' fences and record where they were copied from.
+        let fence = |fence: Option<Fence<PrefixFence<SMALL_P>, usize>>| {
+            fence.map(|f| (f.key, f.node, f.index))
+        };
+        match expected {
+            Ok(Some(1)) => {
+                assert!(fence(lookup.minimum) == Some((keys[0].fence(), 0, 0)));
+                assert!(fence(lookup.ceiling) == Some((keys[1].fence(), 0, 1)));
             }
-        });
-        assert!(result == expected);
+            Ok(Some(_)) => {
+                assert!(fence(lookup.minimum) == Some((keys[1].fence(), 0, 1)));
+                assert!(lookup.ceiling.is_none());
+            }
+            _ => assert!(lookup.minimum.is_none() && lookup.ceiling.is_none()),
+        }
+        if let Ok(Some(_)) = expected {
+            assert!(lookup.depth == 1 && lookup.height == 0 && lookup.path[0] == Some(0));
+        }
+    }
+
+    /// The child step, from the state `partial_branch_routes_as_complete_lookup`
+    /// establishes after a descent: a one-key leaf whose fence comparisons are
+    /// resolved on request (`eager` false) or in advance gives what the complete-key lookup
+    /// checks for that child: the minimum, the ceiling, then the leaf search.
+    fn child_fences_match_complete_lookup(route: usize, eager: bool) {
+        let raw: [([u8; SMALL], usize); 3] = [bytes(), bytes(), bytes()];
+        let separators: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let leaf_full: [&[u8]; 1] = [&raw[2].0[..raw[2].1]];
+        let mut leaf: [PrefixKey<'_, SMALL_P>; 1] = [stored(leaf_full[0])];
+        if kani::any() {
+            let Ok(()) = leaf[0].attach(leaf_full[0]) else {
+                panic!("initial attachment refused")
+            };
+        }
+        let values = [7u8];
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        // Descended through separator `route` of root 0 into child 1.
+        let fence = |index: usize| Fence {
+            key: stored::<SMALL_P>(separators[index]).fence(),
+            node: 0usize,
+            index,
+        };
+        let mut path = [None; usize::BITS as usize];
+        path[0] = Some(0usize);
+        let mut lookup = PartialLookup {
+            query,
+            pending: Some(1usize),
+            height: 0,
+            depth: 1,
+            path,
+            minimum: Some(fence(route)),
+            ceiling: (route == 0).then(|| fence(1)),
+        };
+        let minimum = Some(separators[route]);
+        let ceiling = (route == 0).then_some(separators[1]);
+
+        let mut fenced = eager;
+        let mut result = None;
+        for _ in 0..3 {
+            let Ok(node) = PartialNode::leaf(&leaf, &values) else {
+                panic!("leaf refused")
+            };
+            let step = if fenced {
+                lookup.provide_fenced(1, &node, minimum, ceiling)
+            } else {
+                lookup.provide(1, &node)
+            };
+            match step {
+                Ok(PartialStep::Found(key, value)) => {
+                    result = Some(Ok(Some((key.full().map(own), *value))));
+                    break;
+                }
+                Ok(PartialStep::Absent) => {
+                    result = Some(Ok(None));
+                    break;
+                }
+                Ok(PartialStep::NeedKey(index)) => {
+                    assert!(lookup.requested_node() == Some(1));
+                    resolve(&mut leaf, &leaf_full, index);
+                }
+                Ok(PartialStep::NeedFence) => {
+                    assert!(!fenced && lookup.requested_node() == Some(1));
+                    fenced = true;
+                }
+                Ok(_) => panic!("leaf returned another step"),
+                Err(error) => {
+                    result = Some(Err(error));
+                    break;
+                }
+            }
+        }
+        // `bplus::Lookup::provide` on a leaf: the first key equals the
+        // minimum, the last key is below the ceiling, then an equal key.
+        let key = leaf_full[0];
+        let expected: Result<Option<(Option<([u8; MAX], usize)>, u8)>, Error> =
+            if Some(key) != minimum || ceiling.is_some_and(|ceiling| key >= ceiling) {
+                Err(Error::InvalidStructure)
+            } else if key == query {
+                Ok(Some((Some(own(key)), values[0])))
+            } else {
+                Ok(None)
+            };
+        assert!(result == Some(expected));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_child_with_both_fences_in_advance() {
+        child_fences_match_complete_lookup(0, true);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_child_with_minimum_in_advance() {
+        child_fences_match_complete_lookup(1, true);
+    }
+
+    /// One child call without fence keys, from the same state as
+    /// `child_fences_match_complete_lookup`: an answer equals the one with
+    /// the fences passed, and a request or refusal leaves the state as it
+    /// was. With the in-advance harnesses this covers fences on request.
+    fn child_call_without_fences(route: usize) {
+        let raw: [([u8; SMALL], usize); 3] = [bytes(), bytes(), bytes()];
+        let separators: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let leaf_full: &[u8] = &raw[2].0[..raw[2].1];
+        let mut key = stored::<SMALL_P>(leaf_full);
+        if kani::any() {
+            let Ok(()) = key.attach(leaf_full) else {
+                panic!("initial attachment refused")
+            };
+        }
+        let leaf = [key];
+        let values = [7u8];
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let fence = |index: usize| Fence {
+            key: stored::<SMALL_P>(separators[index]).fence(),
+            node: 0usize,
+            index,
+        };
+        let mut path = [None; usize::BITS as usize];
+        path[0] = Some(0usize);
+        let mut lookup = PartialLookup {
+            query,
+            pending: Some(1usize),
+            height: 0,
+            depth: 1,
+            path,
+            minimum: Some(fence(route)),
+            ceiling: (route == 0).then(|| fence(1)),
+        };
+        let before = (
+            lookup.pending,
+            lookup.depth,
+            lookup.height,
+            lookup.fence_origins(),
+        );
+        let Ok(node) = PartialNode::leaf(&leaf, &values) else {
+            panic!("leaf refused")
+        };
+        let without = lookup.provide(1, &node);
+        let unchanged = (
+            lookup.pending,
+            lookup.depth,
+            lookup.height,
+            lookup.fence_origins(),
+        ) == before;
+        let Ok(node) = PartialNode::leaf(&leaf, &values) else {
+            panic!("leaf refused")
+        };
+        let mut fenced = PartialLookup {
+            query,
+            pending: Some(1usize),
+            height: 0,
+            depth: 1,
+            path,
+            minimum: Some(fence(route)),
+            ceiling: (route == 0).then(|| fence(1)),
+        };
+        let with = fenced.provide_fenced(
+            1,
+            &node,
+            Some(separators[route]),
+            (route == 0).then_some(separators[1]),
+        );
+        match without {
+            Ok(PartialStep::NeedFence) | Ok(PartialStep::NeedKey(_)) | Err(_) => assert!(unchanged),
+            Ok(PartialStep::Found(a, b)) => {
+                assert!(
+                    matches!(with, Ok(PartialStep::Found(c, d)) if core::ptr::eq(a, c) && core::ptr::eq(b, d))
+                )
+            }
+            Ok(PartialStep::Absent) => assert!(matches!(with, Ok(PartialStep::Absent))),
+            Ok(PartialStep::NeedNode(_)) => panic!("leaf returned another step"),
+        }
+        // Without fences, an error is an error with them too: refusals do
+        // not depend on the fence keys being unavailable.
+        if without.is_err() {
+            assert!(with.is_err());
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_child_call_without_both_fences() {
+        child_call_without_fences(0);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_child_call_without_minimum() {
+        child_call_without_fences(1);
     }
 
     /// Refused and requesting calls leave the lookup unchanged.
@@ -780,12 +1032,12 @@ mod proofs {
         let id: usize = kani::any();
         let fence: Option<&[u8]> = if kani::any() { Some(query) } else { None };
         match lookup.provide_fenced(id, &node, fence, None) {
-            Ok(LookupStep::NeedNode(child)) => {
+            Ok(PartialStep::NeedNode(child)) => {
                 assert!(id == 0 && fence.is_none());
                 assert!(lookup.requested_node() == Some(child));
             }
-            Ok(LookupStep::Absent) => assert!(id == 0 && lookup.requested_node().is_none()),
-            Ok(LookupStep::NeedKey(_)) | Err(_) => {
+            Ok(PartialStep::Absent) => assert!(id == 0 && lookup.requested_node().is_none()),
+            Ok(PartialStep::NeedKey(_)) | Err(_) => {
                 assert!(lookup.requested_node() == Some(0));
                 assert!(lookup.fence_origins() == (None, None));
             }

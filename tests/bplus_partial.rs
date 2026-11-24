@@ -1,9 +1,8 @@
 //! Partial-key B+ point lookup against `std::collections::BTreeMap`.
 use jzap::{
     Error,
-    collections::btree_map::view::{
-        LookupStep,
-        bplus::{PartialKey, PartialLookup, PartialNode, PrefixKey},
+    collections::btree_map::view::bplus::{
+        PartialKey, PartialLookup, PartialNode, PartialStep, PrefixKey,
     },
 };
 use std::collections::BTreeMap as Model;
@@ -126,11 +125,11 @@ fn lookup(
                 lookup.provide(id, &view)?
             };
             match step {
-                LookupStep::NeedNode(child) => {
+                PartialStep::NeedNode(child) => {
                     assert_eq!(lookup.requested_node(), Some(child));
                     break;
                 }
-                LookupStep::NeedKey(index) => {
+                PartialStep::NeedKey(index) => {
                     assert!(keys[index].full().is_none(), "a resolved key was requested");
                     assert_eq!(lookup.requested_node(), Some(id));
                     keys[index].attach(&node.keys[index]).unwrap();
@@ -138,15 +137,15 @@ fn lookup(
                     requests += 1;
                     assert!(requests <= incomplete);
                 }
-                LookupStep::NeedFence => {
+                PartialStep::NeedFence => {
                     assert!(!fenced && (minimum.is_some() || ceiling.is_some()));
                     counts.fences += 1;
                     fenced = true;
                 }
-                LookupStep::Found(key, value) => {
+                PartialStep::Found(key, value) => {
                     return Ok(Some((key.full().unwrap().to_vec(), *value)));
                 }
-                LookupStep::Absent => return Ok(None),
+                PartialStep::Absent => return Ok(None),
             }
         }
     }
@@ -211,16 +210,16 @@ fn attached_keys_need_no_requests() {
     assert_eq!((counts.keys, counts.fences), (0, 0));
 }
 
-fn leaf_result(keys: &[&[u8]], query: &[u8]) -> Result<LookupStep<'static, (), (), usize>, Error> {
+fn leaf_result(keys: &[&[u8]], query: &[u8]) -> Result<PartialStep<'static, (), (), usize>, Error> {
     let values: Vec<u32> = (0..keys.len() as u32).collect();
     let mut stored: Vec<PrefixKey<'_, P>> = keys.iter().map(|key| stored(key)).collect();
     let mut lookup = PartialLookup::new(0usize, 0, query)?;
     loop {
         let node = PartialNode::leaf(&stored, &values)?;
         match lookup.provide(0, &node)? {
-            LookupStep::NeedKey(index) => stored[index].attach(keys[index])?,
-            LookupStep::Found(..) => return Ok(LookupStep::Found(&(), &())),
-            LookupStep::Absent => return Ok(LookupStep::Absent),
+            PartialStep::NeedKey(index) => stored[index].attach(keys[index])?,
+            PartialStep::Found(..) => return Ok(PartialStep::Found(&(), &())),
+            PartialStep::Absent => return Ok(PartialStep::Absent),
             _ => unreachable!(),
         }
     }
@@ -240,9 +239,9 @@ fn damage_off_the_search_path_is_refused() {
     let keys: [&[u8]; 4] = [b"abcd1", b"abcd3", b"abcd5", b"abcd7"];
     assert_eq!(
         leaf_result(&keys, b"abcd5"),
-        Ok(LookupStep::Found(&(), &()))
+        Ok(PartialStep::Found(&(), &()))
     );
-    assert_eq!(leaf_result(&keys, b"abcd4"), Ok(LookupStep::Absent));
+    assert_eq!(leaf_result(&keys, b"abcd4"), Ok(PartialStep::Absent));
 }
 
 #[test]
@@ -264,7 +263,7 @@ fn attachments_and_fences_must_match_the_stored_key() {
     let root = PartialNode::<_, u32, _>::branch(&separators, &children).unwrap();
     assert!(matches!(
         lookup.provide(0, &root),
-        Ok(LookupStep::NeedNode(1))
+        Ok(PartialStep::NeedNode(1))
     ));
     assert_eq!(lookup.fence_origins(), (Some((0, 0)), None));
 
@@ -278,7 +277,7 @@ fn attachments_and_fences_must_match_the_stored_key() {
     ));
     assert!(matches!(
         lookup.provide(1, &leaf),
-        Ok(LookupStep::NeedFence)
+        Ok(PartialStep::NeedFence)
     ));
     // A full key the fence does not admit, or one for a missing fence.
     let fence: &[u8] = b"abcdef";
@@ -301,7 +300,7 @@ fn attachments_and_fences_must_match_the_stored_key() {
     let leaf = PartialNode::leaf(&leaf_keys, &values).unwrap();
     assert!(matches!(
         lookup.provide_fenced(1, &leaf, Some(fence), None),
-        Ok(LookupStep::Absent)
+        Ok(PartialStep::Absent)
     ));
     assert_eq!(lookup.requested_node(), None);
 }
@@ -330,5 +329,108 @@ fn prefix_keys_order_by_bytes() {
                 assert_eq!(x.cmp_stored(&y), None);
             }
         }
+    }
+}
+
+/// Every byte string of at most two bytes over {0, 1, 2, 3}. Four values
+/// realize every order of three keys and a query at each byte position.
+fn small_strings() -> Vec<Vec<u8>> {
+    let mut all = vec![Vec::new()];
+    for a in 0..4u8 {
+        all.push(vec![a]);
+        for b in 0..4u8 {
+            all.push(vec![a, b]);
+        }
+    }
+    all
+}
+
+/// Mirrors the Kani leaf harness exhaustively over a small alphabet: one
+/// inline byte, keys of up to two bytes, every attachment choice and query.
+#[test]
+fn exhaustive_small_leaves_match_complete_lookup() {
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+    let strings = small_strings();
+    let counts = if cfg!(miri) { 1..=1 } else { 0..=3 };
+    let mut cases = 0usize;
+    for n in counts {
+        let mut index = vec![0usize; n];
+        loop {
+            let completed: Vec<&[u8]> = index.iter().map(|&i| strings[i].as_slice()).collect();
+            let values: Vec<u8> = (0..n as u8).collect();
+            for mask in 0..1u32 << n {
+                for query in &strings {
+                    let mut keys: Vec<PrefixKey<'_, 1>> = completed
+                        .iter()
+                        .map(|full| {
+                            PrefixKey::new([full.first().copied().unwrap_or(0)], full.len())
+                        })
+                        .collect();
+                    for (i, key) in keys.iter_mut().enumerate() {
+                        if mask >> i & 1 == 1 {
+                            key.attach(completed[i]).unwrap();
+                        }
+                    }
+                    let mut lookup = PartialLookup::new(0usize, 0, query.as_slice()).unwrap();
+                    let mut result = None;
+                    for _ in 0..=n {
+                        let node = PartialNode::leaf(&keys, &values).unwrap();
+                        let requested = match lookup.provide(0, &node) {
+                            Ok(PartialStep::Found(key, value)) => {
+                                result = Some(Ok(Some((key.full().unwrap().to_vec(), *value))));
+                                break;
+                            }
+                            Ok(PartialStep::Absent) => {
+                                result = Some(Ok(None));
+                                break;
+                            }
+                            Ok(PartialStep::NeedKey(i)) => i,
+                            Ok(step) => panic!("leaf returned {step:?}"),
+                            Err(error) => {
+                                result = Some(Err(error));
+                                break;
+                            }
+                        };
+                        assert!(keys[requested].full().is_none());
+                        keys[requested].attach(completed[requested]).unwrap();
+                    }
+                    let mut complete = Lookup::new(0usize, 0, query.as_slice()).unwrap();
+                    let expected = Node::leaf(&completed, &values).and_then(|node| {
+                        complete.provide(0, &node).map(|step| match step {
+                            LookupStep::Found(key, value) => Some((key.to_vec(), *value)),
+                            LookupStep::Absent => None,
+                            step => panic!("leaf returned {step:?}"),
+                        })
+                    });
+                    assert_eq!(
+                        result,
+                        Some(expected),
+                        "{completed:?} mask {mask} query {query:?}"
+                    );
+                    cases += 1;
+                }
+            }
+            // Next index tuple.
+            let mut position = 0;
+            while position < n {
+                index[position] += 1;
+                if index[position] < strings.len() {
+                    break;
+                }
+                index[position] = 0;
+                position += 1;
+            }
+            if position == n {
+                break;
+            }
+        }
+    }
+    eprintln!("exhaustive cases: {cases}");
+    if !cfg!(miri) {
+        // 21 strings: sum over n = 0..=3 of 21^n keys * 2^n masks * 21 queries.
+        assert_eq!(cases, 21 * (1 + 42 + 42 * 42 + 42 * 42 * 42));
     }
 }

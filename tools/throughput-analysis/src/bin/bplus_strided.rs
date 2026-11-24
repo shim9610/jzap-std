@@ -247,9 +247,6 @@ fn direct(fixture: &Fixture, query: &[u8]) -> Answer {
             LookupStep::NeedNode(child) => id = child,
             LookupStep::Found(_, value) => return Ok(value.last().copied()),
             LookupStep::Absent => return Ok(None),
-            LookupStep::NeedKey(_) | LookupStep::NeedFence => {
-                return Err(Error::InvalidStructure);
-            }
         }
     }
 }
@@ -290,9 +287,6 @@ fn decoded<const COPY_VALUES: bool>(fixture: &Fixture, query: &[u8]) -> Answer {
                     LookupStep::Found(_, value) => return Ok(value.last().copied()),
                     LookupStep::Absent => return Ok(None),
                     LookupStep::NeedNode(_) => return Err(Error::InvalidStructure),
-                    LookupStep::NeedKey(_) | LookupStep::NeedFence => {
-                        return Err(Error::InvalidStructure);
-                    }
                 }
             } else {
                 let refs = refs.get_mut(..count).ok_or(Error::InvalidStructure)?;
@@ -304,9 +298,6 @@ fn decoded<const COPY_VALUES: bool>(fixture: &Fixture, query: &[u8]) -> Answer {
                     LookupStep::Found(_, value) => return Ok(value.last().copied()),
                     LookupStep::Absent => return Ok(None),
                     LookupStep::NeedNode(_) => return Err(Error::InvalidStructure),
-                    LookupStep::NeedKey(_) | LookupStep::NeedFence => {
-                        return Err(Error::InvalidStructure);
-                    }
                 }
             }
         } else {
@@ -323,9 +314,6 @@ fn decoded<const COPY_VALUES: bool>(fixture: &Fixture, query: &[u8]) -> Answer {
             LookupStep::NeedNode(child) => id = child,
             LookupStep::Absent => return Ok(None),
             LookupStep::Found(_, _) => return Err(Error::InvalidStructure),
-            LookupStep::NeedKey(_) | LookupStep::NeedFence => {
-                return Err(Error::InvalidStructure);
-            }
         }
     }
 }
@@ -373,9 +361,6 @@ fn cached(prepared: &Prepared<'_>, query: &[u8]) -> Answer {
             LookupStep::NeedNode(child) => id = child,
             LookupStep::Found(_, value) => return Ok(value.last().copied()),
             LookupStep::Absent => return Ok(None),
-            LookupStep::NeedKey(_) | LookupStep::NeedFence => {
-                return Err(Error::InvalidStructure);
-            }
         }
     }
 }

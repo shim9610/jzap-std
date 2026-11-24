@@ -312,11 +312,83 @@ Kani limits and how they were handled:
   loop instead. This counterexample is not counted as a product defect, and
   the native exhaustive test checks the same property.
 
-## Benchmark plan
+## Benchmarks
 
-- The complete-key lookups (`bplus::Lookup`, strided and fixed views) before
-  and after the `LookupStep` change, with the existing paired intervals of at
-  least one second.
-- The partial lookup with every key complete or attached in advance,
-  against `bplus::Lookup` over the same keys.
-- Lookups that need requests, reported as passes and requests per lookup.
+`tools/throughput-analysis/src/bin/bplus_partial.rs` builds trees in
+varlit's disk index shape: 50 leaf and 78 branch entries, 34-byte keys
+stored with a 16-byte inline prefix. Two key families:
+
+- `distinct`: random keys, whose prefixes nearly always differ;
+- `shared`: a common 26-byte prefix, so every stored comparison is
+  undecided and needs the full keys.
+
+Each run uses 4,096 queries, half present and half absent, and checks every
+method against `std::collections::BTreeMap` before timing. Methods:
+
+- `complete`: `bplus::Lookup` over prebuilt `Node` views of the full keys;
+- `complete_validate`: the same, constructing (and so validating) each node
+  per step, as the partial lookup validates each node per pass;
+- `partial_attached`: `PartialLookup` over keys with their full bytes
+  attached in advance, fence keys passed in advance;
+- `partial_requests`: prefix-only keys copied into a stack buffer per node,
+  each requested key attached, fence keys passed on request;
+- `std`: `BTreeMap<Vec<u8>, u64>::get`.
+
+Linux x86-64 cloud VM, Intel Xeon at 2.30 GHz, one CPU via `taskset`, no
+frequency control; Rust 1.95.0 release build. Seeds 1, 2 and 3, method
+order alternating by seed, every interval at least 1.12 s. Call-weighted
+nanoseconds per lookup:
+
+| Keys | Entries | `complete` | `complete_validate` | `partial_attached` | `partial_requests` | `std` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| distinct | 2,048 | 142.5 | 331.7 | 333.7 | 677.4 | 93.4 |
+| distinct | 181,267 | 832.4 | 1,195.3 | 839.8 | 1,719.2 | 373.0 |
+| shared | 2,048 | 159.5 | 394.5 | 586.3 | 10,765.2 | 112.4 |
+| shared | 181,267 | 857.6 | 1,167.1 | 1,504.5 | 29,217.4 | 437.9 |
+
+Ratios to `complete_validate`, with the range of the per-seed ratios:
+
+| Keys | Entries | `partial_attached` | `partial_requests` |
+| --- | ---: | --- | --- |
+| distinct | 2,048 | 1.006 (0.953–1.074) | 2.042 (2.031–2.060) |
+| distinct | 181,267 | 0.703 (0.668–0.750) | 1.438 (1.386–1.482) |
+| shared | 2,048 | 1.486 (1.436–1.557) | 27.287 (26.034–28.127) |
+| shared | 181,267 | 1.289 (1.227–1.343) | 25.033 (23.178–25.835) |
+
+Requests per lookup in `partial_requests`, identical across seeds to the
+third decimal:
+
+| Keys | Entries | Height | Key requests | Fence requests |
+| --- | ---: | ---: | ---: | ---: |
+| distinct | 2,048 | 1 | 1.50–1.52 | 1.00 |
+| distinct | 181,267 | 2 | 2.50–2.52 | 2.00 |
+| shared | 2,048 | 1 | 90.95 | 1.00 |
+| shared | 181,267 | 2 | 174.52–174.56 | 2.00 |
+
+What the request counts show:
+
+- With distinct prefixes, each level requests the child's first key and its
+  fence, because equality of two incomplete keys with equal prefixes needs
+  the full bytes; a found key adds one request. That is one key request and
+  one fence request per level plus 0.5 for the half of the queries that are
+  present.
+- With a shared prefix, every key of every visited node is requested.
+  Each request returns from the pass and the next call validates the node
+  again, so a node of `n` keys that needs `r` requests costs `r + 1` passes
+  of `O(n)` comparisons. This is the stated cost of keeping no resolution
+  state between calls; attaching keys that share a prefix in advance avoids
+  it (`partial_attached`).
+
+The differences between `partial_attached` and `complete_validate` (faster
+with distinct prefixes at 181,267 entries, slower with the shared prefix)
+have not been analyzed at the instruction level, so no cause is claimed.
+
+Raw records stay under `target/verification/`. Reproduce:
+
+```sh
+cargo build --release --manifest-path tools/throughput-analysis/Cargo.toml \
+  --target-dir target/verification/partial-bench --bin bplus_partial
+for seed in 1 2 3; do
+  taskset -c 2 target/verification/partial-bench/release/bplus_partial "$seed"
+done
+```

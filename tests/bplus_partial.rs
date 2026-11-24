@@ -477,3 +477,55 @@ fn exhaustive_small_leaves_match_complete_lookup() {
         assert_eq!(cases, 21 * (1 + 42 + 42 * 42 + 42 * 42 * 42));
     }
 }
+
+/// Sixteen inline bytes take the word-wise comparison path. Random keys with
+/// shared prefixes of every length up to 24 bytes, with and without
+/// attachments, compare as their bytes do.
+#[test]
+fn sixteen_byte_prefix_keys_order_by_bytes() {
+    fn key16(full: &[u8]) -> PrefixKey<'_, 16> {
+        let mut prefix = [0; 16];
+        for (slot, byte) in prefix.iter_mut().zip(full) {
+            *slot = *byte;
+        }
+        PrefixKey::new(prefix, full.len())
+    }
+    let mut seed = 0x51f1_5eed;
+    let rounds = if cfg!(miri) { 200 } else { 200_000 };
+    for _ in 0..rounds {
+        let shared = (rng(&mut seed) % 25) as usize;
+        let mut make = || {
+            let mut key: Vec<u8> = (0..shared).map(|i| (i * 7) as u8).collect();
+            for _ in 0..rng(&mut seed) % 12 {
+                key.push((rng(&mut seed) % 4) as u8 * 85);
+            }
+            key
+        };
+        let (a, b) = (make(), make());
+        let actual = a.cmp(&b);
+        let (stored_a, stored_b) = (key16(&a), key16(&b));
+        let (attached_a, attached_b) = (
+            PrefixKey::<16>::from_full(&a),
+            PrefixKey::<16>::from_full(&b),
+        );
+        for decided in [
+            stored_a.cmp_stored(&stored_b),
+            stored_a.cmp_full(&b),
+            stored_a.cmp_fence(&stored_b.fence()),
+            PrefixKey::<16>::fence_cmp_full(&stored_a.fence(), &b),
+            attached_a.cmp_stored(&stored_b),
+            stored_a.cmp_stored(&attached_b),
+        ] {
+            assert!(decided.is_none_or(|order| order == actual), "{a:?} {b:?}");
+        }
+        assert_eq!(
+            attached_a.cmp_stored(&attached_b),
+            Some(actual),
+            "{a:?} {b:?}"
+        );
+        assert_eq!(attached_a.cmp_full(&b), Some(actual), "{a:?} {b:?}");
+        if a.len() <= 16 && b.len() <= 16 {
+            assert_eq!(stored_a.cmp_stored(&stored_b), Some(actual));
+        }
+    }
+}

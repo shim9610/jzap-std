@@ -72,11 +72,55 @@ fn inline<const P: usize>(prefix: &[u8; P], len: usize) -> &[u8] {
     prefix.get(..len.min(P)).unwrap_or(prefix.as_slice())
 }
 
+/// Byte-lexicographic order of two short byte strings, eight bytes at a time
+/// as big-endian words, so that inline prefixes compare without a `memcmp`
+/// call. Big-endian word order is the byte order of the same eight bytes.
+#[inline(always)]
+fn cmp_short(a: &[u8], b: &[u8]) -> Ordering {
+    let (mut a, mut b) = (a, b);
+    while let (Some((x, a_rest)), Some((y, b_rest))) =
+        (a.split_first_chunk::<8>(), b.split_first_chunk::<8>())
+    {
+        let order = u64::from_be_bytes(*x).cmp(&u64::from_be_bytes(*y));
+        if order.is_ne() {
+            return order;
+        }
+        (a, b) = (a_rest, b_rest);
+    }
+    for (x, y) in a.iter().zip(b) {
+        let order = x.cmp(y);
+        if order.is_ne() {
+            return order;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// Byte order of two whole inline prefixes, as big-endian words. `P` is a
+/// constant, so the comparison has no loop or length logic.
+#[inline(always)]
+fn cmp_prefixes<const P: usize>(a: &[u8; P], b: &[u8; P]) -> Ordering {
+    let (mut a, mut b) = (a.as_slice(), b.as_slice());
+    while let (Some((x, a_rest)), Some((y, b_rest))) =
+        (a.split_first_chunk::<8>(), b.split_first_chunk::<8>())
+    {
+        let order = u64::from_be_bytes(*x).cmp(&u64::from_be_bytes(*y));
+        if order.is_ne() {
+            return order;
+        }
+        (a, b) = (a_rest, b_rest);
+    }
+    a.cmp(b)
+}
+
 /// Order two keys from their inline bytes and full lengths.
 #[inline]
 fn cmp_parts<const P: usize>(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> Option<Ordering> {
     let shared = a.len().min(b.len());
-    let order = a.get(..shared).cmp(&b.get(..shared));
+    let order = cmp_short(
+        a.get(..shared).unwrap_or(&[]),
+        b.get(..shared).unwrap_or(&[]),
+    );
     if order.is_ne() {
         return Some(order);
     }
@@ -93,10 +137,13 @@ fn cmp_parts<const P: usize>(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> 
 #[inline]
 fn cmp_part_full<const P: usize>(a: &[u8], a_len: usize, full: &[u8]) -> Option<Ordering> {
     if a_len <= P {
-        return Some(a.cmp(full));
+        return Some(cmp_short(a, full));
     }
     let shared = a.len().min(full.len());
-    let order = a.get(..shared).cmp(&full.get(..shared));
+    let order = cmp_short(
+        a.get(..shared).unwrap_or(&[]),
+        full.get(..shared).unwrap_or(&[]),
+    );
     if order.is_ne() {
         return Some(order);
     }
@@ -163,7 +210,19 @@ impl<const P: usize> PartialKey for PrefixKey<'_, P> {
     type Full = [u8];
     type Fence = PrefixFence<P>;
 
+    // Inlined into the pass: as an out-of-line call per comparison, the
+    // word-wise prefix comparison doubled the pass's stores.
+    #[inline(always)]
     fn cmp_stored(&self, other: &Self) -> Option<Ordering> {
+        if self.len > P && other.len > P {
+            // Both keys are longer than `P`: whole prefixes, then attached tails.
+            let order = cmp_prefixes(&self.prefix, &other.prefix);
+            if order.is_ne() {
+                return Some(order);
+            }
+            let (a, b) = (self.full?, other.full?);
+            return Some(a.get(P..).cmp(&b.get(P..)));
+        }
         cmp_parts::<P>(self.inline(), self.len, other.inline(), other.len).or_else(|| {
             // Both keys are longer than `P` with equal prefixes. Attached
             // keys start with their prefixes, so their tails decide.
@@ -172,7 +231,20 @@ impl<const P: usize> PartialKey for PrefixKey<'_, P> {
         })
     }
 
+    #[inline(always)]
     fn cmp_full(&self, full: &[u8]) -> Option<Ordering> {
+        if let (true, Some(head)) = (self.len > P, full.first_chunk::<P>()) {
+            // Both are longer than `P` bytes or `full` has exactly `P`.
+            let order = cmp_prefixes(&self.prefix, head);
+            if order.is_ne() {
+                return Some(order);
+            }
+            return match self.full {
+                Some(attached) => Some(attached.get(P..).cmp(&full.get(P..))),
+                // `full` equals this key's prefix and is shorter.
+                None => (full.len() == P).then_some(Ordering::Greater),
+            };
+        }
         cmp_part_full::<P>(self.inline(), self.len, full).or_else(|| {
             // This key is longer than `P` and `full` shares its prefix.
             Some(self.full?.get(P..).cmp(&full.get(P..)))
@@ -666,6 +738,51 @@ mod proofs {
 
     fn agrees(decided: Option<Ordering>, actual: Ordering) -> bool {
         decided.is_none_or(|order| order == actual)
+    }
+
+    /// The word-wise comparison of short byte strings is byte order, for
+    /// every pair of strings of up to 17 bytes: two whole words and a
+    /// remainder byte, with unequal lengths.
+    #[kani::proof]
+    #[kani::unwind(19)]
+    fn short_comparison_is_byte_order() {
+        let (a, a_len) = bytes::<17>();
+        let (b, b_len) = bytes::<17>();
+        let (a, b) = (&a[..a_len], &b[..b_len]);
+        assert!(cmp_short(a, b) == a.cmp(b));
+    }
+
+    /// Whole inline prefixes of 17 bytes compare in byte order: two words
+    /// and a remainder byte.
+    #[kani::proof]
+    #[kani::unwind(19)]
+    fn prefix_comparison_is_byte_order() {
+        let a: [u8; 17] = kani::any();
+        let b: [u8; 17] = kani::any();
+        assert!(cmp_prefixes(&a, &b) == a.cmp(&b));
+    }
+
+    /// The comparison laws with a 9-byte prefix, where the whole-prefix
+    /// paths compare a word and a remainder byte: keys of up to 11 bytes,
+    /// stored and attached.
+    #[kani::proof]
+    #[kani::unwind(13)]
+    fn nine_byte_prefix_comparisons_hold_for_every_completion() {
+        let (a, a_len) = bytes::<11>();
+        let (b, b_len) = bytes::<11>();
+        let (a, b) = (&a[..a_len], &b[..b_len]);
+        let actual = a.cmp(b);
+        let (stored_a, stored_b) = (stored::<9>(a), stored::<9>(b));
+        let (attached_a, attached_b) = (PrefixKey::<9>::from_full(a), PrefixKey::<9>::from_full(b));
+        assert!(agrees(stored_a.cmp_stored(&stored_b), actual));
+        assert!(agrees(stored_a.cmp_full(b), actual));
+        assert!(agrees(attached_a.cmp_stored(&stored_b), actual));
+        assert!(agrees(stored_a.cmp_stored(&attached_b), actual));
+        assert!(attached_a.cmp_stored(&attached_b) == Some(actual));
+        assert!(attached_a.cmp_full(b) == Some(actual));
+        if a_len <= 9 {
+            assert!(stored_a.cmp_full(b) == Some(actual));
+        }
     }
 
     /// Every decided comparison of two stored keys holds for their

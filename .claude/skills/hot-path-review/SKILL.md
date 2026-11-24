@@ -21,6 +21,10 @@ executables that were measured (`AGENTS.md`).
 - Every timed interval lasts at least one second; use several seeds,
   alternate the build order by seed, and keep unchanged methods as controls.
 - Use the pinned toolchain: `RUSTUP_TOOLCHAIN=1.95.0`.
+- Pin the call counts. Benchmarks that size their batches from a pilot run
+  choose different counts per build; set the batch counts explicitly (for
+  `bplus_partial`, `BPLUS_PARTIAL_BATCHES_<family>_<size>`) so both builds
+  run the same calls in each seed. `paired_ab.py` refuses unequal counts.
 - Raw outputs go under `target/verification/`.
 
 ## The six recurring causes
@@ -32,7 +36,14 @@ executables that were measured (`AGENTS.md`).
 | 3 | A type's layout changes unrelated code | adding variants to `LookupStep` narrowed the tag store (`movq` to `movb`) and changed register allocation of every complete-key lookup (+5.3% / +7.3% instructions); a returned tuple made a Kani harness exceed 57 GB | `codegen_diff.py` on every benchmark executable that uses the type; prefer a separate type over growing a shared hot-path enum |
 | 4 | Placement, not instructions | stack alignment sharing a 64-byte line with a benchmark temporary (22%); a hot path spread over distant cache lines (uop-cache misses); identical-code controls moving ±30% between executables | identical `codegen_diff.py` output plus a timing difference; `compare.py --stack-offsets`; `prepare_stack_layout.py`; loop alignment in `docs/build-tuning.md` |
 | 5 | Branches against conditional selection | width-eight branch search took two data-dependent branches per level; conditional selection was faster on Intel but the result depends on the CPU | executed branch instructions in `hot_instructions.py`; time on each CPU class the claim covers |
-| 6 | Reading memory the decision does not need | comparing attached full keys first touched out-of-line key bytes that the inline prefix already decided (distinct prefixes up to 2.29x slower) | `hot_instructions.py` with `--cache-sim=yes`: D1/LL misses and data reads per operation |
+| 6 | Reading memory the decision does not need | comparing attached full keys first touched out-of-line key bytes that the inline prefix already decided: L1 data misses 86 to 211 per lookup, distinct prefixes up to 2.29x slower | `hot_instructions.py` with `--cache-sim=yes`: D1/LL misses and data reads per operation |
+
+A change that fixes one cause often introduces another. Replacing the
+prefix `memcmp` with word comparisons removed 193 calls per lookup, but the
+larger `PrefixKey::cmp_stored` was then called out of line about 100 times
+per lookup and doubled the stores (cause 1); `#[inline(always)]` on the
+comparison and a fixed-size path for whole prefixes recovered it. Re-check
+the whole table after every step.
 
 ## Workflow
 

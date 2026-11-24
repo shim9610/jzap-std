@@ -176,14 +176,16 @@ fn partial_attached(pages: &[Page<'_>], root: usize, height: usize, query: &[u8]
 }
 
 /// Copies each page's prefix-only keys into a stack buffer, as a caller
-/// decoding a page would, attaches each requested key and passes the fences
-/// on request.
-fn partial_requests(
+/// decoding a page would, and passes the fences on request. Without
+/// `LISTED`, it attaches each requested key; with `LISTED`, it first attaches
+/// every key `unresolved_keys` lists, in one round per node. `counts` records
+/// attached keys, fence requests and resolution rounds.
+fn partial_requests<const LISTED: bool>(
     pages: &[Page<'_>],
     root: usize,
     height: usize,
     query: &[u8],
-    counts: &Cell<(u64, u64)>,
+    counts: &Cell<(u64, u64, u64)>,
 ) -> Answer {
     let mut lookup = PartialLookup::new(root, height, query)?;
     let mut id = root;
@@ -194,6 +196,31 @@ fn partial_requests(
             .get_mut(..page.stored.len())
             .ok_or(Error::InvalidStructure)?;
         keys.copy_from_slice(&page.stored);
+        if LISTED {
+            let mut listed = [0usize; BRANCH];
+            let mut count = 0usize;
+            {
+                let node = if page.children.is_empty() {
+                    PartialNode::leaf(&*keys, &page.values)?
+                } else {
+                    PartialNode::branch(&*keys, &page.children)?
+                };
+                for index in lookup.unresolved_keys(&node) {
+                    *listed.get_mut(count).ok_or(Error::InvalidStructure)? = index;
+                    count += 1;
+                }
+            }
+            for &index in listed.get(..count).ok_or(Error::InvalidStructure)? {
+                let full = page.full.get(index).ok_or(Error::InvalidStructure)?;
+                keys.get_mut(index)
+                    .ok_or(Error::InvalidStructure)?
+                    .attach(full)?;
+            }
+            if count > 0 {
+                let (attached, fences, rounds) = counts.get();
+                counts.set((attached + count as u64, fences, rounds + 1));
+            }
+        }
         let mut fenced = false;
         let step = loop {
             let node = if page.children.is_empty() {
@@ -220,16 +247,19 @@ fn partial_requests(
             };
             match step {
                 PartialStep::NeedKey(index) => {
-                    let (key_requests, fence_requests) = counts.get();
-                    counts.set((key_requests + 1, fence_requests));
+                    if LISTED {
+                        return Err(Error::InvalidStructure);
+                    }
+                    let (attached, fences, rounds) = counts.get();
+                    counts.set((attached + 1, fences, rounds + 1));
                     let full = page.full.get(index).ok_or(Error::InvalidStructure)?;
                     keys.get_mut(index)
                         .ok_or(Error::InvalidStructure)?
                         .attach(full)?;
                 }
                 PartialStep::NeedFence => {
-                    let (key_requests, fence_requests) = counts.get();
-                    counts.set((key_requests, fence_requests + 1));
+                    let (attached, fences, rounds) = counts.get();
+                    counts.set((attached, fences + 1, rounds));
                     fenced = true;
                 }
                 PartialStep::Found(_, value) => break Some(Ok(Some(*value))),
@@ -295,7 +325,8 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
             }
         })
         .collect();
-    let counts = Cell::new((0u64, 0u64));
+    let counts = Cell::new((0u64, 0u64, 0u64));
+    let listed_counts = Cell::new((0u64, 0u64, 0u64));
     let methods: &[(&str, &dyn Fn(&[u8]) -> Answer)] = &[
         ("complete", &|q| {
             complete::<false>(&pages, &views, root, height, q)
@@ -307,7 +338,10 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
             partial_attached(&pages, root, height, q)
         }),
         ("partial_requests", &|q| {
-            partial_requests(&pages, root, height, q, &counts)
+            partial_requests::<false>(&pages, root, height, q, &counts)
+        }),
+        ("partial_listed", &|q| {
+            partial_requests::<true>(&pages, root, height, q, &listed_counts)
         }),
         ("std", &|q| Ok(std.get(q).copied())),
     ];
@@ -319,13 +353,19 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
             }
         }
     }
-    let (key_requests, fence_requests) = counts.get();
     let lookups = queries.len() as f64;
-    eprintln!(
-        "{seed},{family},{size},height={height},key_requests_per_lookup={:.3},fence_requests_per_lookup={:.3}",
-        key_requests as f64 / lookups,
-        fence_requests as f64 / lookups
-    );
+    for (name, counts) in [
+        ("partial_requests", &counts),
+        ("partial_listed", &listed_counts),
+    ] {
+        let (attached, fences, rounds) = counts.get();
+        eprintln!(
+            "{seed},{family},{size},height={height},{name},attached_keys_per_lookup={:.3},key_rounds_per_lookup={:.3},fence_requests_per_lookup={:.3}",
+            attached as f64 / lookups,
+            rounds as f64 / lookups,
+            fences as f64 / lookups
+        );
+    }
     let batches = match std::env::var(format!("BPLUS_PARTIAL_BATCHES_{family}_{size}")) {
         Ok(value) => value.parse().map_err(|_| Error::InvalidStructure)?,
         Err(_) => {
@@ -345,14 +385,27 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
             i
         };
         let (name, method) = methods[(offset + seed as usize) % methods.len()];
+        if selected(name).is_none() {
+            continue;
+        }
         let (elapsed, sum) = measure(method, &queries, batches)?;
-        if elapsed < 1.0 {
+        // Instruction counting under Valgrind only; never a timing record.
+        if elapsed < 1.0 && std::env::var_os("BPLUS_PARTIAL_INSTRUCTIONS").is_none() {
             eprintln!("short interval for {name}");
             return Err(Error::InvalidStructure);
         }
         println!("{seed},{family},{size},{name},{elapsed:.9},{operations},{sum}");
     }
     Ok(())
+}
+
+/// `BPLUS_PARTIAL_ONLY` (comma-separated names) limits the methods timed;
+/// every method is still checked against std.
+fn selected(name: &str) -> Option<()> {
+    match std::env::var("BPLUS_PARTIAL_ONLY") {
+        Ok(only) => only.split(',').any(|item| item == name).then_some(()),
+        Err(_) => Some(()),
+    }
 }
 
 fn main() -> Result<(), Error> {
@@ -362,9 +415,16 @@ fn main() -> Result<(), Error> {
         .ok_or(Error::InvalidStructure)?
         .get();
     println!("seed,family,size,implementation,seconds,operations,checksum");
-    for family in ["distinct", "shared"] {
-        for size in [2048, 181_267] {
-            run(seed, family, size)?;
+    let families =
+        std::env::var("BPLUS_PARTIAL_FAMILIES").unwrap_or_else(|_| "distinct,shared".into());
+    let sizes = std::env::var("BPLUS_PARTIAL_SIZES").unwrap_or_else(|_| "2048,181267".into());
+    for family in families.split(',') {
+        for size in sizes.split(',') {
+            run(
+                seed,
+                family,
+                size.parse().map_err(|_| Error::InvalidStructure)?,
+            )?;
         }
     }
     Ok(())

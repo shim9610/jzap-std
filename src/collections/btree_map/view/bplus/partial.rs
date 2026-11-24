@@ -368,6 +368,64 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         )
     }
 
+    /// Every unresolved key of `node` that a pass over it could request, in
+    /// index order.
+    ///
+    /// Attaching all of them leaves no `NeedKey` for this node: a pass can
+    /// then only answer, refuse or request the fences. Whether a key is
+    /// listed depends on that key, its neighbours' stored parts, the fences
+    /// and the query, and not on whether other keys are attached, so the
+    /// caller can collect the indexes, then attach them in any order. Like
+    /// the lookup, this keeps no state; a node supplied later is validated
+    /// in full again.
+    pub fn unresolved_keys<'n, K, V>(
+        &'n self,
+        node: &'n PartialNode<'_, K, V, I>,
+    ) -> impl Iterator<Item = usize> + 'n
+    where
+        K: PartialKey<Full = F, Fence = T>,
+    {
+        let keys = node.keys;
+        let last = keys.len().checked_sub(1);
+        (0..keys.len()).filter(move |&index| self.needs_key(keys, last, index))
+    }
+
+    /// Whether the pass could request the key at `index`. Lists both
+    /// unresolved keys of every adjacent pair the stored parts cannot
+    /// decide, and each key whose fence or query comparison would request it
+    /// when no fence key is passed, which requests at least as much as with
+    /// fence keys.
+    fn needs_key<K>(&self, keys: &[K], last: Option<usize>, index: usize) -> bool
+    where
+        K: PartialKey<Full = F, Fence = T>,
+    {
+        let Some(key) = keys.get(index) else {
+            return false;
+        };
+        if key.full().is_some() {
+            return false;
+        }
+        let left = index
+            .checked_sub(1)
+            .and_then(|left| keys.get(left))
+            .is_some_and(|left| left.cmp_stored(key).is_none());
+        let right = index
+            .checked_add(1)
+            .and_then(|right| keys.get(right))
+            .is_some_and(|right| key.cmp_stored(right).is_none());
+        let minimum = index == 0
+            && self
+                .minimum
+                .as_ref()
+                .is_some_and(|fence| key.cmp_fence(&fence.key).is_none());
+        let ceiling = Some(index) == last
+            && self
+                .ceiling
+                .as_ref()
+                .is_some_and(|fence| key.cmp_fence(&fence.key).is_none());
+        left || right || minimum || ceiling || key.cmp_full(self.query).is_none()
+    }
+
     /// Validate and search one node.
     ///
     /// Returns `NeedKey(index)` when the key at `index` must be attached and
@@ -1037,6 +1095,206 @@ mod proofs {
     #[kani::unwind(5)]
     fn partial_child_call_without_minimum() {
         child_call_without_fences(1);
+    }
+
+    /// Attach the completion of every key `unresolved_keys` lists, after
+    /// collecting the whole list first.
+    fn attach_listed<'a, const N: usize>(
+        listed: impl Iterator<Item = usize>,
+        keys: &mut [PrefixKey<'a, SMALL_P>; N],
+        completed: &[&'a [u8]; N],
+    ) {
+        let mut selected = [false; N];
+        for index in listed {
+            assert!(index < N);
+            for (i, slot) in selected.iter_mut().enumerate() {
+                if i == index {
+                    *slot = true;
+                }
+            }
+        }
+        for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
+            if selected {
+                assert!(key.full().is_none());
+                let Ok(()) = key.attach(full) else {
+                    panic!("listed attachment refused")
+                };
+            }
+        }
+    }
+
+    /// After every listed key of a leaf of `N` keys is attached, one pass
+    /// requests no key.
+    fn listed_leaf_keys_leave_no_request<const N: usize>() {
+        let raw: [([u8; SMALL], usize); N] = core::array::from_fn(|_| bytes());
+        let completed: [&[u8]; N] = core::array::from_fn(|i| &raw[i].0[..raw[i].1]);
+        let mut keys: [PrefixKey<'_, SMALL_P>; N] = core::array::from_fn(|i| stored(completed[i]));
+        for (key, full) in keys.iter_mut().zip(completed) {
+            if kani::any() {
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
+            }
+        }
+        let values: [u8; N] = core::array::from_fn(|i| i as u8);
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let Ok(mut lookup) = PartialLookup::new(0usize, 0, query) else {
+            panic!("partial lookup not created")
+        };
+        let Ok(node) = PartialNode::leaf(&keys, &values) else {
+            panic!("leaf refused")
+        };
+        let mut listed = [usize::MAX; N];
+        let mut count = 0;
+        for index in lookup.unresolved_keys(&node) {
+            assert!(count < N);
+            for (i, slot) in listed.iter_mut().enumerate() {
+                if i == count {
+                    *slot = index;
+                }
+            }
+            count += 1;
+        }
+        attach_listed(listed.into_iter().take(count), &mut keys, &completed);
+        let Ok(node) = PartialNode::leaf(&keys, &values) else {
+            panic!("leaf refused")
+        };
+        assert!(!matches!(
+            lookup.provide(0, &node),
+            Ok(PartialStep::NeedKey(_))
+        ));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn listed_keys_of_a_one_key_leaf_leave_no_request() {
+        listed_leaf_keys_leave_no_request::<1>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn listed_keys_of_a_two_key_leaf_leave_no_request() {
+        listed_leaf_keys_leave_no_request::<2>();
+    }
+
+    /// After every listed separator is attached, the root pass requests no key.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn listed_separators_leave_no_request() {
+        let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
+        let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
+        for (key, full) in keys.iter_mut().zip(completed) {
+            if kani::any() {
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
+            }
+        }
+        let children = [1usize, 2];
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let Ok(mut lookup) = PartialLookup::new(0usize, 1, query) else {
+            panic!("partial lookup not created")
+        };
+        let Ok(node) = PartialNode::<_, u8, _>::branch(&keys, &children) else {
+            panic!("branch refused")
+        };
+        let mut selected = [false; 2];
+        for index in lookup.unresolved_keys(&node) {
+            assert!(index < 2);
+            if index == 0 {
+                selected[0] = true;
+            } else {
+                selected[1] = true;
+            }
+        }
+        for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
+            if selected {
+                let Ok(()) = key.attach(full) else {
+                    panic!("listed attachment refused")
+                };
+            }
+        }
+        let Ok(node) = PartialNode::<_, u8, _>::branch(&keys, &children) else {
+            panic!("branch refused")
+        };
+        assert!(!matches!(
+            lookup.provide(0, &node),
+            Ok(PartialStep::NeedKey(_))
+        ));
+    }
+
+    /// From the state after a descent, attaching the listed key of a one-key
+    /// leaf leaves no key request, with or without the fence keys.
+    fn listed_child_key_leaves_no_request(route: usize) {
+        let raw: [([u8; SMALL], usize); 3] = [bytes(), bytes(), bytes()];
+        let separators: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let leaf_full: &[u8] = &raw[2].0[..raw[2].1];
+        let mut key = stored::<SMALL_P>(leaf_full);
+        if kani::any() {
+            let Ok(()) = key.attach(leaf_full) else {
+                panic!("initial attachment refused")
+            };
+        }
+        let values = [7u8];
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let fence = |index: usize| Fence {
+            key: stored::<SMALL_P>(separators[index]).fence(),
+            node: 0usize,
+            index,
+        };
+        let mut path = [None; usize::BITS as usize];
+        path[0] = Some(0usize);
+        let mut lookup = PartialLookup {
+            query,
+            pending: Some(1usize),
+            height: 0,
+            depth: 1,
+            path,
+            minimum: Some(fence(route)),
+            ceiling: (route == 0).then(|| fence(1)),
+        };
+        let leaf = [key];
+        let Ok(node) = PartialNode::leaf(&leaf, &values) else {
+            panic!("leaf refused")
+        };
+        let listed = lookup.unresolved_keys(&node).count();
+        assert!(listed <= 1);
+        let mut leaf = leaf;
+        if listed == 1 {
+            let Ok(()) = leaf[0].attach(leaf_full) else {
+                panic!("listed attachment refused")
+            };
+        }
+        let Ok(node) = PartialNode::leaf(&leaf, &values) else {
+            panic!("leaf refused")
+        };
+        let step = if kani::any() {
+            lookup.provide(1, &node)
+        } else {
+            lookup.provide_fenced(
+                1,
+                &node,
+                Some(separators[route]),
+                (route == 0).then_some(separators[1]),
+            )
+        };
+        assert!(!matches!(step, Ok(PartialStep::NeedKey(_))));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn listed_child_key_with_both_fences_leaves_no_request() {
+        listed_child_key_leaves_no_request(0);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn listed_child_key_with_the_minimum_leaves_no_request() {
+        listed_child_key_leaves_no_request(1);
     }
 
     /// Refused and requesting calls leave the lookup unchanged.

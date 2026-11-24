@@ -86,6 +86,7 @@ fn build(entries: &[(Vec<u8>, u32)], leaf: usize, branch: usize) -> Tree {
 struct Counts {
     keys: usize,
     fences: usize,
+    listed: usize,
 }
 
 /// Run one lookup, attaching each requested key and passing the fences'
@@ -96,6 +97,7 @@ fn lookup(
     query: &[u8],
     attach: &mut impl FnMut() -> bool,
     eager_fences: bool,
+    batched: bool,
     counts: &mut Counts,
 ) -> Result<Option<(Vec<u8>, u32)>, Error> {
     let mut lookup = PartialLookup::new(tree.root, tree.height, query)?;
@@ -108,6 +110,18 @@ fn lookup(
             }
         }
         let incomplete = keys.iter().filter(|key| key.full().is_none()).count();
+        if batched {
+            // Attach every listed key before the first pass over the node.
+            let view = match &node.children {
+                Some(children) => PartialNode::branch(&keys, children)?,
+                None => PartialNode::leaf(&keys, &node.values)?,
+            };
+            let listed: Vec<usize> = lookup.unresolved_keys(&view).collect();
+            for index in listed {
+                keys[index].attach(&node.keys[index]).unwrap();
+                counts.listed += 1;
+            }
+        }
         let mut fenced = eager_fences;
         let mut requests = 0;
         loop {
@@ -130,6 +144,7 @@ fn lookup(
                     break;
                 }
                 PartialStep::NeedKey(index) => {
+                    assert!(!batched, "a listed node requested key {index}");
                     assert!(keys[index].full().is_none(), "a resolved key was requested");
                     assert_eq!(lookup.requested_node(), Some(id));
                     keys[index].attach(&node.keys[index]).unwrap();
@@ -178,18 +193,22 @@ fn partial_lookup_matches_std_with_shared_prefixes() {
         let tree = build(&entries, leaf, branch);
         let rate = rng(&mut seed) % 3;
         let eager = rng(&mut seed) % 2 == 0;
+        let batched = rng(&mut seed) % 2 == 0;
         for _ in 0..if cfg!(miri) { 4 } else { 40 } {
             let query = key(&mut seed);
             let mut attach_seed = rng(&mut seed) | 1;
             let mut attach = || rng(&mut attach_seed) % 3 < rate;
-            let actual = lookup(&tree, &query, &mut attach, eager, &mut totals).unwrap();
+            let actual = lookup(&tree, &query, &mut attach, eager, batched, &mut totals).unwrap();
             let expected = model.get_key_value(&query).map(|(k, v)| (k.clone(), *v));
             assert_eq!(actual, expected, "query {query:?}");
         }
     }
     eprintln!("requests: {totals:?}");
     if !cfg!(miri) {
-        assert!(totals.keys > 0 && totals.fences > 0, "{totals:?}");
+        assert!(
+            totals.keys > 0 && totals.fences > 0 && totals.listed > 0,
+            "{totals:?}"
+        );
     }
 }
 
@@ -204,7 +223,7 @@ fn attached_keys_need_no_requests() {
     let tree = build(&entries, 4, 3);
     let mut counts = Counts::default();
     for (query, value) in &entries {
-        let found = lookup(&tree, query, &mut || true, true, &mut counts).unwrap();
+        let found = lookup(&tree, query, &mut || true, true, false, &mut counts).unwrap();
         assert_eq!(found, Some((query.clone(), *value)));
     }
     assert_eq!((counts.keys, counts.fences), (0, 0));
@@ -374,6 +393,25 @@ fn exhaustive_small_leaves_match_complete_lookup() {
                             key.attach(completed[i]).unwrap();
                         }
                     }
+                    // Attaching every listed key leaves a single pass that answers.
+                    let mut batch = PartialLookup::new(0usize, 0, query.as_slice()).unwrap();
+                    let listed: Vec<usize> = batch
+                        .unresolved_keys(&PartialNode::leaf(&keys, &values).unwrap())
+                        .collect();
+                    let mut batched = keys.clone();
+                    for &i in &listed {
+                        assert!(batched[i].full().is_none());
+                        batched[i].attach(completed[i]).unwrap();
+                    }
+                    let batched_result =
+                        match batch.provide(0, &PartialNode::leaf(&batched, &values).unwrap()) {
+                            Ok(PartialStep::Found(key, value)) => {
+                                Ok(Some((key.full().unwrap().to_vec(), *value)))
+                            }
+                            Ok(PartialStep::Absent) => Ok(None),
+                            Ok(step) => panic!("listed keys left {step:?}"),
+                            Err(error) => Err(error),
+                        };
                     let mut lookup = PartialLookup::new(0usize, 0, query.as_slice()).unwrap();
                     let mut result = None;
                     for _ in 0..=n {
@@ -409,6 +447,11 @@ fn exhaustive_small_leaves_match_complete_lookup() {
                         result,
                         Some(expected),
                         "{completed:?} mask {mask} query {query:?}"
+                    );
+                    assert_eq!(
+                        Some(batched_result),
+                        result,
+                        "batched {completed:?} mask {mask} query {query:?}"
                     );
                     cases += 1;
                 }

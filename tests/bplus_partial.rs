@@ -756,3 +756,76 @@ fn visit_refuses_changed_keys_and_early_finish() {
     assert!(matches!(visit.finish(), Ok(PartialStep::Found(_, 2))));
     assert_eq!(lookup.requested_node(), None);
 }
+
+/// Mirrors the branch visit harness exhaustively over a small alphabet: two
+/// separators of up to two bytes with one inline byte, every attachment
+/// choice and query, against the route the complete-key lookup takes.
+#[test]
+fn exhaustive_branch_visits_route_as_complete_lookup() {
+    use jzap::collections::btree_map::view::bplus::{PartialNodeMut, VisitStep};
+    let strings = small_strings();
+    let children = [1usize, 2];
+    let mut cases = 0usize;
+    for a in &strings {
+        for b in &strings {
+            for mask in 0..4u32 {
+                for query in &strings {
+                    let completed: [&[u8]; 2] = [a, b];
+                    let mut keys: Vec<PrefixKey<'_, 1>> = completed
+                        .iter()
+                        .map(|full| {
+                            PrefixKey::new([full.first().copied().unwrap_or(0)], full.len())
+                        })
+                        .collect();
+                    for (i, key) in keys.iter_mut().enumerate() {
+                        if mask >> i & 1 == 1 {
+                            key.attach(completed[i]).unwrap();
+                        }
+                    }
+                    let mut lookup = PartialLookup::new(0usize, 1, query.as_slice()).unwrap();
+                    let mut visit = lookup
+                        .visit(
+                            0,
+                            PartialNodeMut::<_, u8, _>::branch(&mut keys, &children).unwrap(),
+                        )
+                        .unwrap();
+                    let mut failed = None;
+                    for _ in 0..3 {
+                        match visit.run(None, None) {
+                            Ok(VisitStep::NeedKey(i)) => visit
+                                .attach_with(i, |key| key.attach(completed[i]))
+                                .unwrap(),
+                            Ok(VisitStep::Done) => break,
+                            Ok(VisitStep::NeedFence) => unreachable!(),
+                            Err(error) => {
+                                failed = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    let result = match failed {
+                        Some(error) => Err(error),
+                        None => match visit.finish() {
+                            Ok(PartialStep::NeedNode(child)) => Ok(Some(child)),
+                            Ok(PartialStep::Absent) => Ok(None),
+                            Ok(step) => panic!("root finished with {step:?}"),
+                            Err(error) => Err(error),
+                        },
+                    };
+                    let expected: Result<Option<usize>, Error> = if a >= b {
+                        Err(Error::InvalidStructure)
+                    } else if b <= query {
+                        Ok(Some(2))
+                    } else if a <= query {
+                        Ok(Some(1))
+                    } else {
+                        Ok(None)
+                    };
+                    assert_eq!(result, expected, "{a:?} {b:?} mask {mask} query {query:?}");
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 21 * 21 * 4 * 21);
+}

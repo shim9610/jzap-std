@@ -253,8 +253,10 @@ def commands(out,profiles):
                                   '--source','tools/consumer-audit/cases/bplus_strided.rs',
                                   '--require-success','--output',str(out/'bplus-strided-release')],{}),
         # Kissat keeps the largest partial-key harness near 4 GB; CaDiCaL needed about 13 GB.
+        # Lookup-level harnesses stub the word comparisons with byte order,
+        # which the two comparison lemmas prove the product functions equal to.
         'bplus-partial-kani': (['cargo','kani','--lib','--harness',BPLUS+'partial::proofs::','--solver','kissat',
-                                '-Z','unstable-options','--cbmc-args','--object-bits','12'],{}),
+                                '-Z','stubbing','-Z','unstable-options','--cbmc-args','--object-bits','12'],{}),
         'bplus-partial-miri': ([*miri,'--target','x86_64-unknown-linux-gnu','--all-features',
                                '--test','bplus_partial'],miri_env),
         'bplus-partial-miri-32': ([*miri,'--target','i686-unknown-linux-gnu','--all-features',

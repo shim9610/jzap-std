@@ -153,7 +153,7 @@ def plan(area,checks,out,test_targets=None):
             for index,pattern in enumerate(patterns[area]):
                 loop=pattern.startswith('loop:');pattern=pattern.removeprefix('loop:')
                 cmd=['cargo','kani','--lib']+(['-Z','loop-contracts'] if loop else [])+(['--harness',pattern] if pattern else [])
-                if 'partial::' in pattern:cmd+=['--solver','kissat']
+                if 'partial::' in pattern:cmd+=['--solver','kissat','-Z','stubbing']
                 if area in ('foundation','box') and not pattern.endswith('::'):cmd+=['--exact']
                 if area!='box' and ('btree_map' in pattern or 'hash_map' in pattern or 'hash_set' in pattern or 'binary_heap' in pattern or 'deque::' in pattern or 'scratch::' in pattern or 'slice::' in pattern):cmd+=['-Z','unstable-options','--cbmc-args','--object-bits','12' if 'partial::' in pattern or 'hash_map' in pattern or 'hash_set' in pattern or 'binary_heap' in pattern or 'deque::' in pattern or 'scratch::' in pattern or 'slice::' in pattern else '10']
                 add('kani-'+str(index),cmd,'actual-Rust-model-check',{'RUSTFLAGS':'--cfg jzap_loop_contracts'} if loop else None)

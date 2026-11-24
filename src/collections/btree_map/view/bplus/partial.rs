@@ -333,6 +333,151 @@ pub enum PartialStep<'a, K, V, I> {
     Absent,
 }
 
+/// A borrowed node of partial keys for [`PartialLookup::visit`], with
+/// exclusive access to the keys so that they can be attached during the
+/// visit. Construction checks the same local shape as [`PartialNode`].
+pub struct PartialNodeMut<'a, K, V, I = usize> {
+    keys: &'a mut [K],
+    contents: Contents<'a, V, I>,
+}
+
+impl<'a, K, V, I> PartialNodeMut<'a, K, V, I> {
+    /// Each key identifies a value. An empty leaf can serve as the root.
+    pub fn leaf(keys: &'a mut [K], values: &'a [V]) -> Result<Self, Error> {
+        if keys.len() != values.len() {
+            return Err(Error::InvalidStructure);
+        }
+        Ok(Self {
+            keys,
+            contents: Contents::Leaf(values),
+        })
+    }
+
+    /// Each separator is the minimum key of its corresponding child.
+    pub fn branch(minima: &'a mut [K], children: &'a [I]) -> Result<Self, Error> {
+        if minima.is_empty() || minima.len() != children.len() {
+            return Err(Error::InvalidStructure);
+        }
+        Ok(Self {
+            keys: minima,
+            contents: Contents::Branch(children),
+        })
+    }
+}
+
+/// What a [`PartialVisit`] needs next.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VisitStep {
+    /// Attach the key at this index with [`PartialVisit::attach_with`].
+    NeedKey(usize),
+    /// Run again with the full keys of the fences that
+    /// [`PartialLookup::fence_origins`] reports.
+    NeedFence,
+    /// The node is answered; call [`PartialVisit::finish`].
+    Done,
+}
+
+/// One node of a [`PartialLookup`], visited with exclusive access to its keys.
+///
+/// Keys are attached only through [`attach_with`](Self::attach_with), which
+/// accepts a change only if it leaves the key's stored parts as they were.
+/// Every comparison already decided therefore stays decided, and each
+/// [`run`](Self::run) continues where the previous one stopped: a node of
+/// `n` keys that needs `r` keys costs one pass of `O(n)` comparisons and `r`
+/// resumptions, instead of `r + 1` passes. The lookup changes only in
+/// [`finish`](Self::finish); dropping a visit leaves the node requested.
+pub struct PartialVisit<'l, 'q, 'a, F: ?Sized, T, I, K, V> {
+    lookup: &'l mut PartialLookup<'q, F, T, I>,
+    id: I,
+    keys: &'a mut [K],
+    contents: Contents<'a, V, I>,
+    progress: Progress,
+    outcome: Option<Outcome<I>>,
+    /// Set when an attachment changed a key's stored parts or failed.
+    refused: bool,
+}
+
+impl<'l, 'q, 'a, F, T, I, K, V> PartialVisit<'l, 'q, 'a, F, T, I, K, V>
+where
+    F: ?Sized + Ord,
+    T: Copy + Eq,
+    I: Copy + Eq,
+    K: PartialKey<Full = F, Fence = T>,
+{
+    /// Continue the pass over the node, with the full keys of the fences
+    /// when they are needed (or in advance).
+    pub fn run(&mut self, minimum: Option<&F>, ceiling: Option<&F>) -> Result<VisitStep, Error> {
+        if self.refused {
+            return Err(Error::InvalidStructure);
+        }
+        if self.outcome.is_some() {
+            return Ok(VisitStep::Done);
+        }
+        let outcome = self.lookup.pass(
+            self.keys,
+            &self.contents,
+            minimum,
+            ceiling,
+            &mut self.progress,
+        )?;
+        Ok(match outcome {
+            Outcome::NeedKey(index) => VisitStep::NeedKey(index),
+            Outcome::NeedFence => VisitStep::NeedFence,
+            done => {
+                self.outcome = Some(done);
+                VisitStep::Done
+            }
+        })
+    }
+
+    /// Every unresolved key the rest of the pass could request, as
+    /// [`PartialLookup::unresolved_keys`] lists them for the whole node.
+    pub fn unresolved_keys(&self) -> impl Iterator<Item = usize> + '_ {
+        let keys: &[K] = self.keys;
+        let last = keys.len().checked_sub(1);
+        (0..keys.len()).filter(move |&index| self.lookup.needs_key(keys, last, index))
+    }
+
+    /// Attach the key at `index` with `attach`, for example
+    /// `|key| key.attach(full)`. The key must be unresolved. The change is
+    /// refused, and the visit with it, if `attach` fails, if it changes the
+    /// key's stored parts (its fence), or if the resolved key is not a
+    /// completion of them.
+    pub fn attach_with(
+        &mut self,
+        index: usize,
+        attach: impl FnOnce(&mut K) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if self.refused {
+            return Err(Error::InvalidStructure);
+        }
+        let key = self.keys.get_mut(index).ok_or(Error::Bounds)?;
+        if key.full().is_some() {
+            return Err(Error::InvalidStructure);
+        }
+        let stored = key.fence();
+        let result = attach(key);
+        let consistent =
+            key.fence() == stored && key.full().is_none_or(|full| K::fence_admits(&stored, full));
+        if result.is_err() || !consistent {
+            self.refused = true;
+            return result.and(Err(Error::InvalidStructure));
+        }
+        Ok(())
+    }
+
+    /// Apply the answer to the lookup: `Found` and `Absent` end it, and
+    /// `NeedNode` requests the child.
+    pub fn finish(self) -> Result<PartialStep<'a, K, V, I>, Error> {
+        if self.refused {
+            return Err(Error::InvalidStructure);
+        }
+        let outcome = self.outcome.ok_or(Error::InvalidStructure)?;
+        let keys: &'a [K] = self.keys;
+        self.lookup.apply(self.id, keys, &self.contents, outcome)
+    }
+}
+
 /// A fence and the node and separator index it was copied from.
 #[derive(Clone, Copy)]
 struct Fence<T, I> {
@@ -415,10 +560,36 @@ pub struct PartialLookup<'q, F: ?Sized, T, I> {
     ceiling: Option<Fence<T, I>>,
 }
 
-/// A step of one pass, before the lookup state is updated.
-enum Pass<'a, K, V, I> {
-    Step(PartialStep<'a, K, V, I>),
+/// The outcome of one pass, before the lookup state is updated.
+enum Outcome<I> {
+    NeedKey(usize),
+    NeedFence,
+    Found(usize),
+    Absent,
     Descend(usize, I),
+}
+
+/// How far a pass over one node got. Every completed check stays valid as
+/// long as no key's stored parts and no resolved key change, which
+/// `PartialVisit` enforces; `provide` starts from scratch on every call.
+#[derive(Clone, Copy, Default)]
+struct Progress {
+    minimum: Check,
+    /// Adjacent pairs `(i, i + 1)` with `i` below this are ordered.
+    pairs: usize,
+    ceiling: Check,
+    /// Search bounds once the search has started, and an equal key.
+    search: Option<(usize, usize)>,
+    equal: Option<usize>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Check {
+    #[default]
+    Unchecked,
+    Passed,
+    /// Decided only with the fence's full key.
+    Fence,
 }
 
 impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
@@ -471,6 +642,29 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         let keys = node.keys;
         let last = keys.len().checked_sub(1);
         (0..keys.len()).filter(move |&index| self.needs_key(keys, last, index))
+    }
+
+    /// Visit the requested node with exclusive access to its keys; see
+    /// [`PartialVisit`]. A wrong identifier or node kind is refused and
+    /// leaves the lookup unchanged.
+    pub fn visit<'l, 'a, K, V>(
+        &'l mut self,
+        id: I,
+        node: PartialNodeMut<'a, K, V, I>,
+    ) -> Result<PartialVisit<'l, 'q, 'a, F, T, I, K, V>, Error>
+    where
+        K: PartialKey<Full = F, Fence = T>,
+    {
+        self.check(id, &node.contents)?;
+        Ok(PartialVisit {
+            lookup: self,
+            id,
+            keys: node.keys,
+            contents: node.contents,
+            progress: Progress::default(),
+            outcome: None,
+            refused: false,
+        })
     }
 
     /// Whether the pass could request the key at `index`. Lists both
@@ -539,32 +733,70 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
     where
         K: PartialKey<Full = F, Fence = T>,
     {
-        match self.pass(id, node, minimum, ceiling)? {
-            Pass::Step(step) => {
-                if matches!(step, PartialStep::Found(..) | PartialStep::Absent) {
-                    self.pending = None;
-                }
-                Ok(step)
-            }
-            Pass::Descend(index, child) => self.descend(id, index, node.keys, child),
-        }
+        self.check(id, &node.contents)?;
+        let mut progress = Progress::default();
+        let outcome = self.pass(node.keys, &node.contents, minimum, ceiling, &mut progress)?;
+        self.apply(id, node.keys, &node.contents, outcome)
     }
 
-    fn pass<'a, K, V>(
-        &self,
+    /// The node must be the requested one, of the kind its height needs.
+    fn check<V>(&self, id: I, contents: &Contents<'_, V, I>) -> Result<(), Error> {
+        if self.pending != Some(id) || (self.height == 0) != matches!(contents, Contents::Leaf(_)) {
+            return Err(Error::InvalidStructure);
+        }
+        Ok(())
+    }
+
+    /// Turn an outcome into a step, updating the lookup for an answer or a
+    /// descent. Requests leave it unchanged.
+    fn apply<'a, K, V>(
+        &mut self,
         id: I,
-        node: &PartialNode<'a, K, V, I>,
-        minimum: Option<&F>,
-        ceiling: Option<&F>,
-    ) -> Result<Pass<'a, K, V, I>, Error>
+        keys: &'a [K],
+        contents: &Contents<'a, V, I>,
+        outcome: Outcome<I>,
+    ) -> Result<PartialStep<'a, K, V, I>, Error>
     where
         K: PartialKey<Full = F, Fence = T>,
     {
-        if self.pending != Some(id)
-            || (self.height == 0) != matches!(node.contents, Contents::Leaf(_))
-        {
-            return Err(Error::InvalidStructure);
-        }
+        Ok(match outcome {
+            Outcome::NeedKey(index) => PartialStep::NeedKey(index),
+            Outcome::NeedFence => PartialStep::NeedFence,
+            Outcome::Found(index) => {
+                let Contents::Leaf(values) = contents else {
+                    return Err(Error::InvalidStructure);
+                };
+                let values: &'a [V] = values;
+                let (key, value) = keys
+                    .get(index)
+                    .zip(values.get(index))
+                    .ok_or(Error::InvalidStructure)?;
+                self.pending = None;
+                PartialStep::Found(key, value)
+            }
+            Outcome::Absent => {
+                self.pending = None;
+                PartialStep::Absent
+            }
+            Outcome::Descend(index, child) => return self.descend(id, index, keys, child),
+        })
+    }
+
+    /// One pass over a node, continuing from `progress`. Returns at the
+    /// first key it needs, or with the answer once every comparison is
+    /// decided; fence comparisons that need the fence's full key are
+    /// reported after everything else.
+    fn pass<K, V>(
+        &self,
+        keys: &[K],
+        contents: &Contents<'_, V, I>,
+        minimum: Option<&F>,
+        ceiling: Option<&F>,
+        progress: &mut Progress,
+    ) -> Result<Outcome<I>, Error>
+    where
+        K: PartialKey<Full = F, Fence = T>,
+    {
         for (fence, full) in [(&self.minimum, minimum), (&self.ceiling, ceiling)] {
             match (fence, full) {
                 (Some(fence), Some(full)) if !K::fence_admits(&fence.key, full) => {
@@ -574,19 +806,19 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                 _ => {}
             }
         }
-        let keys = node.keys;
-        let mut fences = (false, false);
-        if let Some(fence) = &self.minimum {
+        if let Some(fence) = &self.minimum
+            && progress.minimum != Check::Passed
+        {
             let first = keys.first().ok_or(Error::InvalidStructure)?;
-            match order_fence(first, 0, &fence.key, minimum) {
-                Decision::Order(Ordering::Equal) => {}
+            progress.minimum = match order_fence(first, 0, &fence.key, minimum) {
+                Decision::Order(Ordering::Equal) => Check::Passed,
                 Decision::Order(_) => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
-                Decision::Fence => fences.0 = true,
-            }
+                Decision::Key(index) => return Ok(Outcome::NeedKey(index)),
+                Decision::Fence => Check::Fence,
+            };
         }
-        let mut left = 0usize;
-        for pair in keys.windows(2) {
+        let mut left = progress.pairs;
+        for pair in keys.get(left..).unwrap_or(&[]).windows(2) {
             let (Some(a), Some(b)) = (pair.first(), pair.last()) else {
                 return Err(Error::InvalidStructure);
             };
@@ -594,25 +826,29 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
             match order_keys(a, left, b, right) {
                 Decision::Order(Ordering::Less) => {}
                 Decision::Order(_) | Decision::Fence => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
+                Decision::Key(index) => {
+                    progress.pairs = left;
+                    return Ok(Outcome::NeedKey(index));
+                }
             }
             left = right;
         }
-        if let (Some(fence), Some(last)) = (&self.ceiling, keys.last()) {
-            match order_fence(last, left, &fence.key, ceiling) {
-                Decision::Order(Ordering::Less) => {}
+        progress.pairs = left;
+        if let (Some(fence), Some(last)) = (&self.ceiling, keys.last())
+            && progress.ceiling != Check::Passed
+        {
+            progress.ceiling = match order_fence(last, left, &fence.key, ceiling) {
+                Decision::Order(Ordering::Less) => Check::Passed,
                 Decision::Order(_) => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
-                Decision::Fence => fences.1 = true,
-            }
+                Decision::Key(index) => return Ok(Outcome::NeedKey(index)),
+                Decision::Fence => Check::Fence,
+            };
         }
 
         // Binary search over the validated keys: `low` keys order below the
         // query, and keys at `high` and above order above it.
-        let mut low = 0usize;
-        let mut high = keys.len();
-        let mut equal = None;
-        while low < high {
+        let (mut low, mut high) = progress.search.unwrap_or((0, keys.len()));
+        while progress.equal.is_none() && low < high {
             let span = high.checked_sub(low).ok_or(Error::InvalidStructure)?;
             let middle = low.checked_add(span / 2).ok_or(Error::InvalidStructure)?;
             let key = keys.get(middle).ok_or(Error::InvalidStructure)?;
@@ -621,39 +857,30 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                     low = middle.checked_add(1).ok_or(Error::InvalidStructure)?;
                 }
                 Decision::Order(Ordering::Greater) => high = middle,
-                Decision::Order(Ordering::Equal) => {
-                    equal = Some(middle);
-                    break;
+                Decision::Order(Ordering::Equal) => progress.equal = Some(middle),
+                Decision::Key(index) => {
+                    progress.search = Some((low, high));
+                    return Ok(Outcome::NeedKey(index));
                 }
-                Decision::Key(index) => return Ok(Pass::Step(PartialStep::NeedKey(index))),
                 Decision::Fence => return Err(Error::InvalidStructure),
             }
         }
-        if fences.0 || fences.1 {
-            return Ok(Pass::Step(PartialStep::NeedFence));
+        progress.search = Some((low, high));
+        if progress.minimum == Check::Fence || progress.ceiling == Check::Fence {
+            return Ok(Outcome::NeedFence);
         }
-        Ok(match node.contents {
-            Contents::Leaf(values) => match equal {
-                Some(index) => {
-                    let (key, value) = keys
-                        .get(index)
-                        .zip(values.get(index))
-                        .ok_or(Error::InvalidStructure)?;
-                    Pass::Step(PartialStep::Found(key, value))
-                }
-                None => Pass::Step(PartialStep::Absent),
-            },
+        Ok(match contents {
+            Contents::Leaf(_) => progress.equal.map_or(Outcome::Absent, Outcome::Found),
             Contents::Branch(children) => {
                 // The last separator at or below the query.
-                let index = match equal {
+                let index = match progress.equal {
                     Some(index) => index,
                     None => match low.checked_sub(1) {
                         Some(index) => index,
-                        None => return Ok(Pass::Step(PartialStep::Absent)),
+                        None => return Ok(Outcome::Absent),
                     },
                 };
-                let child = *children.get(index).ok_or(Error::InvalidStructure)?;
-                Pass::Descend(index, child)
+                Outcome::Descend(index, *children.get(index).ok_or(Error::InvalidStructure)?)
             }
         })
     }
@@ -762,25 +989,26 @@ mod proofs {
         assert!(cmp_prefixes(&a, &b) == a.cmp(&b));
     }
 
-    /// The comparison laws with a 9-byte prefix, where the whole-prefix
-    /// paths compare a word and a remainder byte: keys of up to 11 bytes,
-    /// stored and attached.
+    /// The comparison laws with an 8-byte prefix, where the whole-prefix
+    /// paths compare one word and attached keys compare their tails: keys of
+    /// up to 9 bytes, stored and attached. The remainder bytes of longer
+    /// prefixes are covered by `prefix_comparison_is_byte_order`.
     #[kani::proof]
-    #[kani::unwind(13)]
-    fn nine_byte_prefix_comparisons_hold_for_every_completion() {
-        let (a, a_len) = bytes::<11>();
-        let (b, b_len) = bytes::<11>();
+    #[kani::unwind(11)]
+    fn eight_byte_prefix_comparisons_hold_for_every_completion() {
+        let (a, a_len) = bytes::<9>();
+        let (b, b_len) = bytes::<9>();
         let (a, b) = (&a[..a_len], &b[..b_len]);
         let actual = a.cmp(b);
-        let (stored_a, stored_b) = (stored::<9>(a), stored::<9>(b));
-        let (attached_a, attached_b) = (PrefixKey::<9>::from_full(a), PrefixKey::<9>::from_full(b));
+        let (stored_a, stored_b) = (stored::<8>(a), stored::<8>(b));
+        let (attached_a, attached_b) = (PrefixKey::<8>::from_full(a), PrefixKey::<8>::from_full(b));
         assert!(agrees(stored_a.cmp_stored(&stored_b), actual));
         assert!(agrees(stored_a.cmp_full(b), actual));
         assert!(agrees(attached_a.cmp_stored(&stored_b), actual));
         assert!(agrees(stored_a.cmp_stored(&attached_b), actual));
         assert!(attached_a.cmp_stored(&attached_b) == Some(actual));
         assert!(attached_a.cmp_full(b) == Some(actual));
-        if a_len <= 9 {
+        if a_len <= 8 {
             assert!(stored_a.cmp_full(b) == Some(actual));
         }
     }

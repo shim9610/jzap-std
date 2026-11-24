@@ -5,7 +5,9 @@ from pathlib import Path
 
 LOOKUP = "src/collections/btree_map/view/bplus.rs"
 SOURCES = {
-    LOOKUP: "769200079621ed5b9538934e109397936dd9db21c987147a2a7580d3c585cc39",
+    LOOKUP: "c94749a1924b0f8c4a7ff69d9e57b6430b492ce7425f1fec36171153a7343f29",
+    "src/collections/btree_map/view/bplus/partial.rs":
+        "47189186b23495e910be4a74172f17c5e3ff5b3e35a99f91ee8bca481afd10a7",
     "src/collections/btree_map/view/bplus/fixed.rs":
         "813c11a4f561ceddfaa839cadcdb55bf90b756e69fe9913d2b65b6ce6ad29250",
     "src/collections/btree_map/view/bplus/fixed/range.rs":

@@ -1,7 +1,7 @@
 # B+ point lookup with partial keys
 
-Status: design, not implemented. Tracks part 2 of
-[issue #10](https://github.com/shim9610/jzap-std/issues/10).
+Status: implemented for typed node slices; verification below. Tracks
+part 2 of [issue #10](https://github.com/shim9610/jzap-std/issues/10).
 
 ## Goal
 
@@ -18,7 +18,7 @@ fixed views) keeps its behaviour.
 
 Every answer is exact. A partial lookup returns one of:
 
-- a request (`NeedKey` or `NeedFence`), or
+- a request (`PartialStep::NeedKey` or `PartialStep::NeedFence`), or
 - exactly the result, `Ok` step or `Err`, that the complete-key
   `bplus::Lookup` returns for the same tree with every key replaced by its
   completion.
@@ -118,25 +118,40 @@ borrow typed slices. Construction checks only the local shape, which needs
 no comparisons: equal key and payload counts, and a non-empty branch. Key
 order is checked by the lookup, because it may need resolution.
 
-`LookupStep` gains two variants:
+Partial lookups return their own step type:
 
 ```rust
-pub enum LookupStep<'a, K: ?Sized, V: ?Sized, I> {
+pub enum PartialStep<'a, K, V, I> {
     NeedNode(I),
-    /// Attach the full key at `index` of the current node, then provide it again.
+    /// Attach the full key at this index of the current node, then provide it again.
     NeedKey(usize),
-    /// Pass the full keys of the requested fences with the current node.
-    NeedFence { minimum: bool, ceiling: bool },
+    /// Provide the current node again with the full keys of the fences
+    /// that `fence_origins` reports.
+    NeedFence,
     Found(&'a K, &'a V),
     Absent,
 }
 ```
 
-Complete-key lookups never return the new variants. Matches on `LookupStep`
-must add arms for them. Both payloads are no larger than the `Found`
-references, so the step's size is expected not to grow. The size and the
-generated code of the complete-key lookups are checked before and after the
-change.
+`LookupStep`, which the complete-key lookups return, is unchanged. Adding
+the two variants to it was measured first and changed the complete-key
+lookup code. On the `bplus` benchmark executable (Rust 1.95.0, seed 1,
+36,864,000 lookups per method, Callgrind, same checksums):
+
+| `LookupStep` change | `jzap` | `jzap_validate` | `jzap_u32` |
+| --- | ---: | ---: | ---: |
+| `main` (instructions per lookup) | 483.62 | 860.90 | 497.45 |
+| `NeedKey(usize)`, `NeedFence { minimum: bool, ceiling: bool }` before `Found` (ratio to `main`) | 1.0534 | 1.0733 | 0.9862 |
+| `NeedKey(usize)`, unit `NeedFence` after `Absent` (ratio to `main`) | 1.0000 | 1.0000 | 1.0369 |
+
+The `bool` payloads sit next to the tag, so the tag stores shrink from eight
+bytes to one (`movq` to `movb`) and register allocation in the validated
+lookup changes. With the variants last and no payload beside the tag, the
+`usize` lookups compile to the same instructions as `main`, but the `u32`
+lookup executes about 19 more register moves per lookup. With the separate
+`PartialStep`, every function of the `bplus`, `bplus_strided` and
+`bplus_range` benchmark executables compiles to the same instructions as
+`main`, apart from RIP-relative displacements of linked std functions.
 
 ## Continuation
 
@@ -148,7 +163,7 @@ impl<'q, F: ?Sized + Ord, Fence: Copy, I: Copy + Eq> PartialLookup<'q, F, Fence,
     pub fn fence_origins(&self) -> (Option<(I, usize)>, Option<(I, usize)>);
 
     pub fn provide<'a, K, V>(&mut self, id: I, node: &PartialNode<'a, K, V, I>)
-        -> Result<LookupStep<'a, K, V, I>, Error>
+        -> Result<PartialStep<'a, K, V, I>, Error>
     where K: PartialKey<Full = F, Fence = Fence>;
 
     /// `provide` with the full keys of the current fences.
@@ -158,7 +173,7 @@ impl<'q, F: ?Sized + Ord, Fence: Copy, I: Copy + Eq> PartialLookup<'q, F, Fence,
         node: &PartialNode<'a, K, V, I>,
         minimum: Option<&F>,
         ceiling: Option<&F>,
-    ) -> Result<LookupStep<'a, K, V, I>, Error>
+    ) -> Result<PartialStep<'a, K, V, I>, Error>
     where K: PartialKey<Full = F, Fence = Fence>;
 }
 ```
@@ -187,8 +202,8 @@ or passed full key. If a comparison needs a key that is not resolved, the
 pass returns `NeedKey(index)` for the first such key in the order above (the
 minimum fence, the adjacent pairs from the left, the ceiling, then the
 search) and does not advance. Of an undecided pair of unresolved keys, the
-left key is requested first. If only fence comparisons remain undecided, it returns `NeedFence`
-for those fences. Otherwise it returns the same step as the complete-key
+left key is requested first. If only fence comparisons remain undecided, it
+returns `NeedFence`. Otherwise it returns the same step as the complete-key
 lookup and advances.
 
 The lookup keeps no resolution state between calls. The caller attaches the
@@ -211,8 +226,9 @@ A fence is copied with `PartialKey::fence` when the lookup descends. It
 records the parent identifier and separator index, available through
 `fence_origins`. Fence full keys are borrowed only for the call:
 
-- **On request.** `NeedFence { minimum, ceiling }` asks for the listed
-  fences. The caller passes them to `provide_fenced` with the same node.
+- **On request.** `NeedFence` asks for the fences. The caller passes the
+  full key of each fence that `fence_origins` reports to `provide_fenced`
+  with the same node. A fence that is already decided may be passed too.
 - **In advance.** A caller that already holds the separators' full keys can
   pass them to `provide_fenced` on the first call.
 
@@ -247,7 +263,7 @@ already does, needs no request.
 ## Scope
 
 In scope: `PartialKey`, `PrefixKey`, `PrefixFence`, `PartialNode`,
-`PartialLookup`, and the two `LookupStep` variants.
+`PartialLookup` and `PartialStep`.
 
 Out of scope for this checkpoint:
 

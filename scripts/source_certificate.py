@@ -36,6 +36,10 @@ STAGES={
     'bplus': ('verus kani miri consumer-audit', ('bplus-debug','bplus-kani',
               'fixed-bplus-kani','bplus-range-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release',
               'bplus-strided-kani','bplus-strided-miri','bplus-strided-miri-32','bplus-strided-release')),
+    # Partial-key lookup: its harnesses need up to about 13 GB each, so they
+    # run in their own job.
+    'bplus-partial': ('kani miri consumer-audit', ('bplus-partial-kani','bplus-partial-miri',
+                      'bplus-partial-miri-32','bplus-partial-release')),
 }
 BPLUS='collections::btree_map::view::bplus::'
 
@@ -167,7 +171,7 @@ class Campaign:
     def receipt_paths(self,name):
         paths=[self.root/p for p in RECEIPTS.get(name,[])]
         if name=='link':paths+=self.link_receipts()
-        if name in ('bplus-release','bplus-strided-release'):paths.append(self.out/name/'summary.json')
+        if name in ('bplus-release','bplus-strided-release','bplus-partial-release'):paths.append(self.out/name/'summary.json')
         return paths
     def receipts(self,name):
         return {str(p):digest(p) for p in self.receipt_paths(name)}
@@ -249,6 +253,15 @@ def commands(out,profiles):
         'bplus-strided-release': (['python3','scripts/check_consumer_link.py',
                                   '--source','tools/consumer-audit/cases/bplus_strided.rs',
                                   '--require-success','--output',str(out/'bplus-strided-release')],{}),
+        'bplus-partial-kani': (['cargo','kani','--lib','--harness',BPLUS+'partial::proofs::',
+                                '-Z','unstable-options','--cbmc-args','--object-bits','12'],{}),
+        'bplus-partial-miri': ([*miri,'--target','x86_64-unknown-linux-gnu','--all-features',
+                               '--test','bplus_partial'],miri_env),
+        'bplus-partial-miri-32': ([*miri,'--target','i686-unknown-linux-gnu','--all-features',
+                                  '--test','bplus_partial'],miri_env),
+        'bplus-partial-release': (['python3','scripts/check_consumer_link.py',
+                                  '--source','tools/consumer-audit/cases/bplus_partial.rs',
+                                  '--require-success','--output',str(out/'bplus-partial-release')],{}),
         'bplus-release': (['python3','scripts/check_consumer_link.py',
                            '--source','tools/consumer-audit/cases/bplus_pool.rs',
                            '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
@@ -448,8 +461,13 @@ def main():
         assert '5 fixed B+ lookup defect controls rejected' in fixed_log
         for name in ('bplus-strided-miri','bplus-strided-miri-32'):
             assert re.search(r'test result: ok\. 7 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+        for name in STAGES['bplus-partial'][1]:
+            assert run(name)==0
+        assert 'Complete - 9 successfully verified harnesses, 0 failures, 9 total.' in evidence(out/'bplus-partial-kani.log').read_text()
+        for name in ('bplus-partial-miri','bplus-partial-miri-32'):
+            assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}
-        for name in ('bplus-release','bplus-strided-release'):
+        for name in ('bplus-release','bplus-strided-release','bplus-partial-release'):
             summary=json.loads(evidence(out/name/'summary.json').read_text())
             for profile in ('release-checked','release-lto-checked'):
                 outcomes={r['name']:r['status'] for r in summary['results'] if r['profile']==profile}

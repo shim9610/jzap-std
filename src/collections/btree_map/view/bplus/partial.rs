@@ -1682,7 +1682,16 @@ mod proofs {
     /// Drive a visit, attaching each requested key's completion through
     /// the visit (selected with a concrete loop), for at most `rounds` runs.
     fn drive_visit<'a, const N: usize>(
-        visit: &mut PartialVisit<'_, '_, 'a, [u8], PrefixFence<SMALL_P>, usize, PrefixKey<'a, SMALL_P>, u8>,
+        visit: &mut PartialVisit<
+            '_,
+            '_,
+            'a,
+            [u8],
+            PrefixFence<SMALL_P>,
+            usize,
+            PrefixKey<'a, SMALL_P>,
+            u8,
+        >,
         completed: &[&'a [u8]; N],
         rounds: usize,
         fences: (Option<&[u8]>, Option<&[u8]>),
@@ -1719,7 +1728,9 @@ mod proofs {
         let mut keys: [PrefixKey<'_, SMALL_P>; N] = core::array::from_fn(|i| stored(completed[i]));
         for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
-                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
             }
         }
         let values: [u8; N] = core::array::from_fn(|i| i as u8);
@@ -1728,8 +1739,12 @@ mod proofs {
         let Ok(mut lookup) = PartialLookup::new(0usize, 0, query) else {
             panic!("partial lookup not created")
         };
-        let Ok(node) = PartialNodeMut::leaf(&mut keys, &values) else { panic!("leaf refused") };
-        let Ok(mut visit) = lookup.visit(0, node) else { panic!("visit refused") };
+        let Ok(node) = PartialNodeMut::leaf(&mut keys, &values) else {
+            panic!("leaf refused")
+        };
+        let Ok(mut visit) = lookup.visit(0, node) else {
+            panic!("visit refused")
+        };
         let result = match drive_visit(&mut visit, &completed, N + 1, (None, None), false) {
             Err(error) => Err(error),
             Ok(()) => match visit.finish() {
@@ -1781,7 +1796,9 @@ mod proofs {
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
         for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
-                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
             }
         }
         let children = [1usize, 2];
@@ -1793,7 +1810,9 @@ mod proofs {
         let Ok(node) = PartialNodeMut::<_, u8, _>::branch(&mut keys, &children) else {
             panic!("branch refused")
         };
-        let Ok(mut visit) = lookup.visit(0, node) else { panic!("visit refused") };
+        let Ok(mut visit) = lookup.visit(0, node) else {
+            panic!("visit refused")
+        };
         let result = match drive_visit(&mut visit, &completed, 3, (None, None), false) {
             Err(error) => Err(error),
             Ok(()) => match visit.finish() {
@@ -1823,7 +1842,9 @@ mod proofs {
         let leaf_full: [&[u8]; 1] = [&raw[2].0[..raw[2].1]];
         let mut leaf: [PrefixKey<'_, SMALL_P>; 1] = [stored(leaf_full[0])];
         if kani::any() {
-            let Ok(()) = leaf[0].attach(leaf_full[0]) else { panic!("initial attachment refused") };
+            let Ok(()) = leaf[0].attach(leaf_full[0]) else {
+                panic!("initial attachment refused")
+            };
         }
         let values = [7u8];
         let (query, query_len) = bytes::<SMALL>();
@@ -1846,8 +1867,12 @@ mod proofs {
         };
         let minimum = Some(separators[route]);
         let ceiling = (route == 0).then_some(separators[1]);
-        let Ok(node) = PartialNodeMut::leaf(&mut leaf, &values) else { panic!("leaf refused") };
-        let Ok(mut visit) = lookup.visit(1, node) else { panic!("visit refused") };
+        let Ok(node) = PartialNodeMut::leaf(&mut leaf, &values) else {
+            panic!("leaf refused")
+        };
+        let Ok(mut visit) = lookup.visit(1, node) else {
+            panic!("visit refused")
+        };
         let result = match drive_visit(&mut visit, &leaf_full, 3, (minimum, ceiling), eager) {
             Err(error) => Err(error),
             Ok(()) => match visit.finish() {
@@ -1903,8 +1928,12 @@ mod proofs {
             panic!("partial lookup not created")
         };
         let attach: bool = kani::any();
-        let Ok(node) = PartialNodeMut::leaf(&mut keys, &values) else { panic!("leaf refused") };
-        let Ok(mut visit) = lookup.visit(0, node) else { panic!("visit refused") };
+        let Ok(node) = PartialNodeMut::leaf(&mut keys, &values) else {
+            panic!("leaf refused")
+        };
+        let Ok(mut visit) = lookup.visit(0, node) else {
+            panic!("visit refused")
+        };
         let unresolved = old_len > SMALL_P;
         let result = visit.attach_with(0, |key| {
             let mut replacement = stored::<SMALL_P>(new);

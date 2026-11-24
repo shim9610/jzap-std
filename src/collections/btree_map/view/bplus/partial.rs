@@ -49,6 +49,9 @@ pub trait PartialKey {
 ///
 /// A key of at most `P` bytes is complete inline. A longer key keeps its
 /// first `P` bytes, and its full bytes can be attached by the caller.
+/// Comparisons read the inline bytes first and an attached key's bytes after
+/// the prefix only when the prefixes are equal, so keys with distinct
+/// prefixes never touch the attached bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct PrefixKey<'a, const P: usize> {
     prefix: [u8; P],
@@ -161,11 +164,19 @@ impl<const P: usize> PartialKey for PrefixKey<'_, P> {
     type Fence = PrefixFence<P>;
 
     fn cmp_stored(&self, other: &Self) -> Option<Ordering> {
-        cmp_parts::<P>(self.inline(), self.len, other.inline(), other.len)
+        cmp_parts::<P>(self.inline(), self.len, other.inline(), other.len).or_else(|| {
+            // Both keys are longer than `P` with equal prefixes. Attached
+            // keys start with their prefixes, so their tails decide.
+            let (a, b) = (self.full?, other.full?);
+            Some(a.get(P..).cmp(&b.get(P..)))
+        })
     }
 
     fn cmp_full(&self, full: &[u8]) -> Option<Ordering> {
-        cmp_part_full::<P>(self.inline(), self.len, full)
+        cmp_part_full::<P>(self.inline(), self.len, full).or_else(|| {
+            // This key is longer than `P` and `full` shares its prefix.
+            Some(self.full?.get(P..).cmp(&full.get(P..)))
+        })
     }
 
     fn full(&self) -> Option<&[u8]> {
@@ -272,17 +283,12 @@ enum Decision {
 
 #[inline]
 fn order_keys<K: PartialKey>(a: &K, left: usize, b: &K, right: usize) -> Decision {
-    // Two resolved keys compare by their completions alone: one comparison
-    // instead of the stored parts followed by the full keys.
-    let (a_full, b_full) = (a.full(), b.full());
-    if let (Some(a), Some(b)) = (a_full, b_full) {
-        return Decision::Order(a.cmp(b));
-    }
     if let Some(order) = a.cmp_stored(b) {
         return Decision::Order(order);
     }
-    match (a_full, b_full) {
-        (Some(a), _) => b.cmp_full(a).map_or(Decision::Key(right), |order| {
+    match (a.full(), b.full()) {
+        (Some(a), Some(b)) => Decision::Order(a.cmp(b)),
+        (Some(a), None) => b.cmp_full(a).map_or(Decision::Key(right), |order| {
             Decision::Order(order.reverse())
         }),
         (None, Some(b)) => a.cmp_full(b).map_or(Decision::Key(left), Decision::Order),
@@ -297,15 +303,12 @@ fn order_fence<K: PartialKey>(
     fence: &K::Fence,
     full: Option<&K::Full>,
 ) -> Decision {
-    let resolved = key.full();
-    if let (Some(key), Some(fence)) = (resolved, full) {
-        return Decision::Order(key.cmp(fence));
-    }
     if let Some(order) = key.cmp_fence(fence) {
         return Decision::Order(order);
     }
-    match (resolved, full) {
-        (Some(key), _) => K::fence_cmp_full(fence, key)
+    match (key.full(), full) {
+        (Some(key), Some(fence)) => Decision::Order(key.cmp(fence)),
+        (Some(key), None) => K::fence_cmp_full(fence, key)
             .map_or(Decision::Fence, |order| Decision::Order(order.reverse())),
         (None, Some(fence)) => key
             .cmp_full(fence)
@@ -317,9 +320,8 @@ fn order_fence<K: PartialKey>(
 #[inline]
 fn order_query<K: PartialKey>(key: &K, index: usize, query: &K::Full) -> Decision {
     match key
-        .full()
-        .map(|full| full.cmp(query))
-        .or_else(|| key.cmp_full(query))
+        .cmp_full(query)
+        .or_else(|| key.full().map(|full| full.cmp(query)))
     {
         Some(order) => Decision::Order(order),
         None => Decision::Key(index),
@@ -702,6 +704,14 @@ mod proofs {
             assert!(attached.full() == Some(b));
         }
         assert!(PrefixKey::<P>::from_full(a).full() == Some(a));
+        // Attached keys: both attached decide exactly; one attached never
+        // contradicts the completions.
+        let (attached_a, attached_b) = (PrefixKey::<P>::from_full(a), PrefixKey::<P>::from_full(b));
+        assert!(attached_a.cmp_stored(&attached_b) == Some(actual));
+        assert!(attached_a.cmp_full(b) == Some(actual));
+        assert!(agrees(attached_a.cmp_stored(&stored_b), actual));
+        assert!(agrees(stored_a.cmp_stored(&attached_b), actual));
+        assert!(agrees(attached_a.cmp_fence(&stored_b.fence()), actual));
         assert!(PrefixKey::from_full(a).fence() == stored_a.fence());
     }
 

@@ -41,8 +41,15 @@ class ReplayTests(unittest.TestCase):
 
     def test_state_composition_compiles_the_original_crate(self):
         from verus_composition import run
-        with patch('verus_composition.subprocess.run') as invoke:
+        # Patching subprocess.run replaces it for every module, including the
+        # rustc queries of the std specification build, so that build is
+        # replaced too and only its import flags are checked here.
+        flags=['--import','jzap_verus_std_specs=specs.vir']
+        with patch('verus_composition.verus_std_specs.build',return_value=flags) as specs, \
+             patch('verus_composition.subprocess.run') as invoke:
             command,_=run('verus',ROOT,ROOT/'target/calls.rs','actual_product',{})
+            specs.assert_called_once_with('verus')
+            self.assertEqual(command[-len(flags):],flags)
             self.assertIn(str(ROOT/'src/lib.rs'),command)
             self.assertIn('--no-cheating',command)
             self.assertNotIn('--verify-module',command)

@@ -1633,6 +1633,241 @@ mod proofs {
         listed_child_key_leaves_no_request(1);
     }
 
+    /// Drive a visit, attaching each requested key's completion through
+    /// the visit (selected with a concrete loop), for at most `rounds` runs.
+    fn drive_visit<'a, const N: usize>(
+        visit: &mut PartialVisit<'_, '_, 'a, [u8], PrefixFence<SMALL_P>, usize, PrefixKey<'a, SMALL_P>, u8>,
+        completed: &[&'a [u8]; N],
+        rounds: usize,
+        fences: (Option<&[u8]>, Option<&[u8]>),
+        eager: bool,
+    ) -> Result<(), Error> {
+        let mut fenced = eager;
+        for _ in 0..rounds {
+            let (minimum, ceiling) = if fenced { fences } else { (None, None) };
+            match visit.run(minimum, ceiling)? {
+                VisitStep::Done => return Ok(()),
+                VisitStep::NeedFence => {
+                    assert!(!fenced);
+                    fenced = true;
+                }
+                VisitStep::NeedKey(requested) => {
+                    assert!(requested < N);
+                    for (index, full) in completed.iter().enumerate() {
+                        if index == requested {
+                            let Ok(()) = visit.attach_with(index, |key| key.attach(full)) else {
+                                panic!("requested attachment refused")
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        panic!("the visit did not finish within its bound")
+    }
+
+    /// A visit of a leaf of `N` keys gives the complete-key lookup's result.
+    fn visit_leaf_matches_complete_lookup<const N: usize>() {
+        let raw: [([u8; SMALL], usize); N] = core::array::from_fn(|_| bytes());
+        let completed: [&[u8]; N] = core::array::from_fn(|i| &raw[i].0[..raw[i].1]);
+        let mut keys: [PrefixKey<'_, SMALL_P>; N] = core::array::from_fn(|i| stored(completed[i]));
+        for (key, full) in keys.iter_mut().zip(completed) {
+            if kani::any() {
+                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+            }
+        }
+        let values: [u8; N] = core::array::from_fn(|i| i as u8);
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let Ok(mut lookup) = PartialLookup::new(0usize, 0, query) else {
+            panic!("partial lookup not created")
+        };
+        let Ok(node) = PartialNodeMut::leaf(&mut keys, &values) else { panic!("leaf refused") };
+        let Ok(mut visit) = lookup.visit(0, node) else { panic!("visit refused") };
+        let result = match drive_visit(&mut visit, &completed, N + 1, (None, None), false) {
+            Err(error) => Err(error),
+            Ok(()) => match visit.finish() {
+                Ok(PartialStep::Found(key, value)) => Ok(Some((key.full().map(own), *value))),
+                Ok(PartialStep::Absent) => Ok(None),
+                Ok(_) => panic!("leaf finished with another step"),
+                Err(error) => Err(error),
+            },
+        };
+        let Ok(mut complete) = Lookup::new(0usize, 0, query) else {
+            panic!("complete lookup not created")
+        };
+        let expected = Node::leaf(&completed, &values).and_then(|node| {
+            complete.provide(0, &node).map(|step| match step {
+                LookupStep::Found(key, value) => Some((Some(own(key)), *value)),
+                LookupStep::Absent => None,
+                _ => panic!("leaf returned another step"),
+            })
+        });
+        assert!(result == expected);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn visit_of_a_one_key_leaf_matches_complete_lookup() {
+        visit_leaf_matches_complete_lookup::<1>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn visit_of_a_two_key_leaf_matches_complete_lookup() {
+        visit_leaf_matches_complete_lookup::<2>();
+    }
+
+    /// A visit of a root of two separators routes as the specification that
+    /// `branch_routes_to_the_last_admitted_minimum` proves for the
+    /// complete-key lookup.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn visit_of_a_branch_routes_as_complete_lookup() {
+        let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
+        let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
+        for (key, full) in keys.iter_mut().zip(completed) {
+            if kani::any() {
+                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+            }
+        }
+        let children = [1usize, 2];
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let Ok(mut lookup) = PartialLookup::new(0usize, 1, query) else {
+            panic!("partial lookup not created")
+        };
+        let Ok(node) = PartialNodeMut::<_, u8, _>::branch(&mut keys, &children) else {
+            panic!("branch refused")
+        };
+        let Ok(mut visit) = lookup.visit(0, node) else { panic!("visit refused") };
+        let result = match drive_visit(&mut visit, &completed, 3, (None, None), false) {
+            Err(error) => Err(error),
+            Ok(()) => match visit.finish() {
+                Ok(PartialStep::NeedNode(child)) => Ok(Some(child)),
+                Ok(PartialStep::Absent) => Ok(None),
+                Ok(_) => panic!("root finished with another step"),
+                Err(error) => Err(error),
+            },
+        };
+        let expected: Result<Option<usize>, Error> = if completed[0] >= completed[1] {
+            Err(Error::InvalidStructure)
+        } else if completed[1] <= query {
+            Ok(Some(2))
+        } else if completed[0] <= query {
+            Ok(Some(1))
+        } else {
+            Ok(None)
+        };
+        assert!(result == expected);
+    }
+
+    /// A visit of a one-key child, from the state after a descent, with the
+    /// fence keys on request or in advance, gives the complete-key checks.
+    fn visit_child_matches_complete_lookup(route: usize, eager: bool) {
+        let raw: [([u8; SMALL], usize); 3] = [bytes(), bytes(), bytes()];
+        let separators: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let leaf_full: [&[u8]; 1] = [&raw[2].0[..raw[2].1]];
+        let mut leaf: [PrefixKey<'_, SMALL_P>; 1] = [stored(leaf_full[0])];
+        if kani::any() {
+            let Ok(()) = leaf[0].attach(leaf_full[0]) else { panic!("initial attachment refused") };
+        }
+        let values = [7u8];
+        let (query, query_len) = bytes::<SMALL>();
+        let query = &query[..query_len];
+        let fence = |index: usize| Fence {
+            key: stored::<SMALL_P>(separators[index]).fence(),
+            node: 0usize,
+            index,
+        };
+        let mut path = [None; usize::BITS as usize];
+        path[0] = Some(0usize);
+        let mut lookup = PartialLookup {
+            query,
+            pending: Some(1usize),
+            height: 0,
+            depth: 1,
+            path,
+            minimum: Some(fence(route)),
+            ceiling: (route == 0).then(|| fence(1)),
+        };
+        let minimum = Some(separators[route]);
+        let ceiling = (route == 0).then_some(separators[1]);
+        let Ok(node) = PartialNodeMut::leaf(&mut leaf, &values) else { panic!("leaf refused") };
+        let Ok(mut visit) = lookup.visit(1, node) else { panic!("visit refused") };
+        let result = match drive_visit(&mut visit, &leaf_full, 3, (minimum, ceiling), eager) {
+            Err(error) => Err(error),
+            Ok(()) => match visit.finish() {
+                Ok(PartialStep::Found(key, value)) => Ok(Some((key.full().map(own), *value))),
+                Ok(PartialStep::Absent) => Ok(None),
+                Ok(_) => panic!("leaf finished with another step"),
+                Err(error) => Err(error),
+            },
+        };
+        let key = leaf_full[0];
+        let expected: Result<Option<(Option<([u8; MAX], usize)>, u8)>, Error> =
+            if Some(key) != minimum || ceiling.is_some_and(|ceiling| key >= ceiling) {
+                Err(Error::InvalidStructure)
+            } else if key == query {
+                Ok(Some((Some(own(key)), values[0])))
+            } else {
+                Ok(None)
+            };
+        assert!(result == expected);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn visit_of_a_child_with_both_fences_on_request() {
+        visit_child_matches_complete_lookup(0, false);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn visit_of_a_child_with_the_minimum_in_advance() {
+        visit_child_matches_complete_lookup(1, true);
+    }
+
+    /// `attach_with` accepts a change exactly when the stored parts are
+    /// unchanged and a resolved key is a completion of them; a refusal
+    /// refuses the visit.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn visit_accepts_only_attachments_that_keep_the_stored_parts() {
+        let (old, old_len) = bytes::<SMALL>();
+        let (new, new_len) = bytes::<SMALL>();
+        let (old, new) = (&old[..old_len], &new[..new_len]);
+        let mut keys: [PrefixKey<'_, SMALL_P>; 1] = [stored(old)];
+        let values = [1u8];
+        let query: &[u8] = &[];
+        let Ok(mut lookup) = PartialLookup::new(0usize, 0, query) else {
+            panic!("partial lookup not created")
+        };
+        let attach: bool = kani::any();
+        let Ok(node) = PartialNodeMut::leaf(&mut keys, &values) else { panic!("leaf refused") };
+        let Ok(mut visit) = lookup.visit(0, node) else { panic!("visit refused") };
+        let unresolved = old_len > SMALL_P;
+        let result = visit.attach_with(0, |key| {
+            let mut replacement = stored::<SMALL_P>(new);
+            if attach {
+                replacement.attach(new)?;
+            }
+            *key = replacement;
+            Ok(())
+        });
+        let same_stored = stored::<SMALL_P>(new).fence() == stored::<SMALL_P>(old).fence();
+        // A complete key (length within the prefix) is already resolved.
+        assert!(result.is_ok() == (unresolved && same_stored));
+        // Attaching a resolved key is refused without refusing the visit;
+        // a refused change to an unresolved key refuses the visit.
+        if unresolved && result.is_err() {
+            assert!(visit.run(None, None) == Err(Error::InvalidStructure));
+        }
+        drop(visit);
+        assert!(lookup.requested_node() == Some(0));
+    }
+
     /// Refused and requesting calls leave the lookup unchanged.
     #[kani::proof]
     #[kani::unwind(6)]

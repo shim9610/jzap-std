@@ -10,7 +10,10 @@ use jzap::{
     Error,
     collections::btree_map::view::{
         LookupStep,
-        bplus::{Lookup, Node, PartialLookup, PartialNode, PartialStep, PrefixKey},
+        bplus::{
+            Lookup, Node, PartialLookup, PartialNode, PartialNodeMut, PartialStep, PrefixKey,
+            VisitStep,
+        },
     },
 };
 use std::{cell::Cell, collections::BTreeMap, hint::black_box, time::Instant};
@@ -276,6 +279,94 @@ fn partial_requests<const LISTED: bool>(
     }
 }
 
+/// The same page handling as `partial_requests`, through `PartialVisit`:
+/// keys are attached through the visit and each run resumes the pass.
+fn partial_visit<const LISTED: bool>(
+    pages: &[Page<'_>],
+    root: usize,
+    height: usize,
+    query: &[u8],
+    counts: &Cell<(u64, u64, u64)>,
+) -> Answer {
+    let mut lookup = PartialLookup::new(root, height, query)?;
+    let mut id = root;
+    let mut buffer = [PrefixKey::<P>::new([0; P], 0); BRANCH];
+    loop {
+        let page = pages.get(id).ok_or(Error::InvalidStructure)?;
+        let keys = buffer
+            .get_mut(..page.stored.len())
+            .ok_or(Error::InvalidStructure)?;
+        keys.copy_from_slice(&page.stored);
+        let (minimum, ceiling) = lookup.fence_origins();
+        let fence = |origin: Option<(usize, usize)>| -> Result<Option<&[u8]>, Error> {
+            origin
+                .map(|(node, index)| {
+                    pages
+                        .get(node)
+                        .and_then(|page| page.full.get(index))
+                        .copied()
+                        .ok_or(Error::InvalidStructure)
+                })
+                .transpose()
+        };
+        let node = if page.children.is_empty() {
+            PartialNodeMut::leaf(keys, &page.values)?
+        } else {
+            PartialNodeMut::branch(keys, &page.children)?
+        };
+        let mut visit = lookup.visit(id, node)?;
+        if LISTED {
+            let mut listed = [0usize; BRANCH];
+            let mut count = 0usize;
+            for index in visit.unresolved_keys() {
+                *listed.get_mut(count).ok_or(Error::InvalidStructure)? = index;
+                count += 1;
+            }
+            for &index in listed.get(..count).ok_or(Error::InvalidStructure)? {
+                let full = page.full.get(index).ok_or(Error::InvalidStructure)?;
+                visit.attach_with(index, |key| key.attach(full))?;
+            }
+            if count > 0 {
+                let (attached, fences, rounds) = counts.get();
+                counts.set((attached + count as u64, fences, rounds + 1));
+            }
+        }
+        let mut fenced = false;
+        loop {
+            let (low, high) = if fenced {
+                (fence(minimum)?, fence(ceiling)?)
+            } else {
+                (None, None)
+            };
+            match visit.run(low, high)? {
+                VisitStep::NeedKey(index) => {
+                    if LISTED {
+                        return Err(Error::InvalidStructure);
+                    }
+                    let (attached, fences, rounds) = counts.get();
+                    counts.set((attached + 1, fences, rounds + 1));
+                    let full = page.full.get(index).ok_or(Error::InvalidStructure)?;
+                    visit.attach_with(index, |key| key.attach(full))?;
+                }
+                VisitStep::NeedFence => {
+                    let (attached, fences, rounds) = counts.get();
+                    counts.set((attached, fences + 1, rounds));
+                    fenced = true;
+                }
+                VisitStep::Done => break,
+            }
+        }
+        match visit.finish()? {
+            PartialStep::Found(_, value) => return Ok(Some(*value)),
+            PartialStep::Absent => return Ok(None),
+            PartialStep::NeedNode(child) => id = child,
+            PartialStep::NeedKey(_) | PartialStep::NeedFence => {
+                return Err(Error::InvalidStructure);
+            }
+        }
+    }
+}
+
 fn measure(
     get: &dyn Fn(&[u8]) -> Answer,
     queries: &[Vec<u8>],
@@ -327,6 +418,8 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
         .collect();
     let counts = Cell::new((0u64, 0u64, 0u64));
     let listed_counts = Cell::new((0u64, 0u64, 0u64));
+    let visit_counts = Cell::new((0u64, 0u64, 0u64));
+    let visit_listed_counts = Cell::new((0u64, 0u64, 0u64));
     let methods: &[(&str, &dyn Fn(&[u8]) -> Answer)] = &[
         ("complete", &|q| {
             complete::<false>(&pages, &views, root, height, q)
@@ -343,6 +436,12 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
         ("partial_listed", &|q| {
             partial_requests::<true>(&pages, root, height, q, &listed_counts)
         }),
+        ("partial_visit", &|q| {
+            partial_visit::<false>(&pages, root, height, q, &visit_counts)
+        }),
+        ("partial_visit_listed", &|q| {
+            partial_visit::<true>(&pages, root, height, q, &visit_listed_counts)
+        }),
         ("std", &|q| Ok(std.get(q).copied())),
     ];
     for query in &queries {
@@ -357,6 +456,8 @@ fn run(seed: u64, family: &str, size: usize) -> Result<(), Error> {
     for (name, counts) in [
         ("partial_requests", &counts),
         ("partial_listed", &listed_counts),
+        ("partial_visit", &visit_counts),
+        ("partial_visit_listed", &visit_listed_counts),
     ] {
         let (attached, fences, rounds) = counts.get();
         eprintln!(

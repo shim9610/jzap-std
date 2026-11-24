@@ -86,6 +86,9 @@ represents:
   the fence.
 - **Determinism.** Every method returns the same result for the same
   arguments.
+- **Stored parts.** For an unresolved key, every comparison depends only on
+  its fence; `PartialVisit` relies on this to keep decisions across
+  attachments.
 
 ### `PrefixKey`
 
@@ -219,6 +222,34 @@ the lookup forgot one full key when receiving the other, it would request
 them alternately forever. If it retained them, it would need either a
 caller-chosen lifetime for all resolved keys or an allocation, and a later
 call could pair them with different node contents.
+
+### Visiting a node with exclusive access
+
+`provide` keeps no state, so after each `NeedKey` it validates the node
+again: `r` requests cost `r + 1` passes. That is not forced by the data. It
+follows from the caller holding the node mutably between calls, so the
+lookup cannot know what changed.
+
+`PartialLookup::visit(id, PartialNodeMut::leaf(&mut keys, &values))` borrows
+the keys exclusively for the visit:
+
+- `run(minimum, ceiling)` continues the pass where it stopped and returns
+  `VisitStep::NeedKey(index)`, `NeedFence` or `Done`;
+- `attach_with(index, |key| key.attach(full))` is the only way to change a
+  key. The key must be unresolved, and the change is refused, with the
+  visit, unless the key's fence (its stored parts) is unchanged and a
+  resolved key is a completion of it;
+- `unresolved_keys()` lists the keys the rest of the pass could request, so
+  they can be fetched and attached in one round;
+- `finish()` applies the answer to the lookup and returns the
+  `PartialStep`. Dropping a visit leaves the node requested.
+
+During a visit, the only change to the node is that unresolved keys become
+resolved without changing their stored parts. A decided comparison used
+only stored parts and resolved keys, so it stays decided, and the pass can
+resume instead of starting again: one pass of `O(n)` comparisons plus `r`
+resumptions per node. This relies on one more law of `PartialKey`: the
+comparisons of an unresolved key depend only on its fence.
 
 ### Fences
 

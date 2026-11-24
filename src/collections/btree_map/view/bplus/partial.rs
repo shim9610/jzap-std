@@ -272,12 +272,17 @@ enum Decision {
 
 #[inline]
 fn order_keys<K: PartialKey>(a: &K, left: usize, b: &K, right: usize) -> Decision {
+    // Two resolved keys compare by their completions alone: one comparison
+    // instead of the stored parts followed by the full keys.
+    let (a_full, b_full) = (a.full(), b.full());
+    if let (Some(a), Some(b)) = (a_full, b_full) {
+        return Decision::Order(a.cmp(b));
+    }
     if let Some(order) = a.cmp_stored(b) {
         return Decision::Order(order);
     }
-    match (a.full(), b.full()) {
-        (Some(a), Some(b)) => Decision::Order(a.cmp(b)),
-        (Some(a), None) => b.cmp_full(a).map_or(Decision::Key(right), |order| {
+    match (a_full, b_full) {
+        (Some(a), _) => b.cmp_full(a).map_or(Decision::Key(right), |order| {
             Decision::Order(order.reverse())
         }),
         (None, Some(b)) => a.cmp_full(b).map_or(Decision::Key(left), Decision::Order),
@@ -292,12 +297,15 @@ fn order_fence<K: PartialKey>(
     fence: &K::Fence,
     full: Option<&K::Full>,
 ) -> Decision {
+    let resolved = key.full();
+    if let (Some(key), Some(fence)) = (resolved, full) {
+        return Decision::Order(key.cmp(fence));
+    }
     if let Some(order) = key.cmp_fence(fence) {
         return Decision::Order(order);
     }
-    match (key.full(), full) {
-        (Some(key), Some(fence)) => Decision::Order(key.cmp(fence)),
-        (Some(key), None) => K::fence_cmp_full(fence, key)
+    match (resolved, full) {
+        (Some(key), _) => K::fence_cmp_full(fence, key)
             .map_or(Decision::Fence, |order| Decision::Order(order.reverse())),
         (None, Some(fence)) => key
             .cmp_full(fence)
@@ -309,8 +317,9 @@ fn order_fence<K: PartialKey>(
 #[inline]
 fn order_query<K: PartialKey>(key: &K, index: usize, query: &K::Full) -> Decision {
     match key
-        .cmp_full(query)
-        .or_else(|| key.full().map(|full| full.cmp(query)))
+        .full()
+        .map(|full| full.cmp(query))
+        .or_else(|| key.cmp_full(query))
     {
         Some(order) => Decision::Order(order),
         None => Decision::Key(index),
@@ -1116,7 +1125,7 @@ mod proofs {
         let Ok(mut lookup) = PartialLookup::new(0usize, 0, query) else {
             panic!("partial lookup not created")
         };
-        let Ok(node) = PartialNode::leaf(&keys, &values) else {
+        let Ok(node) = PartialNode::<_, _, usize>::leaf(&keys, &values) else {
             panic!("leaf refused")
         };
         // `unresolved_keys` is `(0..len).filter(needs_key)`. The predicate is

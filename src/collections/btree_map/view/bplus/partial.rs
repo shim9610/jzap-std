@@ -1097,32 +1097,6 @@ mod proofs {
         child_call_without_fences(1);
     }
 
-    /// Attach the completion of every key `unresolved_keys` lists, after
-    /// collecting the whole list first.
-    fn attach_listed<'a, const N: usize>(
-        listed: impl Iterator<Item = usize>,
-        keys: &mut [PrefixKey<'a, SMALL_P>; N],
-        completed: &[&'a [u8]; N],
-    ) {
-        let mut selected = [false; N];
-        for index in listed {
-            assert!(index < N);
-            for (i, slot) in selected.iter_mut().enumerate() {
-                if i == index {
-                    *slot = true;
-                }
-            }
-        }
-        for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
-            if selected {
-                assert!(key.full().is_none());
-                let Ok(()) = key.attach(full) else {
-                    panic!("listed attachment refused")
-                };
-            }
-        }
-    }
-
     /// After every listed key of a leaf of `N` keys is attached, one pass
     /// requests no key.
     fn listed_leaf_keys_leave_no_request<const N: usize>() {
@@ -1145,18 +1119,21 @@ mod proofs {
         let Ok(node) = PartialNode::leaf(&keys, &values) else {
             panic!("leaf refused")
         };
-        let mut listed = [usize::MAX; N];
-        let mut count = 0;
-        for index in lookup.unresolved_keys(&node) {
-            assert!(count < N);
-            for (i, slot) in listed.iter_mut().enumerate() {
-                if i == count {
-                    *slot = index;
-                }
-            }
-            count += 1;
+        // `unresolved_keys` is `(0..len).filter(needs_key)`. The predicate is
+        // evaluated per index because a harness consuming the iterator
+        // produced counterexamples that their own concrete playbacks refute.
+        let mut selected = [false; N];
+        for (index, slot) in selected.iter_mut().enumerate() {
+            *slot = lookup.needs_key(node.keys, N.checked_sub(1), index);
         }
-        attach_listed(listed.into_iter().take(count), &mut keys, &completed);
+        for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
+            if selected {
+                assert!(key.full().is_none());
+                let Ok(()) = key.attach(full) else {
+                    panic!("listed attachment refused")
+                };
+            }
+        }
         let Ok(node) = PartialNode::leaf(&keys, &values) else {
             panic!("leaf refused")
         };
@@ -1202,13 +1179,8 @@ mod proofs {
             panic!("branch refused")
         };
         let mut selected = [false; 2];
-        for index in lookup.unresolved_keys(&node) {
-            assert!(index < 2);
-            if index == 0 {
-                selected[0] = true;
-            } else {
-                selected[1] = true;
-            }
+        for (index, slot) in selected.iter_mut().enumerate() {
+            *slot = lookup.needs_key(node.keys, Some(1), index);
         }
         for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
             if selected {

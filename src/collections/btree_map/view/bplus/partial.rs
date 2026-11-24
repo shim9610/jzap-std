@@ -743,14 +743,12 @@ mod proofs {
     /// The root step over a branch of two separators, with arbitrary
     /// attachments, routes as the complete-key lookup does and records the
     /// separators it descends between as fences.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn partial_branch_routes_as_complete_lookup() {
+    fn branch_routes_as_complete_lookup(attached: [bool; 2]) {
         let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
         let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
-        for (key, full) in keys.iter_mut().zip(completed) {
-            if kani::any() {
+        for ((key, full), attach) in keys.iter_mut().zip(completed).zip(attached) {
+            if attach {
                 let Ok(()) = key.attach(full) else {
                     panic!("initial attachment refused")
                 };
@@ -820,7 +818,33 @@ mod proofs {
         }
     }
 
-    /// The child step, from the state `partial_branch_routes_as_complete_lookup`
+    // The attachment choice is fixed per harness to keep each one within
+    // memory; together they cover every choice.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_branch_routes_with_no_separator_attached() {
+        branch_routes_as_complete_lookup([false, false]);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_branch_routes_with_the_first_separator_attached() {
+        branch_routes_as_complete_lookup([true, false]);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_branch_routes_with_the_second_separator_attached() {
+        branch_routes_as_complete_lookup([false, true]);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partial_branch_routes_with_both_separators_attached() {
+        branch_routes_as_complete_lookup([true, true]);
+    }
+
+    /// The child step, from the state `branch_routes_as_complete_lookup`
     /// establishes after a descent: a one-key leaf whose fence comparisons are
     /// resolved on request (`eager` false) or in advance gives what the complete-key lookup
     /// checks for that child: the minimum, the ceiling, then the leaf search.

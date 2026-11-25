@@ -47,10 +47,11 @@ same harnesses verify when the array member is at offset 0. The 12-line C
 program in `tools/kani-repro/cbmc-c/` fails in CBMC 6.11.0 without Kani, so
 the fault is in CBMC, not in Kani's code generation.
 
-The diagnosis in [CBMC diagnosis](#cbmc-diagnosis) locates the wrong
-expression in CBMC's dereference of such pointers and reads the CBMC branch
-that produces it. The branch was identified from the source and the
-verification conditions; no instrumented or patched CBMC was built.
+[CBMC diagnosis](#cbmc-diagnosis) locates the wrong expression with gdb in
+a debug build of CBMC 6.11.0: one recursion in `get_subexpression_at_offset`
+(`src/util/pointer_offset_size.cpp:785`), reached from two callers. Skipping
+only that recursion in the debugger makes the C program and the failing Kani
+harnesses verify. No CBMC source was changed and no fix was written.
 
 ## Reproductions
 
@@ -171,11 +172,8 @@ also with `--no-simplify` (`keys[0].prefix[r * 2 + 0]`). In B1 the same
 shape appears inside CBMC's `memcmp` model for the slice comparison:
 `{ keys[[0]]..prefix[[0]] }[index * 32]`, the struct size being the stride.
 
-Reading of `src/util/pointer_offset_size.cpp` at `cbmc-6.11.0`: the overload
-of `get_subexpression_at_offset` for a non-constant offset, called from
-`value_set_dereferencet::build_reference_to` in
-`src/pointer-analysis/value_set_dereference.cpp` ("try to build a
-member/index expression - do not use byte_extract"), has an array branch:
+`src/util/pointer_offset_size.cpp` at `cbmc-6.11.0`: the overload of
+`get_subexpression_at_offset` for a non-constant offset has an array branch:
 
 > If we have an offset C + x (where C is a constant) we can try to recurse
 > by first looking at the member at offset C.
@@ -194,9 +192,47 @@ indexes the outer array; the controls verify, which is consistent with this.
 The same branch is unchanged on CBMC `develop` at `6c5f75f` (2026-11-24, by
 source comparison only; that revision was not built or run).
 
-Not confirmed: that this branch, rather than another path with the same
-result, produced each expression. That needs a debugger or an instrumented
-CBMC build, which was outside this preparation.
+### Debugger trace
+
+A debug build of the `cbmc-6.11.0` tag (`cmake -DCMAKE_BUILD_TYPE=Debug
+-DWITH_JBMC=OFF`, GCC 13.3) reproduces the release results: `member_array.c`
+fails V1 and V2, and `v1.c` (V1 alone) fails. gdb breakpoints
+(`tools/kani-repro/cbmc-gdb/trace.gdb`) print the arguments at the branch and
+the call stack. Both programs reach the branch with root object `keys`,
+offset `1 + (signed long)r * 2`, `x = r * 2`, the subexpression at offset 1
+`keys[0].prefix[0]`, and recurse into `keys[0].prefix`. The callers differ:
+
+| Program | Options | Caller of the branch | Result |
+| --- | --- | --- | --- |
+| V1 `(*p)[0]`, `p: unsigned char (*)[1]` | default | `goto_symext::dereference` → `do_simplify` → `simplify_index` (`simplify_expr_array.cpp:197`) → `simplify_byte_extract` (`simplify_expr.cpp:2064`) | `byte_extract(keys, pointer_offset(p), u8[1])[0]` is folded into `byte_extract(keys, 1 + 2r, u8)`, which becomes `keys[0].prefix[2r]` |
+| V1 | `--no-simplify` | not reached | `byte_extract` of `keys` stays; verifies |
+| V2 `q[0]`, `q: unsigned char *` | default and `--no-simplify` | `value_set_dereferencet::build_reference_to` (`value_set_dereference.cpp:648`), with `o.offset()` from the value set; by default also through `simplify_expr_with_value_sett::simplify_inequality` | returns `keys[0].prefix[r * 2]` as the dereferenced value |
+
+In `build_reference_to` the target type is `u8[1]` for V1 and no
+subexpression is found there; for V2 the target type is `u8` and the wrong
+index expression is accepted because it is not a `byte_extract`. This is why
+`--no-simplify` removes the V1 failure but not the V2 failure.
+
+Causal check (`tools/kani-repro/cbmc-gdb/skip.gdb`): the same debug binary,
+with a breakpoint at line 785 that jumps to line 825 instead, so this one
+recursion falls through to its "give up" return and the caller keeps the
+generic byte-extract encoding. Nothing else changes.
+
+| Goto program or source | Unchanged debug CBMC | Recursion skipped |
+| --- | --- | --- |
+| `v1.c` (default; `--no-simplify`) | fails; verifies | verifies; verifies |
+| `v2.c` (default; `--no-simplify`) | fails; fails | verifies; verifies |
+| A4 harness goto binary (Kani's options) | fails | verifies (1 skip) |
+| A1 harness goto binary (Kani's options) | fails | verifies (2 skips) |
+| B1 harness goto binary (Kani's options, Kissat) | fails | verifies (160 skips, each into `keys[0].prefix`; 128 s) |
+
+In B1 every skipped recursion goes into `keys[0].prefix` of the 32-byte key
+structs; its callers were not traced.
+
+The skip is a diagnostic, not a fix: it disables the rewrite for every
+caller, including cases where it is correct. A fix must keep the recursion
+only when the remaining offset `x` provably stays inside the inner array
+found at offset `C`; that was not written or tested.
 
 ## Earlier cases
 
@@ -242,6 +278,9 @@ bash tools/kani-repro/cbmc_variants.sh tools/kani-repro/symbolic-index \
   proofs::a4_member_array_at_nonzero_offset
 # CBMC without Kani, and the native C check
 bash tools/kani-repro/cbmc-c/run.sh
+# gdb trace and causal check in a debug build of CBMC 6.11.0 (build steps in
+# the script's header)
+bash tools/kani-repro/cbmc-gdb/run.sh
 ```
 
 Replace the crate and harness names for the other reproductions
@@ -266,8 +305,9 @@ goto listings and playback copies go to `target/verification/kani-repro/`.
 - `resumed_branch_pass_equals_fresh_pass` ("too many addressed objects" at
   object bits 12) and the out-of-memory playbacks are not addressed.
 - Case 1 (`FixedTree` width-one chains) has no reproduction here.
-- The exact CBMC code path is inferred from the expressions and the source,
-  not traced in a CBMC build. A fix was not written or tested.
+- A CBMC fix was not written or tested. The struct branch's matching
+  recursion (`pointer_offset_size.cpp:914`) was not reached by these
+  programs; whether it has the same fault is not checked.
 
 ## Suggested next steps
 
@@ -279,10 +319,9 @@ goto listings and playback copies go to `target/verification/kani-repro/`.
 2. Search the product harness's `--show-vcc` output (streamed through a
    filter; it is large) for `..prefix[[0]] }[` indexed by a non-constant
    expression, which marks the wrong dereference.
-3. Build CBMC 6.11.0 from the fetched source in a scratch directory, confirm
-   the branch with a debugger on `tools/kani-repro/cbmc-c/member_array.c`,
-   and test a fix that recurses into the inner array only when the remaining
-   offset is known to stay inside it (otherwise return no subexpression, so
-   the byte-extract path is used).
+3. In the scratch CBMC source, write and test a fix that recurses into the
+   inner array only when the remaining offset is known to stay inside it
+   (otherwise return no subexpression, so the byte-extract path is used),
+   against these reproductions and CBMC's own regression tests.
 4. Report the C reproduction to diffblue/cbmc, linking #8128 and Kani #5104,
    once the user approves posting.

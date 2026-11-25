@@ -52,8 +52,9 @@ def main():
         env = dict(os.environ, CARGO_TARGET_DIR=str(work / "target"))
         original = (ROOT / args.file).read_bytes()
         generate = subprocess.run(
-            ["cargo", "kani", "--lib", "--harness", args.harness, "--exact", *args.kani_arg,
-             "-Z", "concrete-playback", "--concrete-playback=inplace"],
+            # The extra arguments go last: they may end with --cbmc-args.
+            ["cargo", "kani", "--lib", "--harness", args.harness, "--exact",
+             "-Z", "concrete-playback", "--concrete-playback=inplace", *args.kani_arg],
             cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (out / "generate.log").write_text(generate.stdout)
         if (ROOT / args.file).read_bytes() != original:

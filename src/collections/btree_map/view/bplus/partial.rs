@@ -1775,63 +1775,86 @@ mod proofs {
         visit_leaf_matches_complete_lookup::<1>();
     }
 
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn visit_of_a_two_key_leaf_matches_complete_lookup() {
-        visit_leaf_matches_complete_lookup::<2>();
+    /// A pass resumed after attaching the requested key gives what a pass
+    /// from scratch gives over the same keys. `PartialVisit::run` is this
+    /// resumed pass and `provide` the pass from scratch, so with the
+    /// `provide` harnesses this covers the visit path. `contents` and `query`
+    /// fix the node; attachments are arbitrary, and each requested key is
+    /// attached with its completion before resuming, for `rounds` steps.
+    fn resumed_pass_equals_fresh_pass<const N: usize>(
+        lookup: &PartialLookup<'_, [u8], PrefixFence<SMALL_P>, usize>,
+        keys: &mut [PrefixKey<'_, SMALL_P>; N],
+        completed: &[&[u8]; N],
+        contents: &Contents<'_, u8, usize>,
+        rounds: usize,
+    ) {
+        let mut progress = Progress::default();
+        for _ in 0..rounds {
+            let resumed = lookup.pass(keys.as_slice(), contents, None, None, &mut progress);
+            let fresh = lookup.pass(keys.as_slice(), contents, None, None, &mut Progress::default());
+            let same = match (&resumed, &fresh) {
+                // Every check the resumed pass skipped is still decided, so
+                // both stop at the same key.
+                (Ok(Outcome::NeedKey(a)), Ok(Outcome::NeedKey(b))) => a == b && *a < N,
+                (Ok(Outcome::NeedFence), Ok(Outcome::NeedFence))
+                | (Ok(Outcome::Absent), Ok(Outcome::Absent)) => true,
+                (Ok(Outcome::Found(a)), Ok(Outcome::Found(b))) => a == b,
+                (Ok(Outcome::Descend(a, x)), Ok(Outcome::Descend(b, y))) => a == b && x == y,
+                (Err(a), Err(b)) => a == b,
+                _ => false,
+            };
+            assert!(same);
+            let Ok(Outcome::NeedKey(requested)) = resumed else { return };
+            for (index, (key, full)) in keys.iter_mut().zip(completed).enumerate() {
+                if index == requested {
+                    assert!(key.full().is_none());
+                    let Ok(()) = key.attach(full) else { panic!("requested attachment refused") };
+                }
+            }
+        }
+        panic!("the pass did not finish within its bound");
     }
 
-    /// A visit of a root of two separators routes as the specification that
-    /// `branch_routes_to_the_last_admitted_minimum` proves for the
-    /// complete-key lookup.
     #[kani::proof]
     #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
     #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
-    fn visit_of_a_branch_routes_as_complete_lookup() {
+    fn resumed_leaf_pass_equals_fresh_pass() {
         let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
         let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
         for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
-                let Ok(()) = key.attach(full) else {
-                    panic!("initial attachment refused")
-                };
+                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+            }
+        }
+        let values = [1u8, 2];
+        let (query, query_len) = bytes::<SMALL>();
+        let Ok(lookup) = PartialLookup::new(0usize, 0, &query[..query_len]) else {
+            panic!("partial lookup not created")
+        };
+        resumed_pass_equals_fresh_pass(&lookup, &mut keys, &completed, &Contents::Leaf(&values), 4);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_equals_fresh_pass() {
+        let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
+        let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
+        let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
+        for (key, full) in keys.iter_mut().zip(completed) {
+            if kani::any() {
+                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
             }
         }
         let children = [1usize, 2];
         let (query, query_len) = bytes::<SMALL>();
-        let query = &query[..query_len];
-        let Ok(mut lookup) = PartialLookup::new(0usize, 1, query) else {
+        let Ok(lookup) = PartialLookup::new(0usize, 1, &query[..query_len]) else {
             panic!("partial lookup not created")
         };
-        let Ok(node) = PartialNodeMut::<_, u8, _>::branch(&mut keys, &children) else {
-            panic!("branch refused")
-        };
-        let Ok(mut visit) = lookup.visit(0, node) else {
-            panic!("visit refused")
-        };
-        let result = match drive_visit(&mut visit, &completed, 3, (None, None), false) {
-            Err(error) => Err(error),
-            Ok(()) => match visit.finish() {
-                Ok(PartialStep::NeedNode(child)) => Ok(Some(child)),
-                Ok(PartialStep::Absent) => Ok(None),
-                Ok(_) => panic!("root finished with another step"),
-                Err(error) => Err(error),
-            },
-        };
-        let expected: Result<Option<usize>, Error> = if completed[0] >= completed[1] {
-            Err(Error::InvalidStructure)
-        } else if completed[1] <= query {
-            Ok(Some(2))
-        } else if completed[0] <= query {
-            Ok(Some(1))
-        } else {
-            Ok(None)
-        };
-        assert!(result == expected);
+        resumed_pass_equals_fresh_pass(&lookup, &mut keys, &completed, &Contents::Branch(&children), 4);
     }
 
     /// A visit of a one-key child, from the state after a descent, with the

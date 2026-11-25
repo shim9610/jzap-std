@@ -258,13 +258,37 @@ all verify, with and without `--no-simplify`, and the A1 and A4 Kani goto
 binaries verify; the unchanged build fails V1, V2, A1 and A4 as before. The
 scratch source was then restored and the rebuilt binary is byte-identical
 to the unchanged one. This isolates the fault to the code that commit added
-to that function; it does not test released CBMC 6.6.0 itself. Released
-binaries were not run (running downloaded release binaries was not
-permitted in this session).
+to that function.
 
-By this history, Kani releases from 0.65.0 on (CBMC 6.7.1 and later) are
-affected and Kani 0.64.0 and earlier (CBMC 6.6.0 and earlier) are not; this
-is inferred from the release contents, not run.
+Released CBMC binaries (the `ubuntu-24.04-cbmc-<version>-Linux.deb`
+assets of the diffblue/cbmc GitHub releases, fetched over TLS on
+2026-11-25; the releases publish no checksums, the local SHA-256 prefixes
+are listed) on `member_array.c`:
+
+| CBMC | `.deb` SHA-256 (prefix) | default | `--no-simplify` |
+| --- | --- | --- | --- |
+| 6.5.0 | `fc2d3c4add0eeaff` | V1–V5 verify | V1–V5 verify |
+| 6.6.0 | `8add27e726425984` | V1–V5 verify | V1–V5 verify |
+| 6.7.0 | `95060744d0ca4f37` | V1, V2 fail | V2 fails |
+| 6.7.1 | `1e9c1bb0e3e7d5b7` | V1, V2 fail | V2 fails |
+| 6.8.0 | `5c38bc8da449566b` | V1, V2 fail | V2 fails |
+| 6.10.0 | `d716c219c5318a54` | V1, V2 fail | V2 fails |
+| 6.11.0 (Kani 0.68.0 bundle) | — | V1, V2 fail | V2 fails |
+
+V3–V5 (controls) verify in every version. 6.9.0 was not run. The goto
+binaries Kani 0.68.0 produced for A4, A1 and B1, run with Kani's CBMC
+options by the released 6.6.0 and 6.7.0:
+
+| Harness | CBMC 6.6.0 | CBMC 6.7.0 |
+| --- | --- | --- |
+| A4 | verifies | fails |
+| A1 | verifies | fails |
+| B1 (Kissat) | verifies, no other failed property (131 s) | fails (76 s) |
+
+So the false counterexamples first appear in CBMC 6.7.0, the first release
+containing `78839a978c`. Kani releases from 0.65.0 (CBMC 6.7.1 and later)
+ship an affected CBMC and 0.64.0 (CBMC 6.6.0) does not; the Kani releases
+themselves were not run.
 
 ## Earlier cases
 
@@ -337,8 +361,8 @@ goto listings and playback copies go to `target/verification/kani-repro/`.
 - `resumed_branch_pass_equals_fresh_pass` ("too many addressed objects" at
   object bits 12) and the out-of-memory playbacks are not addressed.
 - Case 1 (`FixedTree` width-one chains) has no reproduction here.
-- A CBMC fix was not written or tested; Kani 0.64.0 / CBMC 6.6.0 and the
-  other released versions were not run. The struct branch's matching
+- A CBMC fix was not written or tested. Kani releases other than 0.68.0
+  and CBMC 6.9.0 were not run. The struct branch's matching
   recursion (`pointer_offset_size.cpp:914`) was not reached by these
   programs; whether it has the same fault is not checked.
 

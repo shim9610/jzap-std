@@ -1912,7 +1912,10 @@ mod proofs {
             &mut keys,
             &completed,
             &Contents::Branch(&children),
-            4,
+            // Each of the two separators is requested at most once (an
+            // attached key is never requested again), so two requests and
+            // the answer take three rounds; the bound panic checks it.
+            3,
         );
     }
 

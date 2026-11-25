@@ -1825,16 +1825,14 @@ mod proofs {
         panic!("the pass did not finish within its bound");
     }
 
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_leaf_pass_equals_fresh_pass() {
+    /// The resumption lemma over a leaf of two keys, with the initial
+    /// attachments fixed by `attached`.
+    fn resumed_leaf_pass_equals_fresh_pass(attached: [bool; 2]) {
         let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
         let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
-        for (key, full) in keys.iter_mut().zip(completed) {
-            if kani::any() {
+        for ((key, full), attach) in keys.iter_mut().zip(completed).zip(attached) {
+            if attach {
                 let Ok(()) = key.attach(full) else {
                     panic!("initial attachment refused")
                 };
@@ -1846,6 +1844,40 @@ mod proofs {
             panic!("partial lookup not created")
         };
         resumed_pass_equals_fresh_pass(&lookup, &mut keys, &completed, &Contents::Leaf(&values), 3);
+    }
+
+    // The initial attachments are fixed per harness to keep each one within
+    // memory; together they cover every choice.
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_leaf_pass_with_no_key_attached() {
+        resumed_leaf_pass_equals_fresh_pass([false, false]);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_leaf_pass_with_the_first_key_attached() {
+        resumed_leaf_pass_equals_fresh_pass([true, false]);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_leaf_pass_with_the_second_key_attached() {
+        resumed_leaf_pass_equals_fresh_pass([false, true]);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_leaf_pass_with_both_keys_attached() {
+        resumed_leaf_pass_equals_fresh_pass([true, true]);
     }
 
     /// The resumption lemma over a branch of two separators, with the

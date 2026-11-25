@@ -1781,17 +1781,23 @@ mod proofs {
     /// `provide` harnesses this covers the visit path. `contents` and `query`
     /// fix the node; attachments are arbitrary, and each requested key is
     /// attached with its completion before resuming, for `rounds` steps.
-    fn resumed_pass_equals_fresh_pass<const N: usize>(
+    fn resumed_pass_equals_fresh_pass<'a, const N: usize>(
         lookup: &PartialLookup<'_, [u8], PrefixFence<SMALL_P>, usize>,
-        keys: &mut [PrefixKey<'_, SMALL_P>; N],
-        completed: &[&[u8]; N],
+        keys: &mut [PrefixKey<'a, SMALL_P>; N],
+        completed: &[&'a [u8]; N],
         contents: &Contents<'_, u8, usize>,
         rounds: usize,
     ) {
         let mut progress = Progress::default();
         for _ in 0..rounds {
             let resumed = lookup.pass(keys.as_slice(), contents, None, None, &mut progress);
-            let fresh = lookup.pass(keys.as_slice(), contents, None, None, &mut Progress::default());
+            let fresh = lookup.pass(
+                keys.as_slice(),
+                contents,
+                None,
+                None,
+                &mut Progress::default(),
+            );
             let same = match (&resumed, &fresh) {
                 // Every check the resumed pass skipped is still decided, so
                 // both stop at the same key.
@@ -1804,11 +1810,15 @@ mod proofs {
                 _ => false,
             };
             assert!(same);
-            let Ok(Outcome::NeedKey(requested)) = resumed else { return };
+            let Ok(Outcome::NeedKey(requested)) = resumed else {
+                return;
+            };
             for (index, (key, full)) in keys.iter_mut().zip(completed).enumerate() {
                 if index == requested {
                     assert!(key.full().is_none());
-                    let Ok(()) = key.attach(full) else { panic!("requested attachment refused") };
+                    let Ok(()) = key.attach(full) else {
+                        panic!("requested attachment refused")
+                    };
                 }
             }
         }
@@ -1825,7 +1835,9 @@ mod proofs {
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
         for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
-                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
             }
         }
         let values = [1u8, 2];
@@ -1846,7 +1858,9 @@ mod proofs {
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
         for (key, full) in keys.iter_mut().zip(completed) {
             if kani::any() {
-                let Ok(()) = key.attach(full) else { panic!("initial attachment refused") };
+                let Ok(()) = key.attach(full) else {
+                    panic!("initial attachment refused")
+                };
             }
         }
         let children = [1usize, 2];
@@ -1854,7 +1868,13 @@ mod proofs {
         let Ok(lookup) = PartialLookup::new(0usize, 1, &query[..query_len]) else {
             panic!("partial lookup not created")
         };
-        resumed_pass_equals_fresh_pass(&lookup, &mut keys, &completed, &Contents::Branch(&children), 4);
+        resumed_pass_equals_fresh_pass(
+            &lookup,
+            &mut keys,
+            &completed,
+            &Contents::Branch(&children),
+            4,
+        );
     }
 
     /// A visit of a one-key child, from the state after a descent, with the

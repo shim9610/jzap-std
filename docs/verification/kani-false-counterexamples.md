@@ -234,6 +234,38 @@ caller, including cases where it is correct. A fix must keep the recursion
 only when the remaining offset `x` provably stays inside the inner array
 found at offset `C`; that was not written or tested.
 
+### When the fault was introduced
+
+From the CBMC history (`git blame` of `cbmc-6.11.0`, blob-less clone of
+`diffblue/cbmc` fetched 2026-11-25) and the Kani history:
+
+| Date | Event |
+| --- | --- |
+| 2022-10-21 | `78a884ed3e4`, `127aa8cf2a5`: `build_reference_to` calls `get_subexpression_at_offset(root_object, o.offset(), ...)` with an `exprt` offset. At that time the `exprt` overload returned no subexpression for any non-constant offset, so the generic byte-extract path was used. |
+| 2025-04-14 (authored), 2025-06-25 (merged, PR #8627 `simp_mult_offset`) | `78839a978c` "Simplify multiple-of-element size access to arrays" (fixes CBMC #8617). It adds the non-constant offset handling to the `exprt` overload, including the array branch's "offset C + x" recursion (`pointer_offset_size.cpp:763–791` at `cbmc-6.11.0`) and the struct branch's matching recursion, and makes `simplify_byte_extract` pass the offset expression (`simplify_expr.cpp:2064`) instead of only a constant. Its regression test `Array_operations4` uses flat `int` and `char` arrays, not an array member of a struct inside an array. |
+| 2025-06-26 | First release containing it: `cbmc-6.7.0`. `cbmc-6.6.0` (2025-04-28) does not contain it. |
+| 2025-07-06 | `b89c75d42a`: `index().is_zero()` replaced by `index() == 0` in the branch condition; same meaning. |
+| 2025-07-11 | Kani PR #4178 updates CBMC from 6.6.0 to 6.7.1; first Kani release with it `kani-0.65.0` (2025-08-07). `kani-0.64.0` uses CBMC 6.6.0. |
+| 2025-08-06 → 2026-05-27 | `d5b671e598` (multi-dimensional arrays), `d3f26dab3` (unions), `41dbde1ff` change the same function; the blamed recursion lines stay from `78839a978c`. |
+| 2026-08-28 | Kani moves to CBMC 6.11.0 (#4754); Kani 0.68.0 bundles it. |
+| after `cbmc-6.11.0` | only `2de63769c` (`bitst`/`bytest` types) touches the file on `develop` up to `6c5f75f`; the recursion is unchanged. |
+
+Check against the commit: in the same debug build of 6.11.0, the `exprt`
+overload's body was replaced, in the scratch source only, by its body before
+`78839a978c` (return no subexpression for a non-constant offset), and only
+`libutil` and `cbmc` were rebuilt. With that build `member_array.c` V1–V5
+all verify, with and without `--no-simplify`, and the A1 and A4 Kani goto
+binaries verify; the unchanged build fails V1, V2, A1 and A4 as before. The
+scratch source was then restored and the rebuilt binary is byte-identical
+to the unchanged one. This isolates the fault to the code that commit added
+to that function; it does not test released CBMC 6.6.0 itself. Released
+binaries were not run (running downloaded release binaries was not
+permitted in this session).
+
+By this history, Kani releases from 0.65.0 on (CBMC 6.7.1 and later) are
+affected and Kani 0.64.0 and earlier (CBMC 6.6.0 and earlier) are not; this
+is inferred from the release contents, not run.
+
 ## Earlier cases
 
 | Case | Status after this work |
@@ -305,7 +337,8 @@ goto listings and playback copies go to `target/verification/kani-repro/`.
 - `resumed_branch_pass_equals_fresh_pass` ("too many addressed objects" at
   object bits 12) and the out-of-memory playbacks are not addressed.
 - Case 1 (`FixedTree` width-one chains) has no reproduction here.
-- A CBMC fix was not written or tested. The struct branch's matching
+- A CBMC fix was not written or tested; Kani 0.64.0 / CBMC 6.6.0 and the
+  other released versions were not run. The struct branch's matching
   recursion (`pointer_offset_size.cpp:914`) was not reached by these
   programs; whether it has the same fault is not checked.
 

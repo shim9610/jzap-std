@@ -2030,3 +2030,91 @@ mod proofs {
         }
     }
 }
+
+#[cfg(test)]
+mod resumption_tests {
+    extern crate std;
+    use super::*;
+    use std::{format, vec, vec::Vec};
+
+    fn same<I: PartialEq>(a: &Result<Outcome<I>, Error>, b: &Result<Outcome<I>, Error>) -> bool {
+        match (a, b) {
+            (Ok(Outcome::NeedKey(x)), Ok(Outcome::NeedKey(y))) => x == y,
+            (Ok(Outcome::NeedFence), Ok(Outcome::NeedFence))
+            | (Ok(Outcome::Absent), Ok(Outcome::Absent)) => true,
+            (Ok(Outcome::Found(x)), Ok(Outcome::Found(y))) => x == y,
+            (Ok(Outcome::Descend(x, p)), Ok(Outcome::Descend(y, q))) => x == y && p == q,
+            (Err(x), Err(y)) => x == y,
+            _ => false,
+        }
+    }
+
+    /// The native counterpart of the resumption lemma: at every step, a pass
+    /// resumed after attaching the requested key gives what a pass from
+    /// scratch over the same keys gives, for every two-key leaf and branch
+    /// over bytes {0, 1, 2, 3} of up to two bytes with one inline byte.
+    #[test]
+    fn resumed_pass_equals_fresh_pass_exhaustively() {
+        let mut strings = vec![Vec::new()];
+        for a in 0..4u8 {
+            strings.push(vec![a]);
+            for b in 0..4u8 {
+                strings.push(vec![a, b]);
+            }
+        }
+        let stored =
+            |full: &[u8]| PrefixKey::<'_, 1>::new([full.first().copied().unwrap_or(0)], full.len());
+        let values = [1u8, 2];
+        let children = [1usize, 2];
+        let mut cases = 0usize;
+        for a in &strings {
+            for b in &strings {
+                let completed = [a.as_slice(), b.as_slice()];
+                for mask in 0..4u32 {
+                    for query in &strings {
+                        for (height, contents) in [
+                            (0, Contents::Leaf(&values[..])),
+                            (1, Contents::Branch(&children[..])),
+                        ] {
+                            let mut keys = [stored(completed[0]), stored(completed[1])];
+                            for (i, key) in keys.iter_mut().enumerate() {
+                                if mask >> i & 1 == 1 {
+                                    key.attach(completed[i]).unwrap();
+                                }
+                            }
+                            let lookup = PartialLookup::<'_, [u8], PrefixFence<1>, usize>::new(
+                                0, height, query,
+                            )
+                            .unwrap();
+                            let mut progress = Progress::default();
+                            for _ in 0..4 {
+                                let resumed =
+                                    lookup.pass(&keys, &contents, None, None, &mut progress);
+                                let fresh = lookup.pass(
+                                    &keys,
+                                    &contents,
+                                    None,
+                                    None,
+                                    &mut Progress::default(),
+                                );
+                                assert!(
+                                    same(&resumed, &fresh),
+                                    "{}",
+                                    format!(
+                                        "{a:?} {b:?} mask {mask} query {query:?} height {height}"
+                                    )
+                                );
+                                let Ok(Outcome::NeedKey(requested)) = resumed else {
+                                    break;
+                                };
+                                keys[requested].attach(completed[requested]).unwrap();
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 21 * 21 * 4 * 21 * 2);
+    }
+}

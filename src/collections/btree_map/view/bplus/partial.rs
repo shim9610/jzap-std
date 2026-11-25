@@ -52,7 +52,14 @@ pub trait PartialKey {
 /// Comparisons read the inline bytes first and an attached key's bytes after
 /// the prefix only when the prefixes are equal, so keys with distinct
 /// prefixes never touch the attached bytes.
+// `repr(C)` with the prefix first keeps the inline prefix at offset 0. CBMC
+// 6.7.0 to at least 6.11.0 resolve a pointer to an array field at a nonzero
+// offset of an array element with a symbolic index to the wrong element,
+// which gave false Kani counterexamples over `[PrefixKey]` (see
+// `docs/verification/kani-false-counterexamples.md`); the field order only
+// moves padding and does not change the size.
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct PrefixKey<'a, const P: usize> {
     prefix: [u8; P],
     len: usize,
@@ -60,7 +67,9 @@ pub struct PrefixKey<'a, const P: usize> {
 }
 
 /// The inline part of a [`PrefixKey`], kept by the lookup as a fence.
+// The same field order as `PrefixKey`, for the same reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct PrefixFence<const P: usize> {
     prefix: [u8; P],
     len: usize,

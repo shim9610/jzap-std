@@ -50,10 +50,15 @@ def audit_operations(rows,out):
         'crate::error::InitError::Storage','crate::arithmetic::bounded::wrapping_sub',
         'crate::init::prefix::initialize','prefix::initialize','initialize_one','write_next','crate::init::collection::fill',
         'grow_for_push',
+        # The trusted entries of the closed owner state (src/extent.rs,
+        # src/capacity.rs); verify_owner_extent.py pins their callers.
+        'Capacity::from_validated_raw','Self::from_validated_raw','crate::extent::Extent::from_raw_parts',
     }
     allowed_methods={'as_ptr','as_mut_ptr','as_ref','as_mut','cast','add','read','write','drop_in_place','get_unchecked','get_unchecked_mut',
         'get','len','front','read','written','remaining','unvisited_len','is_aligned','mark_initialized','disarm_field','into_bytes','into_std_vec',
-        'as_slice','as_str','budget','layout','size','assume_init'}
+        'as_slice','as_str','budget','layout','size','assume_init',
+        # Safe getters and the shortening transition of the owner extent.
+        'cap','shorten_to'}
     assert calls<=allowed_calls,('unbound unsafe operation',sorted(calls-allowed_calls))
     assert methods<=allowed_methods,('unbound unsafe operation',sorted(methods-allowed_methods))
     assert macros<={'core::ptr::addr_of_mut'},('unbound unsafe operation',sorted(macros-{'core::ptr::addr_of_mut'}))

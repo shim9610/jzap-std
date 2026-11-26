@@ -194,7 +194,7 @@ def main():
              '            mem::size_of::<T>(),\n            extra.capacity(),',
              '            0,\n            extra.capacity(),',
              'staging controller arguments and error routing'),
-            ('splice_fill_end','src/vec/edit.rs','                self.drain.tail_start,\n                &mut self.replacement,','                self.drain.tail_start.saturating_add(self.drain.tail_len),\n                &mut self.replacement,','initialization caller binding requires review'),
+            ('splice_fill_end','src/vec/edit.rs','                self.drain.tail_start,\n                &mut self.replacement,','                usize::MAX,\n                &mut self.replacement,','initialization caller binding requires review'),
             ('staging_fill_end','src/vec/edit.rs','    let end = extra.capacity();','    let end = extra.extent.len();','initialization caller binding requires review'),
             ('extraction_error_routing','src/vec/edit.rs','Err(error) => self.fail(error),','Err(error) => Some(Err(error)),','extraction adapter statements'),
             ('extraction_source_routing','src/vec/edit.rs','filter(unsafe { &mut *pointer.as_ptr().add(read) })','filter(unsafe { &mut *pointer.as_ptr() })','extraction physical leaf routing'),

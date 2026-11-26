@@ -9,13 +9,16 @@ pub(super) fn numeric_unit_owner<L: LengthPolicy>(
     // This in-crate representation fixture exercises the full numeric envelope,
     // including capacities below the limit. Public ZST raw interoperability has
     // the stricter capacity==limit contract, so it is not used for this fixture.
+    // SAFETY: every unit-array count has a valid zero-byte, alignment-one layout.
+    let capacity = unsafe { crate::capacity::Capacity::from_validated_raw(capacity) };
+    // The checked constructor admits exactly the states asserted above.
+    let Ok(extent) = crate::extent::Extent::try_new(length, capacity, policy) else {
+        unreachable!()
+    };
     Vec::<(), _, _> {
         ptr: NonNull::dangling(),
-        len: Checked::new(length),
-        // SAFETY: every unit-array count has a valid zero-byte, alignment-one layout.
-        cap: unsafe { crate::capacity::Capacity::from_validated_raw(capacity) },
+        extent,
         policy: Unmetered,
-        limit: policy,
         marker: PhantomData,
     }
 }

@@ -112,7 +112,7 @@ fn extraction_preserves_every_valid_cursor_state() {
     assert!(it.state.total() == original);
     assert!(it.size_hint().1 == Some(it.state.end() - it.state.read()));
     drop(it);
-    assert!(owner.len.get() <= original);
+    assert!(owner.extent.len() <= original);
 }
 
 #[kani::proof]
@@ -136,8 +136,8 @@ fn drain_preserves_every_valid_cursor_state() {
     assert!(it.span.front() <= it.span.back() && it.span.back() <= it.tail_start);
     assert!(it.len() == it.span.back() - it.span.front());
     drop(it);
-    assert!(owner.len.get() == start + (original - end));
-    assert!(owner.len.get() <= original);
+    assert!(owner.extent.len() == start + (original - end));
+    assert!(owner.extent.len() <= original);
 }
 
 #[kani::proof]

@@ -31,6 +31,8 @@ pub mod default;
 pub mod deque;
 pub mod error;
 #[cfg(feature = "alloc")]
+mod extent;
+#[cfg(feature = "alloc")]
 pub mod fmt;
 pub mod init;
 pub mod iter;

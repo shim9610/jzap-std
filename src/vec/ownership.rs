@@ -8,11 +8,11 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         let owner = core::mem::ManuallyDrop::new(self);
         (
             owner.ptr,
-            owner.len.get(),
-            owner.cap.get(),
+            owner.extent.len(),
+            owner.extent.cap(),
             // SAFETY: the disarmed owner transfers its policy exactly once.
             unsafe { core::ptr::read(&owner.policy) },
-            owner.limit,
+            owner.extent.limit(),
         )
     }
     /// # Safety
@@ -28,10 +28,16 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     ) -> Self {
         Self {
             ptr,
-            len: Checked::new(len),
-            cap: unsafe { crate::capacity::Capacity::from_validated_raw(capacity) },
+            // SAFETY: the caller's contract is the contract of both trusted
+            // entries: a valid array layout and len <= capacity <= limit.
+            extent: unsafe {
+                crate::extent::Extent::from_raw_parts(
+                    len,
+                    crate::capacity::Capacity::from_validated_raw(capacity),
+                    limit,
+                )
+            },
             policy,
-            limit,
             marker: PhantomData,
         }
     }
@@ -65,7 +71,18 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 });
             }
         };
-        let (ptr, len) = {
+        // Admitted before the accounting and the transfer: a refusal returns
+        // the source unchanged.
+        let extent = match crate::extent::Extent::try_new(source.len(), capacity, limit) {
+            Ok(extent) => extent,
+            Err(error) => {
+                return Err(Rejected {
+                    value: source,
+                    error,
+                });
+            }
+        };
+        let ptr = {
             let reservation = match policy.budget().reserve(layout.size()) {
                 Ok(reservation) => reservation,
                 Err(error) => {
@@ -77,19 +94,16 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             };
             // SAFETY: Vec::as_mut_ptr is non-null/aligned, including empty/ZST vectors.
             let ptr = unsafe { NonNull::new_unchecked(source.as_mut_ptr()) };
-            let len = source.len();
             if let Some(r) = reservation {
                 r.commit().retain();
             }
-            (ptr, len)
+            ptr
         };
         mem::forget(source);
         Ok(Self {
             ptr,
-            len: Checked::new(len),
-            cap: capacity,
+            extent,
             policy,
-            limit,
             marker: PhantomData,
         })
     }
@@ -121,10 +135,9 @@ impl<T, P: AllocationPolicy> Vec<T, P> {
         let (ptr, policy) = crate::boxed::Box::into_raw_parts(source);
         Self {
             ptr: ptr.cast(),
-            len: Checked::new(len),
-            cap: capacity,
+            // The slice capacity holds the slice length, so nothing is clamped.
+            extent: crate::extent::Extent::unlimited_clamped(len, capacity),
             policy,
-            limit: Unlimited,
             marker: PhantomData,
         }
     }
@@ -151,8 +164,8 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> IntoIterator for Vec<T, P, L> {
     type Item = T;
     type IntoIter = IntoIter<T, P, L>;
     fn into_iter(mut self) -> Self::IntoIter {
-        let back = self.len.get();
-        self.len = Checked::new(0);
+        let back = self.extent.len();
+        self.extent.shorten_to(0);
         IntoIter {
             owner: self,
             span: crate::span::Span::full(back),
@@ -246,7 +259,7 @@ impl<T: TryClone, P: AllocationPolicy, L: LengthPolicy> TryClone for IntoIter<T,
         let mut replacement = Vec::try_from_slice_in(
             source.as_slice(),
             self.owner.policy.try_clone()?,
-            self.owner.limit,
+            self.owner.extent.limit(),
         )?
         .into_iter();
         mem::swap(self, &mut replacement);
@@ -256,7 +269,7 @@ impl<T: TryClone, P: AllocationPolicy, L: LengthPolicy> TryClone for IntoIter<T,
         Ok(Vec::try_from_slice_in(
             self.as_slice(),
             self.owner.policy.try_clone()?,
-            self.owner.limit,
+            self.owner.extent.limit(),
         )?
         .into_iter())
     }
@@ -272,7 +285,7 @@ impl<'a, T: TryCloneIn<'a>, P: AllocationPolicy, L: LengthPolicy> TryCloneIn<'a>
 {
     type Output = IntoIter<T::Output, Budget<'a>, L>;
     fn try_clone_in(&self, budget: Budget<'a>) -> Result<Self::Output, Error> {
-        let mut copy = Vec::empty(budget, self.owner.limit);
+        let mut copy = Vec::empty(budget, self.owner.extent.limit());
         copy.try_reserve_exact(self.span.len())?;
         copy.try_resize_with_init(self.span.len(), |i, slot| {
             // SAFETY: i covers exactly the remaining initialized iterator range.

@@ -20,6 +20,17 @@ at the site:
 | `verified-caller` | Every product call is made by a function verified on the product source that establishes the premise |
 | `direct-source` | The site is inside a product function with its own verified specification |
 
+Two further bases were put to the owner on 2026-11-26 and approved. They are
+reported under their own names and are never merged into the four above:
+
+| Basis | Meaning |
+| --- | --- |
+| `instantiated-kani` | The premise is an invariant shown by actual-Rust Kani harnesses over every machine word for named instantiations (a zero-sized element for whole methods; sized elements for the pointer-free capacity paths), each assuming only that invariant on entry, together with an inductive closure: every constructor establishes it, every writer preserves it, and the set of writers is pinned by the scanner. It is not a solver proof for every `T`; the instantiations are listed with the row |
+| `trust-boundary` | The premise is exactly one item of the fixed list under "Trust boundary" below and nothing inside the library can establish it. A reason outside that list is not accepted |
+
+Not implemented yet: `scripts/premise_status.py` knows only the first four
+bases, and no row uses the two new ones.
+
 Every other row is `premise-stated-not-proved` and keeps the certificate
 incomplete. Baseline at `c9c61b7`, from the binding lists without solvers:
 93 connected, 1,078 stated and not proved (1,064 and the 14 String rows),
@@ -35,6 +46,10 @@ the product is not to be changed for the sake of a proof.
 - A proof may add what compiles to nothing in a product build: specifications
   under `cfg_attr(verus_keep_ghost, ...)`, ghost and proof blocks, harnesses
   under `cfg(kani)`, maintained proof functions, binding tables and scripts.
+- Loop invariants on product loops that exist only under `cfg(kani)`
+  (`cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(..))`) were
+  put to the owner and approved on 2026-11-26, under the acceptance check
+  below.
 - Acceptance for a step that touches a product file: the machine code of every
   benchmark executable is identical to the commit before: every function
   body compares equal (`tools/perf-audit/codegen_diff.py` on builds with
@@ -130,11 +145,57 @@ new `safe_iterator_state` as `no-premise`, `raw_parts_owner` as the contract of
 
 ### Approach under the constraint
 
-Not designed yet. The invariant has to be shown on the product as it is: every
-constructor establishes it and every existing write of `len`, `cap` and
-`limit` preserves it, with the set of writers pinned by the scanner so that a
-new write fails the check. The means available are specifications on the
-existing functions that compile to nothing, and actual-Rust Kani harnesses
-over every machine word of the three fields that assume only the invariant
-on entry. Which of the 40 write sites each means can cover has not been
-determined.
+Design from reading the source at `27a705a`; nothing below has been run yet.
+The full report is kept locally under `target/verification/i16/designs/`.
+
+- **Verus cannot carry a specification on a `Vec` or `Buffer` method.** Both
+  structs have a `NonNull<T>` field, which this Verus does not accept
+  (`docs/direct-source-migration.md`). The word-level kernels it can see
+  already have specifications; what is unproved is the glue between a kernel
+  result and the field store.
+- **Means: actual-Rust Kani, per instantiation, plus an inductive closure**
+  (basis `instantiated-kani`). Constructors establish
+  `len <= cap <= limit` and the byte bound; each of the 34 assignments of
+  `len`, the swap in `try_reuse_larger_buffer`, the two lends of `&mut len` to
+  `init::collection::fill` and the three writes of `cap` is run by a harness
+  that assumes only the invariant and asserts it on exit. Guards (`Drain`,
+  `Splice`, `ExtractIf`, `Compact`, `IntoIter`) get a pair invariant with the
+  owner, established at their constructor.
+- **Scanner.** `state_sites` records assignments and struct literals. It must
+  also record mutable borrows of the three fields (including arguments of
+  `mem::swap`), so that the writer set is pinned and a new write fails.
+- **A premise that is false as written.** `hole_valid` requires
+  `len <= tail`. After `Splice::try_finish` takes the `tail_len == 0` branch
+  and pushes, `len > tail_start` is reachable and `restore_tail` still runs
+  (with `tail_len == 0`). Read in the source, not yet run. `hole_restore` and
+  `drain_before_tail_restore` are restated before they are proved.
+- **Known not to close this way:** `try_write_vectored` exists only for `u8`,
+  so it has no zero-sized instantiation; the `Vec` that `VecDeque::into_vec`
+  builds from the deque's words depends on unit 4; external callers of
+  `Vec::from_raw_parts` and values adopted from `std` are trust boundary.
+- **Not determined without running Kani:** loop invariants on the `for`,
+  `while let` and `loop` forms at `src/vec/convenience.rs`, `src/vec/edit.rs`
+  and `src/boxed/buffer.rs`; stubbing of the storage functions for the sized
+  capacity harnesses; solver time and memory.
+
+### Steps
+
+1. Restate the Drain/hole contracts to the invariant the product keeps; drop
+   requirements the product checks itself.
+2. Rebind the contracts whose premise is discharged inside a directly
+   verified function (`admitted_cursor`, the staging and dedup ledger rows).
+3. Extend the scanner to every mutation channel; bind the swap and the lends;
+   add defect controls.
+4. Buffer closure harnesses.
+5. Vec closure harnesses without new loop invariants.
+6. Second instantiations: the capacity paths at sized elements with the
+   storage functions stubbed; a zero-sized array and a failing-clone type.
+7. Guard pair invariants and the whole `try_finish`.
+8. Loop invariants under `cfg(kani)` on four product loops, with the machine
+   code comparison.
+9. The closure check that maps every pinned site to a harness; only then do
+   contracts move to `instantiated-kani`.
+10. Split the contracts shared with VecDeque and BinaryHeap per owner.
+
+Each step is committed and pushed. Row counts are reported from a certificate
+run, not from this plan.

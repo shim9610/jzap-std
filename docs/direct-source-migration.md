@@ -3196,9 +3196,10 @@ B+ ancestor row and the String rows:
 | `premise-stated-not-proved` | The contract is verified, but its premise is only stated |
 | `unproved` | The contract is not verified |
 
-`complete` still requires zero `unproved` rows and zero unproved link edges.
-`premise-stated-not-proved` rows are reported in `source_obligation_counts` and
-do not block completion. Other changes in the same unit: `spec fn` names are
+`complete` requires every row to be `solver-and-source-connected`: zero
+`unproved` rows, zero `premise-stated-not-proved` rows and zero unproved link
+edges. The certificate therefore fails until every stated premise is proved
+(user decision, 2026-11-26). Other changes in the same unit: `spec fn` names are
 excluded from the verified set (`source_certificate.py`, `caller_bindings.py`,
 the String, shared and B-tree area summaries and the modular-call coverage of
 `verify_wrapping_memory.py`); `pair_window_advance` and `lookup_path_read`
@@ -3225,12 +3226,17 @@ run with this rule.
 | B+ ancestor read | 1 | 0 | 1 | 0 |
 | Total | 1,171 | 93 | 1,064 | 14 |
 
-The 14 String rows name the labels `UTF-8-owner-transfer`,
-`edit-geometry-and-capacity-admission` and `retain-cursor-and-restore`. The
-first certificate run with this rule therefore reports `complete=false` unless
-they are rebound. `try_push` and `try_replace_range` correspond to
-`string_push_caller` and `string_replace_caller` (see the String unit above);
-no verified function corresponds to the other two labels.
+The 14 String rows named the labels `UTF-8-owner-transfer`,
+`edit-geometry-and-capacity-admission` and `retain-cursor-and-restore`, which
+are not verified functions. They are rebound per unsafe block
+(`verify_string.py` `CONTRACTS`): the push and replace blocks to
+`string_push_caller` and `string_replace_caller`, the retain and drain blocks
+to `retain_next`, `retain_restore` and `string_drain_restore`, and the seven
+UTF-8 transfer blocks to the scalar-encoder Kani harness. All 14 are then
+`premise-stated-not-proved` (0 unproved): the owner premises of the byte
+extents and the UTF-8 invariant over every mutator are stated, not proved.
+The table above predates this rebinding. The certificate reports
+`complete=false` until the stated premises of every area are proved.
 
 Internal modular calls (`verify_wrapping_memory.py`): 53 calls, 28 with
 established premises (the `fixed-bplus` and `bplus-partial` direct targets, the

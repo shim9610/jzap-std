@@ -34,6 +34,27 @@ EXPECTED={
  ('src/string/convert.rs','leak'):['core::str::from_utf8_unchecked_mut(self.bytes.leak())'],
 }
 from callsite_projection import PINNED_BODIES
+# The verified contract each unsafe block above rests on, in block order.
+# Byte extents and cursors are the maintained Verus callers and kernels of
+# tools/memory-proof/string.verus.rs; UTF-8 validity of the owner's bytes is
+# the type invariant whose scalar producer is the actual-source Kani encoder
+# proof. Their premises are recorded in premise_status.py.
+UTF8='kani:string::proofs::scalar_encoding_fits_four_bytes_and_is_utf8'
+CONTRACTS={
+ ('src/string/encoding.rs','write_scalar'):['string_push_caller'],
+ ('src/string.rs','try_push'):['string_push_caller'],
+ ('src/string.rs','as_str'):[UTF8],
+ ('src/string.rs','as_mut_str'):[UTF8],
+ ('src/string/edit.rs','try_replace_range'):['string_replace_caller'],
+ ('src/string/edit.rs','try_retain'):['retain_next','retain_next'],
+ ('src/string/edit.rs','drop'):['retain_restore','string_drain_restore'],
+ ('src/string/convert.rs','into_std'):[UTF8],
+ ('src/string/convert.rs','try_from_std_in'):[UTF8],
+ ('src/string/convert.rs','from_raw_parts'):[UTF8],
+ ('src/string/convert.rs','try_into_boxed_str'):[UTF8],
+ ('src/string/convert.rs','leak'):[UTF8],
+}
+assert {k:len(v) for k,v in CONTRACTS.items()}=={k:len(v) for k,v in EXPECTED.items()}
 RESERVATION={name:PINNED_BODIES[('src/vec.rs',name,'Vec')] for name in ('try_reserve','grow','grow_to','resize_storage')}
 # Maintained callers and the product kernels each must call.
 CALLERS={'string_replace_caller':['crate::string::edit::Edit::new(len,start,end,inserted,limit)','string_try_reserve(len,cap,limit,plan.additional)','overlapping_copy_caller(s,plan.end,plan.destination,plan.tail)','distinct_nonoverlap_caller(text,s,0,plan.start,inserted)'],
@@ -56,7 +77,7 @@ def bindings(root=ROOT):
   expr=compact(row['expression']);assert expr.startswith('unsafe{') and expr.endswith('}')
   expr=expr[7:-1];key=(row['file'],row['function']);i=blocks.get(key,0)
   assert key in EXPECTED and i<len(EXPECTED[key]) and expr==EXPECTED[key][i],('unbound String unsafe argument',row)
-  blocks[key]=i+1;out.append(dict(site=row,contract='edit-geometry-and-capacity-admission' if key[1] in ('try_replace_range','try_push') else 'retain-cursor-and-restore' if key[1] in ('try_retain','drop') else 'UTF-8-owner-transfer',boundary='typed storage and UTF-8 invariants; actual-pointer tests'))
+  blocks[key]=i+1;out.append(dict(site=row,contract=CONTRACTS[key][i],boundary='typed storage and UTF-8 invariants; actual-pointer tests'))
  assert blocks=={k:len(v) for k,v in EXPECTED.items()}
  unsafe_fn=[r for r in rows if r['kind']=='unsafe_fn'];assert {r['function'] for r in unsafe_fn}=={'from_raw_parts','from_utf8_unchecked','as_mut_vec','write_scalar'} and len(unsafe_fn)==4
  impls=[r for r in rows if r['kind']=='unsafe_impl'];assert len(impls)==2 and {r['context'] for r in impls}=={"Drain < '_ , P , L >"}

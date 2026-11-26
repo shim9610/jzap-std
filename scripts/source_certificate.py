@@ -9,8 +9,8 @@ agreed compiler/Miri/unsafe-caller verification boundary.
 Each source obligation has one of three dispositions (premise_status.py):
 solver-and-source-connected (verified contract, premise established),
 premise-stated-not-proved (verified contract, premise only stated) and
-unproved (no verified contract). Completion requires zero unproved rows; the
-stated-not-proved rows are reported separately.
+unproved (no verified contract). Completion requires every row to be
+solver-and-source-connected.
 """
 import argparse,fcntl,hashlib,json,os,py_compile,re,subprocess,time
 from pathlib import Path
@@ -578,7 +578,9 @@ def main():
         assert all(b['contract'] in verified for b in area['bindings'])
     source_obligations=obligations(owner,string,(shared,btree,hash_map,binary_heap,deque,scratch),verified,(ROOT/BPLUS_ANCESTOR['file']).read_text())
     counts=obligation_counts(source_obligations)
-    open_source=counts[UNPROVED]
+    # A row whose premise is only stated is open: the certificate is complete
+    # only when every row is solver-and-source-connected.
+    open_source=counts[UNPROVED]+counts[STATED_NOT_PROVED]
     unproved_edges=sum(b['disposition'] not in ('guard-unreachable-under-verified-source-contracts','no-unproved-library-originating-edge') for b in branches+forward)
     full_profiles=set(args.profiles.split(','))=={'release','release-lto','release-checked','debug'}
     complete=not args.reuse_models and full_profiles and not open_source and not unproved_edges and owner['source_closure_complete'] and all(
@@ -587,8 +589,8 @@ def main():
         source_sha256=before,source_unchanged=True,models=owner,budget_native=budget_native,direct_foundation=foundation,direct_verus=direct_verus,string=string,shared=shared,btree=btree,btree_set=btree_set,hash_map=hash_map,hash_set=hash_set,binary_heap=binary_heap,deque=deque,scratch=scratch,link=link,
         branches=branches+forward,unproved_link_edges=unproved_edges,open_source_obligations=open_source,
         source_obligation_counts=counts,
-        completion_rule='complete requires zero unproved source obligations and zero unproved link edges; '
-            'premise-stated-not-proved rows are counted separately and do not block completion',
+        completion_rule='complete requires every source obligation to be solver-and-source-connected '
+            '(zero unproved and zero premise-stated-not-proved rows) and zero unproved link edges',
         steps=steps,reused_models=args.reuse_models,bplus=bplus,
         campaign=dict(started_ns=started,invocations=invocations,actions=context),
         scope='Numeric overflow-to-memory and internal guard unreachability for the checked Box/Vec/String/Rc/Arc/BTreeMap/BTreeSet/HashMap/HashSet/BinaryHeap/VecDeque/Scratch/checked-slice and concurrent-budget source contracts and Linux x86_64 link fixtures. Direct Rust/Verus kernels and reviewed source projections remain distinct evidence. Rust/compiler/core ABI, valid allocator, safe ownership, public unsafe and returning callback contracts remain explicit; actual alias/initialization/drop scenarios are checked by the separate Miri/ASan/compiler suites.')

@@ -198,6 +198,19 @@ STATED = {
                'shared_prefix_driver', 'shared_release_caller', 'shared_release_credit',
                'shared_slice_copy_caller', 'shared_source_retirement', 'shared_typed_transfer',
                'shared_value_caller', 'shared_buffered_reservation_extent']),
+    **_stated('String byte extents: string_push_caller and string_replace_caller require the owner '
+              'premises len <= cap <= limit and raw_valid storage (tools/memory-proof/string.verus.rs:113, '
+              ':136); retain_next, retain_restore and string_drain_restore require the retain/drain cursor '
+              'state (read <= original, written <= read, a valid range; :3, :16, :71). The product '
+              'String methods are not verified against these requires',
+              ['string_push_caller', 'string_replace_caller', 'retain_next', 'retain_restore',
+               'string_drain_restore']),
+    **_stated('UTF-8 validity of the owner bytes is the String type invariant: every mutator writes '
+              'scalars encoded by write_scalar (proved valid UTF-8 for every char by this harness, '
+              'src/string/proofs.rs:56) or copies validated UTF-8, std String values are valid by the std '
+              'invariant, and from_raw_parts is a public unsafe caller contract; no proof closes the '
+              'invariant over every mutator',
+              ['kani:string::proofs::scalar_encoding_fits_four_bytes_and_is_utf8']),
     **_stated('Projection lemma over Seq<bool> (tools/consumer-audit/bplus_core_guards.rs:69-91); the '
               'product descend loop is bound to it only by a whole-file SHA-256 '
               '(scripts/bplus_bindings.py) and is not verified against initialized_ancestors',

@@ -237,6 +237,8 @@ def coverage(census):
         ("src/collections/btree_map/view/bplus/fixed.rs", "", "leaf_rank"): (1, ["direct:fixed-bplus"]),
         ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize"): (3, ["direct:fixed-bplus"]),
         ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize_branch"): (2, ["direct:fixed-bplus"]),
+        # The partial-key pass core, verified directly (target bplus-partial).
+        ("src/collections/btree_map/view/bplus/partial.rs", "", "pass_over"): (7, ["direct:bplus-partial"]),
     }
     found, ledger = {}, []
     for row in census:

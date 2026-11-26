@@ -328,52 +328,104 @@ Out of scope for this checkpoint:
 
 ## Verification
 
-Toolchains: Rust 1.95.0, Kani 0.68.0 with CBMC 6.11.0, Miri from
-`nightly-2026-10-30`. The certificate stage `bplus-partial` runs the Kani,
-Miri and link checks below.
+Toolchains: Rust 1.95.0, Verus 0.2026.11.02 (`8bf68ee`), Kani 0.68.0 with
+CBMC 6.11.0 and Kissat, Miri from `nightly-2026-10-30`. Results below are
+for source `83c2a5c` and later (the pass split, the `repr(C)` layout and
+the harness changes); the certificate stage `bplus-partial` runs the Kani,
+Miri and link checks, and the `direct-verus` stage runs the Verus target.
+
+### What is proved with Verus
+
+`pass` is split into `pass_over`, which holds every check and the search
+and takes the four comparisons as closures over key indices, and a wrapper
+that builds those closures from `order_keys`, `order_fence` and
+`order_query`, checks the passed fence keys with `fence_admits` and looks
+up the child of a descent. `pass_over` is verified directly on the product
+source (`scripts/verify_direct_verus.py --target bplus-partial`, with
+`--no-cheating`; 287 verifier obligations for the crate) for every key
+count `n` and both Verus word widths.
+
+The model: the completions of the keys, the query and the fences' full keys
+are elements of one total order (`PartialKey::Full: Ord`), and finitely many
+of them meet in a pass, so a ghost `rank` places them on the integers. The
+closures' contracts are that an `Order` result is the order of the ranks, a
+`Key(i)` names an unattached key of that comparison, and only a fence
+comparison may return `Fence`. The proof is generic over the model, which a
+marker trait (`Completions`) supplies; it is erased from Cargo builds.
+
+Proved:
+
+- every check a `Progress` records holds for the completions (the first
+  key equals the minimum fence, the recorded pairs are increasing, the last
+  key is below the ceiling, the search bounds and an equal key), and a pass
+  keeps that true. Attaching keys leaves the completions unchanged, so a
+  pass resumed from an earlier progress (`PartialVisit::run`) and a pass
+  from scratch (`provide`) give the same answers;
+- an answer is the specification over the completions: `Found(i)` only in a
+  valid leaf with key `i` equal to the query, `Absent` when no key equals
+  it (leaf) or every separator is above it (branch), `Descend(i)` with
+  separator `i` the last at or below the query;
+- `InvalidStructure` only for a node that is not valid (a minimum, order or
+  ceiling violation);
+- `NeedKey(i)` names an unattached key below `n`, so a caller that attaches
+  each requested key needs at most `n` key requests per node.
+
+Six injected defects in `pass_over` are detected (pair order not checked,
+minimum accepted below, ceiling accepted at equal, search bound not
+advanced, a branch descending one separator too far, a deferred ceiling
+fence ignored).
+
+Not proved with Verus: the comparison helpers and `PrefixKey` (Kani, below);
+the wrapper's fence admission and child lookup, `apply`, `descend` and
+`check` (Kani lookup and protocol harnesses and the tests); `PartialVisit`
+and `unresolved_keys` (Kani and tests).
+
+### Kani and the other checks
 
 | Check | Scope | Result |
 | --- | --- | --- |
-| Kani, `PrefixKey` laws | Two arbitrary byte strings of up to 4 bytes, 2 inline bytes: every decided comparison holds for the completions; complete keys always decide; `fence_admits` and `attach` accept exactly the consistent completions | Pass |
-| Kani, leaf lookup | Leaves of 1 and 2 keys of up to 2 bytes with 1 inline byte, arbitrary bytes, attachments and query: resolving each request gives the result of `bplus::Lookup` over the completions, and only unresolved keys are requested | Pass |
-| Kani, branch step | Two separators, each attachment choice in its own harness: the route, `Absent` or error matches the specification that `branch_routes_to_the_last_admitted_minimum` proves for the complete-key lookup, and the stored fences, origins, depth and path are the state the child step starts from | Pass (4 harnesses) |
-| Kani, child step | From that state, a one-key leaf with both fences or the minimum only: with fence keys passed in advance, the result equals the complete-key checks; one call without fence keys either gives that result or requests or refuses with the state unchanged | Pass (4 harnesses) |
-| Kani, protocol | Out-of-turn identifiers, fence keys passed without a fence, and requests leave the lookup unchanged | Pass |
-| Kani, listed keys | Leaves of 1 and 2 keys, the branch step and the child step with both fences or the minimum only, arbitrary attachments: after attaching every key `unresolved_keys` lists, the pass returns no `NeedKey` (with and without fence keys in the child step) | Pass (5 harnesses) |
-| Native exhaustive test | Leaves of 0 to 3 keys over bytes {0, 1, 2, 3}, lengths 0 to 2, 1 inline byte, every attachment choice and query: 1,593,795 cases equal `bplus::Lookup`, and in each case a single pass after attaching the listed keys gives the same answer. Four byte values realize every order of three keys and a query at each position | Pass |
-| Property test | 300 random trees (leaf width 2 to 6, branch width 2 to 5) of keys with shared prefixes up to 8 bytes and 4 inline bytes, 40 queries each, against `std::collections::BTreeMap`; half of the trees attach the listed keys of each node first. 19,337 key and 8,424 fence requests and 19,844 listed keys; each node requests at most its incomplete keys, and a node whose listed keys were attached requests none | Pass |
-| Damage tests | Off-path order damage (`[1, 5, 3, 7]`, plain and behind equal prefixes), duplicate keys, attachments contradicting length or prefix, a fence key the fence does not admit, a fence key for a missing fence, and a child minimum that differs from its separator after the prefix | Refused with `InvalidStructure` |
-| Miri | The integration tests on x86-64 and i686 with strict provenance, and with Tree Borrows | Pass |
+| Kani, `PrefixKey` laws | Two arbitrary byte strings of up to 4 bytes, 2 inline bytes, and up to 9 bytes with 8 inline bytes: every decided comparison holds for the completions; complete keys always decide; `fence_admits` and `attach` accept exactly the consistent completions. Two lemmas prove the word-wise `cmp_short` and `cmp_prefixes` equal to byte order without stubs | Pass (4 harnesses) |
+| Kani, decision contracts | The closure contracts of the Verus proof for `order_keys`, `order_fence` (fence key passed or not) and `order_query`, over two keys of up to 4 bytes with 2 inline bytes and every attachment choice | Pass (3 harnesses) |
+| Kani, leaf lookup | Leaves of 1 and 2 keys of up to 2 bytes with 1 inline byte, arbitrary bytes, attachments and query: resolving each request gives the result of `bplus::Lookup` over the completions | Pass (2 harnesses) |
+| Kani, branch step | Two separators, each attachment choice in its own harness: the route, `Absent` or error matches the complete-key specification, and the stored fences, origins, depth and path are the state the child step starts from | Pass (4 harnesses) |
+| Kani, child step | From that state, a one-key leaf with both fences or the minimum only, fence keys in advance or on request | Pass (4 harnesses) |
+| Kani, listed keys | Leaves of 1 and 2 keys, the branch step and the child step: after attaching every listed key the pass returns no `NeedKey` | Pass (5 harnesses) |
+| Kani, visits and protocol | A visit of a one-key leaf and of a child (fences on request or the minimum in advance) gives the complete-key result; `attach_with` refuses changed stored parts; out-of-turn identifiers, unadmitted fence keys and requests leave the lookup unchanged | Pass (5 harnesses) |
+| Native exhaustive tests | Leaves of 0 to 3 keys over bytes {0, 1, 2, 3}, lengths 0 to 2, 1 inline byte, every attachment choice and query (1,593,795 cases including the visit and listed paths), and 37,044 branch visits, against `bplus::Lookup` | Pass |
+| Property tests | Random trees with shared prefixes against `std::collections::BTreeMap`, through `provide` and through `visit` | Pass |
+| Miri | The ten integration tests on x86-64 and i686 with strict provenance | Pass |
 | Final link | `tools/consumer-audit/cases/bplus_partial.rs` in the release-checked and release-LTO-checked profiles: no retained panic or exit edge; the overflow, bounds and abort controls are detected | Pass |
-| Defect controls | Six injected defects (pair order skipped, minimum not required equal, prefix order reversed, attachment length ignored, undecided treated as equal, fence request ignored) fail the tests; three of them also fail the corresponding Kani harness | Detected |
 
-The module adds no `unsafe` code; the unsafe inventory is unchanged at 608
-blocks.
+The 27 Kani harnesses were run one per process with `--solver kissat`,
+`-Z stubbing` and `--object-bits 12` (6 to 728 s each). The lookup-level
+harnesses replace `cmp_short` and `cmp_prefixes` by byte order, which the two
+lemmas prove equal.
 
 Kani limits and how they were handled:
 
 - A single harness over a leaf of 3 keys, or over a root and two leaves,
-  exhausts CBMC memory (about 13 GB). The proof is split into the leaf,
-  branch and child steps above, which compose through the lookup state; the
-  three-key leaf is covered by the native exhaustive test.
-- With the default CaDiCaL solver, the branch harnesses peak near 13 GB and
-  one failed for memory when all harnesses ran in one process. With Kissat
-  the 12 harnesses run in one process in 56 minutes and peak at 5.5 GB.
-- Indexing the key array with the symbolic requested index
-  (`keys[requested]`) produced a counterexample that contradicts the same
-  path's own assertions: the inline-byte equality held for every index
-  below `N`, `requested < N` held, and the same equality failed at
-  `keys[requested]`. The harnesses select the requested key with a concrete
-  loop instead. This counterexample is not counted as a product defect, and
-  the native exhaustive test checks the same property.
-- Two listed-key harnesses that consumed the `unresolved_keys` iterator
-  failed. Kani's concrete playback of each counterexample, inserted into a
-  copy of the source and run natively, passes: the assertion holds for the
-  reported inputs. The harnesses now evaluate the iterator's filter
-  predicate (`needs_key`) for each index and pass; the iterator is
-  `(0..len).filter(needs_key)`. The failures are recorded as Kani false
-  counterexamples, not product defects, and the native exhaustive and
-  property tests use the iterator itself.
+  exhausts CBMC memory. The proof is split into the leaf, branch and child
+  steps, which compose through the lookup state; the three-key leaf is
+  covered by the native exhaustive test.
+- Kani harnesses for the resumption lemma (a resumed pass equals a pass from
+  scratch) passed for two-key leaves but the branch harnesses ran out of
+  memory at 15 GB, also when split by attachment choice and by input
+  region (CBMC builds the whole formula before an assumption takes effect).
+  They are replaced by the Verus proof above, which covers every key count.
+- False counterexamples over `[PrefixKey]` came from a CBMC fault (6.7.0 to
+  at least 6.11.0) that resolves a pointer to an array field at a nonzero
+  offset of an array element with a symbolic index to the wrong element;
+  see `docs/verification/kani-false-counterexamples.md`. `PrefixKey` and
+  `PrefixFence` keep the prefix at offset 0 (`repr(C)`, prefix first); a
+  copy with this layout verified the leaf resumption lemma that failed with
+  the default layout (offset 24), and the sizes are unchanged on 64-bit
+  targets. CBMC 6.6.0, which predates the fault, ran out of memory on the
+  same goto program.
+- The harnesses select requested keys with concrete loops and evaluate the
+  `unresolved_keys` predicate per index instead of consuming the iterator;
+  the native tests use the iterator itself.
+
+The module adds no `unsafe` code.
 
 ## Benchmarks
 

@@ -165,14 +165,6 @@ fn cmp_part_full<const P: usize>(a: &[u8], a_len: usize, full: &[u8]) -> Option<
     (full.len() <= P).then_some(Ordering::Greater)
 }
 
-/// Order of two keys whose first `P` bytes are equal, from the bytes after
-/// them. Every caller passes keys of at least `P` bytes. The result is
-/// always `Some`, so callers that only test for a decision fold it away.
-#[inline(always)]
-fn cmp_tails<const P: usize>(a: &[u8], b: &[u8]) -> Option<Ordering> {
-    Some(a.get(P..).unwrap_or(&[]).cmp(b.get(P..).unwrap_or(&[])))
-}
-
 #[inline]
 fn admits(a: &[u8], a_len: usize, full: &[u8]) -> bool {
     full.len() == a_len && full.get(..a.len()) == Some(a)
@@ -243,13 +235,13 @@ impl<const P: usize> PartialKey for PrefixKey<'_, P> {
                 return Some(order);
             }
             let (a, b) = (self.full?, other.full?);
-            return cmp_tails::<P>(a, b);
+            return Some(a.get(P..).cmp(&b.get(P..)));
         }
         cmp_parts::<P>(self.inline(), self.len, other.inline(), other.len).or_else(|| {
             // Both keys are longer than `P` with equal prefixes. Attached
             // keys start with their prefixes, so their tails decide.
             let (a, b) = (self.full?, other.full?);
-            cmp_tails::<P>(a, b)
+            Some(a.get(P..).cmp(&b.get(P..)))
         })
     }
 
@@ -262,14 +254,14 @@ impl<const P: usize> PartialKey for PrefixKey<'_, P> {
                 return Some(order);
             }
             return match self.full {
-                Some(attached) => cmp_tails::<P>(attached, full),
+                Some(attached) => Some(attached.get(P..).cmp(&full.get(P..))),
                 // `full` equals this key's prefix and is shorter.
                 None => (full.len() == P).then_some(Ordering::Greater),
             };
         }
         cmp_part_full::<P>(self.inline(), self.len, full).or_else(|| {
             // This key is longer than `P` and `full` shares its prefix.
-            cmp_tails::<P>(self.full?, full)
+            Some(self.full?.get(P..).cmp(&full.get(P..)))
         })
     }
 

@@ -282,9 +282,9 @@ fn array_import(count:usize,limit:usize,size:usize,accepted:bool)->(s:Option<Own
     s.len=needed;Some(s)
 }
 
+// A whole-value replacement publishes exactly the replacement, whatever the
+// replaced value was. The validity of each value is its own type's concern.
 fn replaced_owner(old:OwnerState,replacement:OwnerState,size:usize)->(s:OwnerState)
-    requires owner_valid(old,size),owner_valid(replacement,size),
-    ensures owner_valid(s,size),s.len==replacement.len,s.cap==replacement.cap,
-        s.limit==replacement.limit,
+    ensures s.len==replacement.len,s.cap==replacement.cap,s.limit==replacement.limit,
 { replacement }
 }

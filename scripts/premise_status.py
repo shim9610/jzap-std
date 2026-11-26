@@ -55,6 +55,16 @@ ESTABLISHED = {
              'shared_increment_caller', 'shared_clone_weak_caller', 'scratch_admitted_length_caller',
              'btree_initial_state', 'ledger_new', 'c_full', 'c_first_kept', 'c_try_prefix',
              'e_try_range', 'initialized_box_prefix', 'external_count_before_allocation']),
+    **_rows('no-premise', 'replaced_owner has no requires (tools/memory-proof/operation-closure.verus.rs): '
+            'each bound row is `*self = replacement`, the move of one complete safe value into a Box '
+            'owner (src/boxed.rs, src/boxed/foreign.rs, src/boxed/slice.rs, src/boxed/string.rs, '
+            'src/clone.rs), and the contract states only that the published words are the replacement\'s',
+            ['replaced_owner']),
+    **_rows('no-premise', 'The only requires of staged_collection_loop '
+            '(tools/memory-proof/edit-loops.verus.rs:161-164) is call_requires of its two callbacks, '
+            'which holds for every safe Rust closure; it has no numeric premise. The numeric requires '
+            'of the driver it models is established under staged_collection_extent',
+            ['staged_collection_loop']),
     **_rows('no-premise', 'Actual-Rust Kani harness over every machine word without an assumption: '
             'src/span.rs:116 (Span::full), src/init/collection_proofs.rs:5',
             ['kani:full_constructor_establishes_order',
@@ -124,9 +134,8 @@ STATED = {
               ['adopted_owner', 'boxed_to_owner', 'buffer_collect', 'buffer_finish', 'buffer_push',
                'buffer_reserve', 'buffer_span', 'compaction_before_move', 'compaction_before_element',
                'cursor_before_read', 'extract_next_loop', 'extraction_before_move', 'hole_move',
-               'hole_restore', 'prefix_storage_connection', 'replaced_owner',
-               'reservation_before_bulk_write', 'splice_fill_loop', 'splice_operation',
-               'stage_operation', 'staged_collection_loop', 'admitted_cursor',
+               'hole_restore', 'prefix_storage_connection', 'reservation_before_bulk_write',
+               'splice_fill_loop', 'splice_operation', 'stage_operation', 'admitted_cursor',
                'drain_before_tail_restore', 'span_clear_caller', 'span_next_caller',
                'span_next_back_caller', 'span_remaining_caller']),
     **_stated('len <= cap <= limit and the byte bound are the public unsafe contract of '

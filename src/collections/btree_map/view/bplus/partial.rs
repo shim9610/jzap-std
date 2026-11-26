@@ -448,7 +448,8 @@ where
     /// [`PartialLookup::unresolved_keys`] lists them for the whole node.
     pub fn unresolved_keys(&self) -> impl Iterator<Item = usize> + '_ {
         let keys: &[K] = self.keys;
-        self.lookup.unresolved(keys)
+        let last = keys.len().checked_sub(1);
+        (0..keys.len()).filter(move |&index| self.lookup.needs_key(keys, last, index))
     }
 
     /// Attach the key at `index` with `attach`, for example
@@ -1008,7 +1009,9 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
     where
         K: PartialKey<Full = F, Fence = T>,
     {
-        self.unresolved(node.keys)
+        let keys = node.keys;
+        let last = keys.len().checked_sub(1);
+        (0..keys.len()).filter(move |&index| self.needs_key(keys, last, index))
     }
 
     /// Visit the requested node with exclusive access to its keys; see
@@ -1034,63 +1037,12 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         })
     }
 
-    /// The keys a pass over `keys` could request, in index order and
-    /// without fence keys (which can only request fewer):
-    ///
-    /// - both unresolved keys of each adjacent pair the stored parts cannot
-    ///   decide;
-    /// - the first key against the minimum fence and the last against the
-    ///   ceiling, when their stored parts cannot decide;
-    /// - the unresolved keys the search could compare with the query.
-    ///
-    /// For the last, the search of `pass_over` is run first while its
-    /// comparisons are decided. It stops at the first undecided key, and
-    /// every key a later search could compare lies in the interval it has
-    /// then narrowed to; a search that is decided throughout compares no
-    /// unresolved key. With distinct prefixes this replaces a query
-    /// comparison per key by one per search step.
-    fn unresolved<'n, K>(&'n self, keys: &'n [K]) -> impl Iterator<Item = usize> + 'n
-    where
-        K: PartialKey<Full = F, Fence = T>,
-    {
-        let (mut low, mut high) = (0, keys.len());
-        // Stopping early only widens the interval, so the checked steps
-        // break instead of failing.
-        while low < high {
-            let Some(middle) = high
-                .checked_sub(low)
-                .and_then(|span| low.checked_add(span / 2))
-            else {
-                break;
-            };
-            match keys
-                .get(middle)
-                .map(|key| order_query(key, middle, self.query))
-            {
-                Some(Decision::Order(Ordering::Less)) => match middle.checked_add(1) {
-                    Some(next) => low = next,
-                    None => break,
-                },
-                Some(Decision::Order(Ordering::Greater)) => high = middle,
-                Some(Decision::Order(Ordering::Equal)) => low = high,
-                _ => break,
-            }
-        }
-        let last = keys.len().checked_sub(1);
-        (0..keys.len()).filter(move |&index| self.needs_key(keys, last, (low, high), index))
-    }
-
-    /// Whether the key at `index` is listed by [`unresolved`](Self::unresolved);
-    /// `search` is the interval its search could still compare. The
-    /// conditions are tested in order and the first that holds returns, so
-    /// with shared prefixes the pair checks usually decide.
-    fn needs_key<K>(
-        &self,
-        keys: &[K],
-        last: Option<usize>,
-        search: (usize, usize),
-        index: usize,
-    ) -> bool
+    /// Whether the pass could request the key at `index`. Lists both
+    /// unresolved keys of every adjacent pair the stored parts cannot
+    /// decide, and each key whose fence or query comparison would request it
+    /// when no fence key is passed, which requests at least as much as with
+    /// fence keys.
+    fn needs_key<K>(&self, keys: &[K], last: Option<usize>, index: usize) -> bool
     where
         K: PartialKey<Full = F, Fence = T>,
     {
@@ -1100,32 +1052,25 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         if key.full().is_some() {
             return false;
         }
-        let left = || {
-            index
-                .checked_sub(1)
-                .and_then(|left| keys.get(left))
-                .is_some_and(|left| left.cmp_stored(key).is_none())
-        };
-        let right = || {
-            index
-                .checked_add(1)
-                .and_then(|right| keys.get(right))
-                .is_some_and(|right| key.cmp_stored(right).is_none())
-        };
-        if left() || right() {
-            return true;
-        }
-        let fence_undecided = |fence: &Option<Fence<T, I>>| {
-            fence
+        let left = index
+            .checked_sub(1)
+            .and_then(|left| keys.get(left))
+            .is_some_and(|left| left.cmp_stored(key).is_none());
+        let right = index
+            .checked_add(1)
+            .and_then(|right| keys.get(right))
+            .is_some_and(|right| key.cmp_stored(right).is_none());
+        let minimum = index == 0
+            && self
+                .minimum
                 .as_ref()
-                .is_some_and(|fence| key.cmp_fence(&fence.key).is_none())
-        };
-        if (index == 0 && fence_undecided(&self.minimum))
-            || (Some(index) == last && fence_undecided(&self.ceiling))
-        {
-            return true;
-        }
-        search.0 <= index && index < search.1 && key.cmp_full(self.query).is_none()
+                .is_some_and(|fence| key.cmp_fence(&fence.key).is_none());
+        let ceiling = Some(index) == last
+            && self
+                .ceiling
+                .as_ref()
+                .is_some_and(|fence| key.cmp_fence(&fence.key).is_none());
+        left || right || minimum || ceiling || key.cmp_full(self.query).is_none()
     }
 
     /// Validate and search one node.
@@ -1540,20 +1485,6 @@ mod proofs {
             Decision::Key(found) => assert!(found == index && key.full().is_none()),
             Decision::Fence => panic!("a query comparison asked for a fence"),
         }
-    }
-
-    /// The indexes `unresolved_keys` yields, as flags set with concrete loops
-    /// (no symbolic array index).
-    fn listed<const N: usize>(indexes: impl Iterator<Item = usize>) -> [bool; N] {
-        let mut selected = [false; N];
-        for index in indexes {
-            for (position, slot) in selected.iter_mut().enumerate() {
-                if position == index {
-                    *slot = true;
-                }
-            }
-        }
-        selected
     }
 
     /// A leaf of `N` keys, resolving each requested key with its completion,
@@ -1999,7 +1930,13 @@ mod proofs {
         let Ok(node) = PartialNode::<_, _, usize>::leaf(&keys, &values) else {
             panic!("leaf refused")
         };
-        let selected: [bool; N] = listed(lookup.unresolved_keys(&node));
+        // `unresolved_keys` is `(0..len).filter(needs_key)`. The predicate is
+        // evaluated per index because a harness consuming the iterator
+        // produced counterexamples that their own concrete playbacks refute.
+        let mut selected = [false; N];
+        for (index, slot) in selected.iter_mut().enumerate() {
+            *slot = lookup.needs_key(node.keys, N.checked_sub(1), index);
+        }
         for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
             if selected {
                 assert!(key.full().is_none());
@@ -2058,7 +1995,10 @@ mod proofs {
         let Ok(node) = PartialNode::<_, u8, _>::branch(&keys, &children) else {
             panic!("branch refused")
         };
-        let selected: [bool; 2] = listed(lookup.unresolved_keys(&node));
+        let mut selected = [false; 2];
+        for (index, slot) in selected.iter_mut().enumerate() {
+            *slot = lookup.needs_key(node.keys, Some(1), index);
+        }
         for ((key, full), selected) in keys.iter_mut().zip(completed).zip(selected) {
             if selected {
                 let Ok(()) = key.attach(full) else {

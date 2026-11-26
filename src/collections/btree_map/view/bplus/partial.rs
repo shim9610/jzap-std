@@ -784,8 +784,8 @@ proof fn sorted_order(rank: Rank, n: int, i: int, j: int)
 #[cfg_attr(verus_keep_ghost, verus_spec(out =>
     requires
         recorded(*old(progress), rank_of::<R>(), n as int, minimum, ceiling),
-        forall|i: usize| i + 1 < n ==> pair.requires((i, (i + 1) as usize)),
-        forall|i: usize, d: Decision| #[trigger] pair.ensures((i, (i + 1) as usize), d)
+        forall|i: usize, j: usize| i + 1 == j && j < n ==> #[trigger] pair.requires((i, j)),
+        forall|i: usize, j: usize, d: Decision| #[trigger] pair.ensures((i, j), d) && i + 1 == j
             ==> pair_decides(rank_of::<R>(), attached_of::<R>(), i, d),
         minimum && n > 0 ==> first.requires(()),
         forall|d: Decision| #[trigger] first.ensures((), d)
@@ -851,8 +851,8 @@ where
             left as int <= if n > 0 { n - 1 } else { 0 },
             forall|i: int| 0 <= i < left ==> #[trigger] ordered_at(rank_of::<R>(), i),
             minimum ==> progress.minimum != Check::Unchecked,
-            forall|i: usize| i + 1 < n ==> pair.requires((i, (i + 1) as usize)),
-            forall|i: usize, d: Decision| #[trigger] pair.ensures((i, (i + 1) as usize), d)
+            forall|i: usize, j: usize| i + 1 == j && j < n ==> #[trigger] pair.requires((i, j)),
+            forall|i: usize, j: usize, d: Decision| #[trigger] pair.ensures((i, j), d) && i + 1 == j
                 ==> pair_decides(rank_of::<R>(), attached_of::<R>(), i, d),
         decreases n - left,
     ))]
@@ -1408,19 +1408,11 @@ mod proofs {
         assert!(PrefixKey::from_full(a).fence() == stored_a.fence());
     }
 
-    /// The contracts the Verus proof of `pass_over` assumes of its
-    /// comparison closures (`pair_decides`, `minimum_decides`,
-    /// `ceiling_decides` and `query_decides`), for the helpers `pass` builds
-    /// them from: over every two keys of up to 4 bytes with 2 inline bytes
-    /// and every attachment choice, an `Order` is the order of the
-    /// completions, a `Key` names an unattached key of the comparison, and
-    /// `Fence` comes only from a fence comparison without the fence's key.
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn decisions_meet_the_pass_contracts() {
-        let (a, a_len) = bytes::<MAX>();
-        let (b, b_len) = bytes::<MAX>();
-        let (a, b) = (&a[..a_len], &b[..b_len]);
+    /// Two keys of up to 4 bytes with 2 inline bytes, each attached or not,
+    /// for the contracts the Verus proof of `pass_over` assumes of its
+    /// comparison closures. The decisions below are what `pass` builds those
+    /// closures from.
+    fn decision_inputs<'a>(a: &'a [u8], b: &'a [u8]) -> (PrefixKey<'a, P>, PrefixKey<'a, P>) {
         let (mut key, mut other) = (stored::<P>(a), stored::<P>(b));
         if kani::any() {
             let Ok(()) = key.attach(a) else {
@@ -1432,27 +1424,65 @@ mod proofs {
                 panic!("attachment refused")
             };
         }
-        let actual = a.cmp(b);
+        (key, other)
+    }
+
+    /// `pair_decides`: an `Order` from `order_keys` is the order of the
+    /// completions, a `Key` names an unattached key of the pair, and it never
+    /// asks for a fence.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn key_pair_decisions_meet_the_pass_contract() {
+        let (a, a_len) = bytes::<MAX>();
+        let (b, b_len) = bytes::<MAX>();
+        let (a, b) = (&a[..a_len], &b[..b_len]);
+        let (key, other) = decision_inputs(a, b);
         let (left, right): (usize, usize) = (kani::any(), kani::any());
         kani::assume(left != right);
         match order_keys(&key, left, &other, right) {
-            Decision::Order(order) => assert!(order == actual),
+            Decision::Order(order) => assert!(order == a.cmp(b)),
             Decision::Key(index) => assert!(
                 (index == left && key.full().is_none())
                     || (index == right && other.full().is_none())
             ),
             Decision::Fence => panic!("a key pair asked for a fence"),
         }
-        // `b` as the fence's separator, with its full key passed or not.
+    }
+
+    /// `minimum_decides` and `ceiling_decides`: with `b` as the fence's
+    /// separator and its full key passed or not, an `Order` from
+    /// `order_fence` is the order of the completions, a `Key` names the
+    /// unattached key, and `Fence` comes only without the fence's full key.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn fence_decisions_meet_the_pass_contract() {
+        let (a, a_len) = bytes::<MAX>();
+        let (b, b_len) = bytes::<MAX>();
+        let (a, b) = (&a[..a_len], &b[..b_len]);
+        let (key, _) = decision_inputs(a, b);
+        let index: usize = kani::any();
         let full: Option<&[u8]> = if kani::any() { Some(b) } else { None };
-        match order_fence(&key, left, &stored::<P>(b).fence(), full) {
-            Decision::Order(order) => assert!(order == actual),
-            Decision::Key(index) => assert!(index == left && key.full().is_none()),
+        match order_fence(&key, index, &stored::<P>(b).fence(), full) {
+            Decision::Order(order) => assert!(order == a.cmp(b)),
+            Decision::Key(found) => assert!(found == index && key.full().is_none()),
             Decision::Fence => assert!(full.is_none()),
         }
-        match order_query(&key, left, b) {
-            Decision::Order(order) => assert!(order == actual),
-            Decision::Key(index) => assert!(index == left && key.full().is_none()),
+    }
+
+    /// `query_decides`: an `Order` from `order_query` is the order of the
+    /// key's completion and the query, a `Key` names the unattached key, and
+    /// it never asks for a fence.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn query_decisions_meet_the_pass_contract() {
+        let (a, a_len) = bytes::<MAX>();
+        let (b, b_len) = bytes::<MAX>();
+        let (a, b) = (&a[..a_len], &b[..b_len]);
+        let (key, _) = decision_inputs(a, b);
+        let index: usize = kani::any();
+        match order_query(&key, index, b) {
+            Decision::Order(order) => assert!(order == a.cmp(b)),
+            Decision::Key(found) => assert!(found == index && key.full().is_none()),
             Decision::Fence => panic!("a query comparison asked for a fence"),
         }
     }
@@ -2154,305 +2184,6 @@ mod proofs {
     #[kani::unwind(5)]
     fn visit_of_a_one_key_leaf_matches_complete_lookup() {
         visit_leaf_matches_complete_lookup::<1>();
-    }
-
-    /// A pass resumed after attaching the requested key gives what a pass
-    /// from scratch gives over the same keys. `PartialVisit::run` is this
-    /// resumed pass and `provide` the pass from scratch, so with the
-    /// `provide` harnesses this covers the visit path. `contents` and `query`
-    /// fix the node; attachments are arbitrary, and each requested key is
-    /// attached with its completion before resuming, for `rounds` steps.
-    fn resumed_pass_equals_fresh_pass<'a, const N: usize>(
-        lookup: &PartialLookup<'_, [u8], PrefixFence<SMALL_P>, usize>,
-        keys: &mut [PrefixKey<'a, SMALL_P>; N],
-        completed: &[&'a [u8]; N],
-        contents: &Contents<'_, u8, usize>,
-        rounds: usize,
-    ) {
-        let mut progress = Progress::default();
-        for _ in 0..rounds {
-            let resumed = lookup.pass(keys.as_slice(), contents, None, None, &mut progress);
-            let Ok(Outcome::NeedKey(requested)) = resumed else {
-                // The answer of the resumed pass is the answer of a pass
-                // from scratch over the keys as they now are.
-                let fresh = lookup.pass(
-                    keys.as_slice(),
-                    contents,
-                    None,
-                    None,
-                    &mut Progress::default(),
-                );
-                let same = match (&resumed, &fresh) {
-                    (Ok(Outcome::NeedFence), Ok(Outcome::NeedFence))
-                    | (Ok(Outcome::Absent), Ok(Outcome::Absent)) => true,
-                    (Ok(Outcome::Found(a)), Ok(Outcome::Found(b))) => a == b,
-                    (Ok(Outcome::Descend(a, x)), Ok(Outcome::Descend(b, y))) => a == b && x == y,
-                    (Err(a), Err(b)) => a == b,
-                    _ => false,
-                };
-                assert!(same);
-                return;
-            };
-            assert!(requested < N);
-            for (index, (key, full)) in keys.iter_mut().zip(completed).enumerate() {
-                if index == requested {
-                    assert!(key.full().is_none());
-                    let Ok(()) = key.attach(full) else {
-                        panic!("requested attachment refused")
-                    };
-                }
-            }
-        }
-        panic!("the pass did not finish within its bound");
-    }
-
-    /// The resumption lemma over a leaf of two keys, with the initial
-    /// attachments fixed by `attached`.
-    fn resumed_leaf_pass_equals_fresh_pass(attached: [bool; 2]) {
-        let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
-        let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
-        let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
-        for ((key, full), attach) in keys.iter_mut().zip(completed).zip(attached) {
-            if attach {
-                let Ok(()) = key.attach(full) else {
-                    panic!("initial attachment refused")
-                };
-            }
-        }
-        let values = [1u8, 2];
-        let (query, query_len) = bytes::<SMALL>();
-        let Ok(lookup) = PartialLookup::new(0usize, 0, &query[..query_len]) else {
-            panic!("partial lookup not created")
-        };
-        resumed_pass_equals_fresh_pass(&lookup, &mut keys, &completed, &Contents::Leaf(&values), 3);
-    }
-
-    // The initial attachments are fixed per harness to keep each one within
-    // memory; together they cover every choice.
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_leaf_pass_with_no_key_attached() {
-        resumed_leaf_pass_equals_fresh_pass([false, false]);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_leaf_pass_with_the_first_key_attached() {
-        resumed_leaf_pass_equals_fresh_pass([true, false]);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_leaf_pass_with_the_second_key_attached() {
-        resumed_leaf_pass_equals_fresh_pass([false, true]);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_leaf_pass_with_both_keys_attached() {
-        resumed_leaf_pass_equals_fresh_pass([true, true]);
-    }
-
-    /// Where the completed query lies against the completed separators of a
-    /// two-separator branch. The four regions are disjoint and cover every
-    /// input, so harnesses that assume one region each together cover the
-    /// whole input space.
-    #[derive(Clone, Copy)]
-    enum Region {
-        /// The separators are not strictly increasing.
-        Unordered,
-        /// Ordered separators, the query below the first.
-        Below,
-        /// Ordered separators, the query at or above the first and below
-        /// the second.
-        Between,
-        /// Ordered separators, the query at or above the second.
-        Above,
-    }
-
-    impl Region {
-        fn holds(self, separators: [&[u8]; 2], query: &[u8]) -> bool {
-            let ordered = separators[0] < separators[1];
-            match self {
-                Region::Unordered => !ordered,
-                Region::Below => ordered && query < separators[0],
-                Region::Between => ordered && separators[0] <= query && query < separators[1],
-                Region::Above => ordered && separators[1] <= query,
-            }
-        }
-    }
-
-    /// The resumption lemma over a branch of two separators, with the
-    /// initial attachments fixed by `attached` and the inputs restricted to
-    /// `region`.
-    fn resumed_branch_pass_equals_fresh_pass(attached: [bool; 2], region: Region) {
-        let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
-        let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
-        let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
-        for ((key, full), attach) in keys.iter_mut().zip(completed).zip(attached) {
-            if attach {
-                let Ok(()) = key.attach(full) else {
-                    panic!("initial attachment refused")
-                };
-            }
-        }
-        let children = [1usize, 2];
-        let (query, query_len) = bytes::<SMALL>();
-        let query = &query[..query_len];
-        kani::assume(region.holds(completed, query));
-        let Ok(lookup) = PartialLookup::new(0usize, 1, query) else {
-            panic!("partial lookup not created")
-        };
-        resumed_pass_equals_fresh_pass(
-            &lookup,
-            &mut keys,
-            &completed,
-            &Contents::Branch(&children),
-            // Each of the two separators is requested at most once (an
-            // attached key is never requested again), so two requests and
-            // the answer take three rounds; the bound panic checks it.
-            3,
-        );
-    }
-
-    // The initial attachments and the region of the inputs are fixed per
-    // harness to keep each one within memory (a harness per attachment choice
-    // over all inputs ran out of memory at 15 GB); the sixteen harnesses
-    // together cover every attachment choice and every input.
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_unordered_with_no_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, false], Region::Unordered);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_below_with_no_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, false], Region::Below);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_between_with_no_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, false], Region::Between);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_above_with_no_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, false], Region::Above);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_unordered_with_the_first_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, false], Region::Unordered);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_below_with_the_first_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, false], Region::Below);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_between_with_the_first_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, false], Region::Between);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_above_with_the_first_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, false], Region::Above);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_unordered_with_the_second_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, true], Region::Unordered);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_below_with_the_second_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, true], Region::Below);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_between_with_the_second_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, true], Region::Between);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_above_with_the_second_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, true], Region::Above);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_unordered_with_both_separators_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, true], Region::Unordered);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_below_with_both_separators_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, true], Region::Below);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_between_with_both_separators_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, true], Region::Between);
-    }
-
-    #[kani::proof]
-    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
-    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
-    #[kani::unwind(5)]
-    fn resumed_branch_pass_above_with_both_separators_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, true], Region::Above);
     }
 
     /// A visit of a one-key child, from the state after a descent, with the

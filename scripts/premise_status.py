@@ -60,6 +60,18 @@ ESTABLISHED = {
             'owner (src/boxed.rs, src/boxed/foreign.rs, src/boxed/slice.rs, src/boxed/string.rs, '
             'src/clone.rs), and the contract states only that the published words are the replacement\'s',
             ['replaced_owner']),
+    **_rows('no-premise', 'safe_iterator_state has no requires (tools/memory-proof/operation-closure.verus.rs). '
+            'Its eight rows are in src/iter.rs, which has no unsafe code and no storage state '
+            '(scripts/caller_bindings.py asserts both): checked countdowns of Take and the default '
+            'methods (:67, :140, :199), a moved fold value (:82) and the fields of Take, FromStd and '
+            'FromResults (:108, :109, :225, :276)',
+            ['safe_iterator_state']),
+    **_rows('direct-source', 'The bound rows are inside Capacity::admitted (src/capacity.rs) and '
+            'Extent::holding (src/extent.rs). Each carries its own verus_spec, verified on the product '
+            'source by the direct target vec-extent: admitted returns Ok only after array_bytes accepts '
+            'the count, and holding proves count * size <= isize::MAX before the trusted entry. '
+            'scripts/caller_bindings.py asserts the verus_spec on the enclosing function',
+            ['direct:vec-extent']),
     **_rows('no-premise', 'The only requires of staged_collection_loop '
             '(tools/memory-proof/edit-loops.verus.rs:161-164) is call_requires of its two callbacks, '
             'which holds for every safe Rust closure; it has no numeric premise. The numeric requires '
@@ -102,7 +114,9 @@ ESTABLISHED = {
             'capacity between the length and the limit, which is the invariant of the Extent that '
             'holding/resized return. staged_collection_extent takes the capacity of a fresh Vec built '
             'with the staging limit (src/vec/edit.rs, stage_excess), so its premise is that Vec\'s '
-            'invariant. A call_requires clause states that a callback accepts every argument, which '
+            'invariant. The staging fill (src/vec/edit.rs, stage_batch) starts at the staging Vec\'s '
+            'length and ends at its capacity getter on that Vec\'s pointer, checked as text by '
+            'scripts/caller_bindings.py, so it is bound to spare_view_before_slice. A call_requires clause states that a callback accepts every argument, which '
             'holds for every safe Rust closure and trait method',
             ['append_owner', 'checked_owner_length', 'commit_reserved_owner', 'split_owner',
              'vectored_owner', 'complete_splice', 'drain_constructor', 'extend_operation',

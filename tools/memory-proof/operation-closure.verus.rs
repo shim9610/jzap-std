@@ -282,6 +282,15 @@ fn array_import(count:usize,limit:usize,size:usize,accepted:bool)->(s:Option<Own
     s.len=needed;Some(s)
 }
 
+// `src/iter.rs` has no unsafe code and no storage state. Its bound rows move
+// values and count a checked counter down; this holds for every input.
+fn safe_iterator_state(remaining:usize)->(next:Option<usize>)
+    ensures remaining==0 ==> next.is_none(),
+        remaining>0 ==> next==Some((remaining-1) as usize),
+{
+    if remaining==0 { None } else { Some(remaining-1) }
+}
+
 // A whole-value replacement publishes exactly the replacement, whatever the
 // replaced value was. The validity of each value is its own type's concern.
 fn replaced_owner(old:OwnerState,replacement:OwnerState,size:usize)->(s:OwnerState)

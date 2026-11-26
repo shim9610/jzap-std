@@ -253,8 +253,19 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             theorems |= verified_function_names(adapter.read_text())
     assert not [r for r in rows if r['kind']=='explicit_exit'],('explicit product exit', [r for r in rows if r['kind']=='explicit_exit'])
     seen={};bindings=[]
+    direct_names=set()
+    def direct(site,target):
+        # The enclosing product function itself carries the Verus
+        # specification that the named direct target verifies.
+        from verify_direct_verus import TARGETS
+        assert target in TARGETS,target
+        source=(root/site['file']).read_text();head=re.search(r'\bfn\s+'+site['function']+r'\b',source)
+        assert head and 'verus_spec(' in source[source.rfind('\n\n',0,head.start()):head.start()],('direct contract without a verus_spec on the enclosing function',site)
+        direct_names.add('direct:'+target)
+        return 'direct:'+target
     def proof(name):
         if name.startswith('kani:'):assert name[5:] in kani_harnesses,name
+        elif name.startswith('direct:'):assert name in direct_names,name
         else:assert name in theorems,('missing verified contract',name)
         return name
     for row in rows:
@@ -275,10 +286,11 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             # New owners are covered by the constructor/transition closure.
             contract='replaced_owner'
         elif f=='src/iter.rs':
-            # No allocation/pointer state: defaults use checked counters. Take
-            # is additionally proved on actual Rust in the prerequisite suite.
+            # No unsafe code and no storage state: the defaults and Take count
+            # down a checked counter and move values. No caller premise exists.
             assert e in ('remaining=next','self.remaining=next','value=f(value,item).map_err(TryFoldError::Operation)?'),row
-            contract='buffer_span'
+            assert 'unsafe' not in (root/f).read_text(),'unsafe code in src/iter.rs'
+            contract='safe_iterator_state'
         elif ctx.startswith('Writer'):
             assert e=='self.error=Some(e)',row
             contract='extend_operation'
@@ -466,7 +478,9 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             assert set(actual)=={'count','element'} and actual['element']=='PhantomData',items
             expected='Checked::new(logical_capacity(mem::size_of::<T>(),0,limit))' if fn=='empty' else 'Checked::new(count)'
             assert actual['count']==expected,items
-            contract='empty_owner' if fn=='empty' else 'capacity_bytes'
+            # `admitted` checks the byte bound itself under its own verus_spec;
+            # the trusted entry leaves it to its callers.
+            contract='empty_owner' if fn=='empty' else direct(items[0],'vec-extent') if fn=='admitted' else 'capacity_bytes'
         elif ctor == 'Prefix':
             assert f=='src/init/prefix.rs' and fn=='initialize', items
             assert actual==dict(ptr='ptr',state='Checked::new(0)'), items
@@ -511,7 +525,8 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         elif ctor in ('Take','FromStd','FromResults'):
             assert set(actual)<= {'iter','remaining'},items
             if ctor=='Take':assert actual['remaining']=='Checked::new(count)',items
-            contract='buffer_span'
+            assert {r['file'] for r in items}=={'src/iter.rs'} and 'unsafe' not in (root/'src/iter.rs').read_text(),items
+            contract='safe_iterator_state'
         elif ctor in ('Pinned','Self') and ctx in ('Box','Pinned'):
             assert set(actual)=={'inner'},items
             contract='transferred_credit'
@@ -616,6 +631,14 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             assert len(re.findall(r'let(?:i|index)=',source))==1,('shadowed span index',row)
         if f=='src/vec/edit.rs' and fn=='fmt':
             assert 'ifself.state.read()<self.state.end(){' in source,('missing extraction peek guard',row)
+        if f=='src/vec/edit.rs' and fn=='stage_batch':
+            # The fill starts at the staging owner's length and ends at its
+            # capacity getter, on that owner's own pointer.
+            for text in ('letend=extra.capacity();','letpointer=extra.ptr;','letmutlength=LentLength::new(&mutextra.extent);',
+                         'crate::init::collection::fill(pointer,&mutlength.cursor,end,replacement)'):
+                assert source.count(text)==1,('unbound staging fill',text,row)
+            lent=compact(block((root/f).read_text(),'fn new(extent: &\'a mut crate::extent::Extent<T, L>) -> Self'))
+            assert lent=='letcursor=extent.length();Self{extent,cursor}',('LentLength::new changed',lent)
         if f=='src/vec/convenience.rs' and fn=='try_push_mut':
             assert 'letindex=self.extent.len();self.try_push(value)?;' in source and source.count('letindex=')==1
         if f=='src/vec/convenience.rs' and fn=='try_insert_mut':assert 'self.try_insert(index,value)?;' in source
@@ -631,13 +654,18 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         elif (f,fn) in TRANSITIONS:contract=TRANSITIONS[(f,fn)][0]
         elif group in ('G10','G11','G12','G09','G05'):contract='transferred_credit'
         elif f=='src/vec/edit.rs' and fn=='fill':contract='splice_fill_loop'
+        elif f=='src/vec/edit.rs' and fn=='stage_batch':contract='spare_view_before_slice'
         elif f=='src/vec/edit.rs':
             contract='extraction_before_move' if row['context'].startswith('ExtractIf') else 'compaction_before_move' if row['context'].startswith('Compact') else 'cursor_before_read'
         elif f in ('src/vec/ownership.rs','src/boxed/slice.rs') and fn in ('next','next_back','drop','as_slice','as_mut_slice'):contract='cursor_before_read'
         elif f=='src/vec/ownership.rs' and fn=='try_clone_in':contract='prefix_storage_connection'
         elif f=='src/storage.rs':contract='allocation_credit' if fn=='allocate_impl' else 'released_credit' if fn=='deallocate' else 'reallocation_credit'
         # The extent's one block passes a count bounded by the growth rule.
-        elif f in ('src/capacity.rs','src/extent.rs'):contract='capacity_bytes'
+        elif f=='src/extent.rs':
+            # Verus proves the byte bound of the trusted entry inside `holding`.
+            assert fn=='holding' and 'Capacity::from_validated_raw(count)' in compact(row['expression']),row
+            contract=direct(row,'vec-extent')
+        elif f=='src/capacity.rs':contract='capacity_bytes'
         elif f=='src/init/collection.rs':contract='buffer_span'
         elif f in ('src/clone.rs','src/init.rs','src/init/prefix.rs'):contract='prefix_storage_connection'
         elif f in ('src/boxed.rs','src/boxed/owned.rs','src/boxed/slice.rs'):contract='boxed_to_owner'

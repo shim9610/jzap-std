@@ -3163,3 +3163,94 @@ The broader name-membership counting it exposed is tracked in
 python3 scripts/verus_std_specs.py
 python3 scripts/verify_direct_verus.py --target fixed-bplus --mutations
 ```
+
+## Certificate dispositions and premise status (2026-11-26)
+
+Follow-up to [shim9610/jzap-std#16](https://github.com/shim9610/jzap-std/issues/16).
+The figures "zero open obligations" and "N obligations connected" reported up to
+this point counted a row as closed whenever its contract name was in the set of
+verified names. Some names in that set came from `spec fn` declarations. One row
+(`bplus.rs::descend`, contract `lookup_path_read`) and all 14 String rows had a
+fixed disposition. The name `pair_window_advance` was added to the set without a
+check. None of this tested whether the call site establishes the `requires` of
+the contract.
+
+`scripts/premise_status.py` now records, for every contract a source obligation
+or an internal modular call is bound to, how its premise is established. An
+unknown contract fails the run.
+
+| Premise basis | Meaning |
+| --- | --- |
+| `no-premise` | The contract has no `requires`; it holds for every input |
+| `state-invariant` | The premise is the invariant of a closed state type whose constructors and transitions are verified (Compaction, Extraction, Span, CharBytes) |
+| `verified-caller` | Every product caller discharging the premise is verified with Verus (`keep_live`/`remove_live` from `compact_one`) |
+| `direct-source` | The call is inside a product function verified with its own `verus_spec` (`direct:` targets) |
+| `stated-not-proved` | The premise is a `requires` of a maintained function or a harness assumption with no proof at the call site: the owner, Drain, B-tree, hash-table, ring, heap, scratch, shared and budget-ledger premises listed in the sections above, bounded Kani scenarios, and the `lookup_path_read` projection |
+
+`scripts/source_certificate.py` applies one rule to every row, including the
+B+ ancestor row and the String rows:
+
+| Disposition | Condition |
+| --- | --- |
+| `solver-and-source-connected` | The contract is a verified exec or proof function, Kani harness or direct target, and its premise is established |
+| `premise-stated-not-proved` | The contract is verified, but its premise is only stated |
+| `unproved` | The contract is not verified |
+
+`complete` still requires zero `unproved` rows and zero unproved link edges.
+`premise-stated-not-proved` rows are reported in `source_obligation_counts` and
+do not block completion. Other changes in the same unit: `spec fn` names are
+excluded from the verified set (`source_certificate.py`, `caller_bindings.py`,
+the String, shared and B-tree area summaries and the modular-call coverage of
+`verify_wrapping_memory.py`); `pair_window_advance` and `lookup_path_read`
+enter the set only from `tools/consumer-audit/bplus_core_guards.rs` after the
+`bplus-debug` step, which verifies that file, has passed; the owner step records
+the Kani harnesses its `kani:` bindings were checked against.
+
+Classification of the current binding lists. These counts come from running
+the binding checks without the solvers on the source of `72ebbdb` and applying
+the rule with every contract name assumed verified except the three String
+labels, which are not function names. The four-profile certificate has not been
+run with this rule.
+
+| Area | Rows | Connected | Stated, not proved | Unproved |
+| --- | ---: | ---: | ---: | ---: |
+| Owner protocol (Vec, Box, Buffer, budget, init) | 470 | 71 | 399 | 0 |
+| B-tree | 225 | 4 | 221 | 0 |
+| Shared ownership | 172 | 15 | 157 | 0 |
+| Hash table | 114 | 0 | 114 | 0 |
+| VecDeque | 100 | 0 | 100 | 0 |
+| Binary heap | 50 | 0 | 50 | 0 |
+| Scratch | 25 | 3 | 22 | 0 |
+| String | 14 | 0 | 0 | 14 |
+| B+ ancestor read | 1 | 0 | 1 | 0 |
+| Total | 1,171 | 93 | 1,064 | 14 |
+
+The 14 String rows name the labels `UTF-8-owner-transfer`,
+`edit-geometry-and-capacity-admission` and `retain-cursor-and-restore`. The
+first certificate run with this rule therefore reports `complete=false` unless
+they are rebound. `try_push` and `try_replace_range` correspond to
+`string_push_caller` and `string_replace_caller` (see the String unit above);
+no verified function corresponds to the other two labels.
+
+Internal modular calls (`verify_wrapping_memory.py`): 53 calls, 28 with
+established premises (the `fixed-bplus` and `bplus-partial` direct targets, the
+Compaction/Extraction transitions, `CharBytes` and the init driver), 25 stated
+and not proved. A call is established only when every contract it names is.
+Coverage still counts calls per function; it does not map each call to one
+contract.
+
+Findings not changed in this unit:
+
+- The `src/iter.rs` state writes (the `try_nth` and `try_nth_back` counters,
+  `Take::try_next` and the `try_fold` accumulator) are bound to `buffer_span`,
+  and the `Writer` error write in `Vec::try_write_fmt` to `extend_operation`.
+  Neither contract describes these writes. The `Take`/`try_nth`/`try_fold` Kani
+  harnesses in `src/iter/proofs.rs` match the counters, but no certificate step
+  runs them, so they are not rebound. Both contracts are `stated-not-proved`.
+- The remaining generated caller functions with per-site assumptions are nine
+  on `72ebbdb`: `try_write_vectored` (3), the `try_extend_from_within` clone loop
+  (2), `Vec::try_extend_cloned`, `Vec::try_clone_in`, `IntoIter::try_clone_in`
+  and `Splice::stage_excess`. `<[T; N]>::try_copy_slice_from` now uses
+  `array_slice_caller`. The count of 10 in the `8535521` section is historical.
+- Link-edge dispositions (`guard-unreachable-under-verified-source-contracts`)
+  are unchanged and do not use the premise table.

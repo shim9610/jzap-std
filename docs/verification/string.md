@@ -65,7 +65,10 @@ witnesses are distinguished from the all-input numeric results.
 
 The final source-to-link certificate reruns the shared Box/Vec ownership, state,
 arithmetic and guard checks: **491 source obligations, zero open obligations or
-unproved linked edges**. Release, fat link-time optimization (LTO), and
+unproved linked edges**. Open obligations were counted by contract name only,
+and the String rows had a fixed disposition. Under the [premise rule](../direct-source-migration.md#certificate-dispositions-and-premise-status-2026-11-26) the
+14 current String rows are unproved because their contracts are labels, not
+verified functions. Release, fat link-time optimization (LTO), and
 overflow-checked release fixtures contain no retained panic/abort/termination
 edges. Debug retains 39 originating guard calls and four forwarding calls; each
 is attached to a source-connected unreachability contract. The rejection controls

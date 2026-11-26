@@ -10,6 +10,7 @@ from shared_bindings import CALLERS
 from verify_edit_loops import block
 from callsite_projection import PINNED_BODIES,STATE_CALLERS
 from verify_source import verify as direct
+from premise_status import verified_function_names
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'target/verification/shared/proofs'
 VERUS=Path(os.environ.get('JZAP_VERUS','/workspace/.devtools/verus/verus-x86-linux/verus'))
@@ -39,7 +40,7 @@ def core_bindings():
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--kani',action='store_true');p.add_argument('--mutations',action='store_true');p.add_argument('--loom',action='store_true');a=p.parse_args()
     OUT.mkdir(parents=True,exist_ok=True);(OUT/'summary.json').unlink(missing_ok=True)
-    files=sorted((ROOT/'src').rglob('*.rs'))+[ROOT/'scripts/shared_bindings.py',ROOT/'scripts/callsite_projection.py',ROOT/'scripts/verify_source.py',ROOT/'scripts/verify_direct_verus.py',ROOT/'scripts/verus_composition.py',Path(__file__),ROOT/'tools/memory-proof/shared.verus.rs',*storage_kernel.INPUTS,ROOT/'tools/panic-audit/Cargo.toml',ROOT/'tools/panic-audit/Cargo.lock']+sorted((ROOT/'tools/panic-audit/src').rglob('*.rs'))+sorted(f for f in (ROOT/'tools/shared-loom').rglob('*') if f.is_file() and 'target' not in f.relative_to(ROOT).parts)
+    files=sorted((ROOT/'src').rglob('*.rs'))+[ROOT/'scripts/shared_bindings.py',ROOT/'scripts/premise_status.py',ROOT/'scripts/callsite_projection.py',ROOT/'scripts/verify_source.py',ROOT/'scripts/verify_direct_verus.py',ROOT/'scripts/verus_composition.py',Path(__file__),ROOT/'tools/memory-proof/shared.verus.rs',*storage_kernel.INPUTS,ROOT/'tools/panic-audit/Cargo.toml',ROOT/'tools/panic-audit/Cargo.lock']+sorted((ROOT/'tools/panic-audit/src').rglob('*.rs'))+sorted(f for f in (ROOT/'tools/shared-loom').rglob('*') if f.is_file() and 'target' not in f.relative_to(ROOT).parts)
     digest=lambda:hashlib.sha256(b''.join(str(f.relative_to(ROOT)).encode()+b'\0'+f.read_bytes()for f in files)).hexdigest()
     before=digest();results=[]
     direct_numeric=direct(['shared-numeric'],OUT/'direct-numeric',a.mutations)
@@ -178,7 +179,7 @@ def main():
     assert digest()==before,'shared source changed during verification'
     report=dict(status='pass',source_sha256=before,source_unchanged=True,bindings=bindings,core=core,results=results,kani_run=a.kani,loom_run=a.loom,
         direct_numeric=direct_numeric,word_domain='Verus Either32Or64; no word-type body rewriting',
-        verified_functions=re.findall(r'\b(?:proof\s+)?fn\s+(\w+)',template),
+        verified_functions=sorted(verified_function_names(template)),
         kani_harnesses=['shared::proofs::'+n for n in re.findall(r'#\[kani::proof\](?:\s*#\[[^\n]+\])*\s*fn (\w+)\(', (ROOT/'src/shared/proofs.rs').read_text())]+['budget::concurrent::proofs::concurrent_budget_admission_all_machine_words','budget::concurrent::proofs::actual_concurrent_reservation_commit_and_cancel'],
         platform_refinement=dict(native_fast_target='Linux x86-64, 64-bit pointers, four/five-level paging native ABI',
             assumptions=['at most positive-i32 native task IDs','distinct suspended native activations occupy nonempty valid storage below the 2^56-byte user address ceiling'],

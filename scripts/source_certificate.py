@@ -5,12 +5,19 @@ publication and actual-argument checks, the pinned core predicates and a fresh
 final-link inventory. A symbol name, hash or finite memory test alone is never
 accepted as a numeric/guard certificate. Payload/provenance remain the explicitly
 agreed compiler/Miri/unsafe-caller verification boundary.
+
+Each source obligation has one of three dispositions (premise_status.py):
+solver-and-source-connected (verified contract, premise established),
+premise-stated-not-proved (verified contract, premise only stated) and
+unproved (no verified contract). Completion requires zero unproved rows; the
+stated-not-proved rows are reported separately.
 """
 import argparse,fcntl,hashlib,json,os,py_compile,re,subprocess,time
 from pathlib import Path
 
 from certificate_artifacts import collect, digest, identity, publish
 from link_call_graph import PAIR_WINDOW_PATH, is_pair_window_edge
+from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition, verified_function_names
 
 ROOT=Path(__file__).resolve().parents[1]
 PROFILES='release,release-lto,release-checked,debug'
@@ -55,6 +62,12 @@ PARTIAL_KANI={
     'bplus-partial-kani-steps': (('partial_child','listed_','visit','requests_and_refusals'),14),
 }
 PARTIAL_SOURCE='src/collections/btree_map/view/bplus/partial.rs'
+# Lemmas the bplus-debug step verifies with Verus (check_bplus_core_guards.py).
+BPLUS_CORE_GUARDS='tools/consumer-audit/bplus_core_guards.rs'
+# The initialized-ancestor read in the B+ lookup. Its lemma is a projection;
+# premise_status.py records that its premise is stated, not proved.
+BPLUS_ANCESTOR=dict(file='src/collections/btree_map/view/bplus.rs',function='descend',
+                    expression='ancestor.assume_init_ref()')
 
 
 
@@ -286,6 +299,31 @@ def commands(out,profiles):
     }
 
 
+def obligations(owner,string,areas,verified,lookup_source):
+    """Every source obligation, each with the disposition of premise_status.disposition.
+
+    No row has a fixed disposition. A row is solver-and-source-connected only
+    when its contract is verified and its premise is established.
+    """
+    rows=[(b['site'],b['contract'],b['role']) for b in owner['source_bindings']['bindings']]
+    rows+=[(b['site'],b['contract'],'String-typed-memory-boundary') for b in string['bindings']]
+    rows+=[(b['site'],b['contract'],b['role']) for area in areas for b in area['bindings']]
+    # The B+ ancestor read is not in a binding list; it must still be in descend.
+    head=re.search(r'\bfn\s+'+BPLUS_ANCESTOR['function']+r'\b',lookup_source)
+    body=lookup_source[head.end():] if head else ''
+    following=re.search(r'\n\s*(?:pub(?:\([^)]*\))?\s+)?fn\s',body)
+    assert BPLUS_ANCESTOR['expression'] in body[:following.start() if following else len(body)],('B+ ancestor read moved',BPLUS_ANCESTOR)
+    rows.append((dict(BPLUS_ANCESTOR),'lookup_path_read','initialized-ancestor-prefix'))
+    return [dict(site=site,contract=contract,role=role,disposition=disposition(contract,verified))
+            for site,contract,role in rows]
+
+
+def obligation_counts(rows):
+    counts={PROVED:0,STATED_NOT_PROVED:0,UNPROVED:0}
+    for row in rows:counts[row['disposition']]+=1
+    return counts
+
+
 def check_routes():
     from verify_wrapping_memory import inventory,coverage
     from verify_scratch_slice import bindings as scratch_bindings
@@ -439,7 +477,7 @@ def main():
     generated=evidence(ROOT/'target/verification/owner-protocol/owner-protocol.generated.rs').read_text()
     native=next(r for r in owner['results'] if r['name']=='owner-protocol')
     assert hashlib.sha256(generated.encode()).hexdigest()==native['generated_sha256'],'generated proof input differs from the verified input'
-    verified=set(re.findall(r'\b(?:proof\s+)?fn\s+(\w+)\b',generated)) | set(string['verified_functions']) | set(shared['verified_functions']) | set(btree['verified_functions']) | {'kani:'+h for h in budget_native['kani_harnesses']+string['core']['kani_harnesses']+shared['kani_harnesses']+btree['kani_harnesses']}
+    verified=verified_function_names(generated) | set(string['verified_functions']) | set(shared['verified_functions']) | set(btree['verified_functions']) | {'kani:'+h for h in budget_native['kani_harnesses']+string['core']['kani_harnesses']+shared['kani_harnesses']+btree['kani_harnesses']}
     # These compatibility calls are checked inside the actual product crate in
     # the owner composition. Their bodies only invoke the original state methods.
     producer_root=Path(collected['owner-protocol']['checkout']) if collected is not None else ROOT
@@ -447,11 +485,13 @@ def main():
         path=ROOT/'tools/direct-verus'/name
         producer_path=producer_root/path.relative_to(ROOT)
         assert 'include!('+json.dumps(str(producer_path),ensure_ascii=False)+')' in generated
-        verified |= set(re.findall(r'\b(?:(?:proof|spec)\s+)?fn\s+(\w+)\b',path.read_text()))
+        verified |= verified_function_names(path.read_text())
     verified |= {'direct:'+row['target'] for row in direct_verus['targets']}
     verified |= set(scratch.get('verified_functions',[]))|set(binary_heap.get('verified_functions',[]))|set(deque.get('verified_functions',[]))
     verified |= {'kani:'+h for h in btree_set['kani_harnesses']+hash_set['kani_harnesses']+binary_heap['kani_harnesses']+deque['kani_harnesses']+scratch['kani_harnesses']}
     verified |= set(hash_map['verified_functions']) | {'kani:'+h for h in hash_map['kani_harnesses']}
+    # Owner bindings name the actual-Rust harnesses the owner step checked them against.
+    verified |= {'kani:'+h for h in owner.get('kani_harnesses',[])}
     assert all(r['exit_code']==0 and all(int(errors)==0 for _,errors in r['verification'])
                for r in owner['results'] if r['name']=='owner-protocol')
     if not args.reuse_models:
@@ -461,7 +501,8 @@ def main():
         assert 'Complete - 1 successfully verified harnesses, 0 failures, 1 total.' in evidence(out/'utf8-native.log').read_text()
     assert run('arithmetic-policy')==0
     assert run('bplus-debug')==0
-    verified.add('pair_window_advance')
+    # The step verifies this file with Verus and fails otherwise.
+    verified |= verified_function_names((ROOT/BPLUS_CORE_GUARDS).read_text())
     bplus=None
     if collected is not None:
         for name in STAGES['bplus'][1][1:]:
@@ -533,28 +574,11 @@ def main():
     # callback contract excludes user panic/abort, rather than proving their code.
     for row in forward:row['disposition']='no-unproved-library-originating-edge'
     assert inputs()==before,'certificate inputs changed during verification'
-    source_obligations=[dict(site=b['site'],contract=b['contract'],role=b['role'],
-        disposition='solver-and-source-connected' if b['contract'] in verified or b['contract'].startswith('kani:') else 'unproved')
-        for b in owner['source_bindings']['bindings']]
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role='String-typed-memory-boundary',disposition='solver-and-source-connected') for b in string['bindings']]
-    assert all(b['contract'] in verified for b in shared['bindings'])
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in shared['bindings']]
-    assert all(b['contract'] in verified for b in btree['bindings'])
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in btree['bindings']]
-    assert all(b['contract'] in verified for b in hash_map['bindings'])
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in hash_map['bindings']]
-    assert all(b['contract'] in verified for b in binary_heap['bindings'])
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in binary_heap['bindings']]
-    assert all(b['contract'] in verified for b in deque['bindings'])
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in deque['bindings']]
-    assert all(b['contract'] in verified for b in scratch['bindings'])
-    source_obligations += [dict(site=b['site'],contract=b['contract'],role=b['role'],disposition='solver-and-source-connected') for b in scratch['bindings']]
-    source_obligations.append(dict(
-        site=dict(file='src/collections/btree_map/view/bplus.rs',function='descend',
-                  expression='ancestor.assume_init_ref()'),
-        contract='lookup_path_read',role='initialized-ancestor-prefix',
-        disposition='solver-and-source-connected'))
-    open_source=sum(b['disposition']=='unproved' for b in source_obligations)
+    for area in (shared,btree,hash_map,binary_heap,deque,scratch):
+        assert all(b['contract'] in verified for b in area['bindings'])
+    source_obligations=obligations(owner,string,(shared,btree,hash_map,binary_heap,deque,scratch),verified,(ROOT/BPLUS_ANCESTOR['file']).read_text())
+    counts=obligation_counts(source_obligations)
+    open_source=counts[UNPROVED]
     unproved_edges=sum(b['disposition'] not in ('guard-unreachable-under-verified-source-contracts','no-unproved-library-originating-edge') for b in branches+forward)
     full_profiles=set(args.profiles.split(','))=={'release','release-lto','release-checked','debug'}
     complete=not args.reuse_models and full_profiles and not open_source and not unproved_edges and owner['source_closure_complete'] and all(
@@ -562,12 +586,17 @@ def main():
     report=dict(complete=complete,status='pass' if complete else 'development-only',
         source_sha256=before,source_unchanged=True,models=owner,budget_native=budget_native,direct_foundation=foundation,direct_verus=direct_verus,string=string,shared=shared,btree=btree,btree_set=btree_set,hash_map=hash_map,hash_set=hash_set,binary_heap=binary_heap,deque=deque,scratch=scratch,link=link,
         branches=branches+forward,unproved_link_edges=unproved_edges,open_source_obligations=open_source,
+        source_obligation_counts=counts,
+        completion_rule='complete requires zero unproved source obligations and zero unproved link edges; '
+            'premise-stated-not-proved rows are counted separately and do not block completion',
         steps=steps,reused_models=args.reuse_models,bplus=bplus,
         campaign=dict(started_ns=started,invocations=invocations,actions=context),
         scope='Numeric overflow-to-memory and internal guard unreachability for the checked Box/Vec/String/Rc/Arc/BTreeMap/BTreeSet/HashMap/HashSet/BinaryHeap/VecDeque/Scratch/checked-slice and concurrent-budget source contracts and Linux x86_64 link fixtures. Direct Rust/Verus kernels and reviewed source projections remain distinct evidence. Rust/compiler/core ABI, valid allocator, safe ownership, public unsafe and returning callback contracts remain explicit; actual alias/initialization/drop scenarios are checked by the separate Miri/ASan/compiler suites.')
     (out/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     (out/'source-obligations.json').write_text(json.dumps(source_obligations,indent=2)+'\n')
-    print(f'{len(branches)} originating guard calls and {len(forward)} forwarding calls attached; complete={complete}',flush=True)
+    print(f'{len(branches)} originating guard calls and {len(forward)} forwarding calls attached; '
+          f'source obligations: {counts[PROVED]} {PROVED}, {counts[STATED_NOT_PROVED]} {STATED_NOT_PROVED}, '
+          f'{counts[UNPROVED]} {UNPROVED}; complete={complete}',flush=True)
     return int(not complete)
 
 

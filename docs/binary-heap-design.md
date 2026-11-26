@@ -163,7 +163,7 @@ profiles without model reuse or source changes during verification.
 | Executed memory | Strict-provenance native/i686 Miri, native Tree Borrows and AddressSanitizer; large aligned non-Copy elements, owning ledgers and unwind/drop paths | Pass: 17 heap scenarios in each Miri configuration |
 | Fuzz and coverage | 10,000 heap fuzz runs; LLVM heap-module source coverage | 364/374 lines (97.33%), 63/72 branches (87.50%) |
 | Builds and tooling | Core/alloc, wasm/thumb, no-global-OOM, strict Clippy/rustdoc, audits, licenses, runner tests and software bill of materials | Pass; 19 runner tests and seven reporting tests |
-| Final source/link composition | Regenerated common prerequisites; release, release with link-time optimization (LTO), overflow-checked release and debug consumer roots, including all budget policies and eight exit controls | Pass: no model reuse, unchanged source, zero unresolved source conditions or unproved linked edges; all eight exit controls detected |
+| Final source/link composition | Regenerated common prerequisites; release, release with link-time optimization (LTO), overflow-checked release and debug consumer roots, including all budget policies and eight exit controls | Pass: no model reuse, unchanged source, zero unresolved source conditions as counted before the premise rule and zero unproved linked edges; all eight exit controls detected. That count included rows with stated premises; all 50 current heap rows have [stated premises not proved](direct-source-migration.md#certificate-dispositions-and-premise-status-2026-11-26) |
 
 The checked Linux x86-64 consumer fixtures retain the core guard calls below.
 Verified source/caller conditions make the originating guards unreachable; the

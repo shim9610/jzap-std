@@ -143,7 +143,11 @@ Compiler cases check owned concurrent state/futures and reject local ownership
 at thread boundaries. Loom adds actual owning-policy saturation/COW and creator-
 drop interleavings; the two concurrent new scenarios use preemption bound two.
 The combined source-to-link certificate closes 864 obligations with zero open
-obligations and zero unproved linked edges. Normal and overflow-checked release
+obligations and zero unproved linked edges, as counted before the premise rule:
+a row was closed when its contract name was verified, or by a fixed
+disposition, and rows whose premises are stated and not proved were counted as
+connected; see
+the [premise rule](direct-source-migration.md#certificate-dispositions-and-premise-status-2026-11-26). Normal and overflow-checked release
 each pass 227 runtime tests and 26 doctests. The
 [verification report](verification/owned-budgets.md) records the exact input hash,
 executed checks and boundaries. Its paired timing renewal contains 240 intervals

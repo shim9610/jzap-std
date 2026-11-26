@@ -23,6 +23,7 @@ from hash_map_bindings import is_hash_map
 from verify_binary_heap import is_binary_heap
 from verify_deque import is_deque
 from verify_scratch_slice import is_scratch_slice
+from premise_status import row_premise, verified_function_names
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "target/verification/wrapping-memory"
@@ -192,54 +193,61 @@ def generate(source_root, census):
     return template, expressions, dict(path=str(core_index), sha256=hashlib.sha256(core_index.read_bytes()).hexdigest())
 
 
+# Each entry has a freshly verified implementation and a byte-span theorem.
+# main() checks that every name is a verified exec or proof function; whether
+# each call establishes the premises of its contracts is recorded per contract
+# in premise_status.py and reported with each ledger row. Counts are per
+# function, not per call.
+FAMILIES = {
+    ("src/init/driver.rs", "", "run"): (1, ["initialized_box_prefix"]),
+    # len < limit is checked before the increment; proved on the original
+    # loop by the direct vec-staging Verus group and composed below.
+    ("src/vec/staging_driver.rs", "", "run"): (1, ["staged_collection_extent"]),
+    ("src/shared/count.rs", "LocalCount", "release"): (1, ["shared_release_credit"]),
+    ("src/shared/count.rs", "AtomicCount", "buffered_clone_strong"): (1, ["shared_buffered_reservation_extent"]),
+    ("src/boxed/text.rs", "CharBytes", "try_next"): (1, ["utf8_byte_cursor"]),
+    ("src/boxed/text.rs", "CharBytes", "try_size_hint"): (1, ["utf8_byte_cursor"]),
+    ("src/budget_numeric.rs", "", "pending"): (2, ["reserved"]),
+    ("src/budget_numeric.rs", "", "reserve"): (1, ["reserve"]),
+    ("src/budget_numeric.rs", "", "credit"): (1, ["commit", "cancel"]),
+    ("src/budget_numeric.rs", "", "retire"): (1, ["release"]),
+    ("src/capacity.rs", "Capacity", "layout"): (1, ["capacity_bytes", "external_count_before_allocation"]),
+    ("src/compaction.rs", "Compaction", "remaining"): (1, ["c_remaining", "compaction_before_move"]),
+    ("src/compaction.rs", "Compaction", "previous_kept"): (1, ["c_previous_kept"]),
+    ("src/compaction.rs", "Compaction", "restored_len"): (1, ["c_restored_len", "compaction_before_move"]),
+    ("src/compaction.rs", "Compaction", "keep_next"): (2, ["c_keep_next", "compaction_before_element"]),
+    ("src/compaction.rs", "Compaction", "remove_next"): (1, ["c_remove_next", "compaction_before_element"]),
+    ("src/compaction.rs", "Compaction", "keep_live"): (2, ["c_keep_live"]),
+    ("src/compaction.rs", "Compaction", "remove_live"): (1, ["c_remove_live"]),
+    ("src/compaction.rs", "Extraction", "unvisited_len"): (1, ["e_unvisited_len", "extraction_before_move"]),
+    ("src/compaction.rs", "Extraction", "restored_len"): (1, ["e_restored_len", "extraction_before_move"]),
+    ("src/compaction.rs", "Extraction", "written"): (1, ["e_written"]),
+    ("src/compaction.rs", "Extraction", "remaining"): (1, ["e_remaining"]),
+    ("src/compaction.rs", "Extraction", "keep_next"): (1, ["e_keep_next"]),
+    ("src/compaction.rs", "Extraction", "remove_next"): (2, ["e_remove_next"]),
+    ("src/span.rs", "Span", "len"): (1, ["cursor_remaining", "cursor_before_read"]),
+    ("src/span.rs", "Span", "next"): (1, ["iterator_cursor", "cursor_before_read"]),
+    ("src/span.rs", "Span", "next_back"): (1, ["iterator_cursor", "cursor_before_read"]),
+    ("src/vec.rs", "Vec", "remaining_limit"): (1, ["owner_remaining_limit"]),
+    ("src/vec/convenience.rs", "Vec", "spare_capacity_mut"): (1, ["owner_spare_capacity", "spare_view_before_slice"]),
+    ("src/vec/convenience.rs", "Vec", "split_at_spare_mut"): (1, ["owner_spare_capacity", "spare_view_before_slice"]),
+    ("src/vec/edit.rs", "Vec", "try_dedup_by"): (1, ["c_previous_kept"]),
+    ("src/vec/edit.rs", "Drain", "restore_tail"): (1, ["drain_before_tail_restore"]),
+    # Calls inside functions verified directly on the product source: Verus
+    # checks each call's bounded precondition there (verify_direct_verus.py
+    # target fixed-bplus); coverage requires the enclosing verus_spec.
+    ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "assemble"): (1, ["direct:fixed-bplus"]),
+    ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "find"): (3, ["direct:fixed-bplus"]),
+    ("src/collections/btree_map/view/bplus/fixed.rs", "", "leaf_rank"): (1, ["direct:fixed-bplus"]),
+    ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize"): (3, ["direct:fixed-bplus"]),
+    ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize_branch"): (2, ["direct:fixed-bplus"]),
+    # The partial-key pass core, verified directly (target bplus-partial).
+    ("src/collections/btree_map/view/bplus/partial.rs", "", "pass_over"): (7, ["direct:bplus-partial"]),
+}
+
+
 def coverage(census):
-    # Each entry has a freshly verified implementation and a byte-span theorem.
-    families = {
-        ("src/init/driver.rs", "", "run"): (1, ["initialized_box_prefix"]),
-        # len < limit is checked before the increment; proved on the original
-        # loop by the direct vec-staging Verus group and composed below.
-        ("src/vec/staging_driver.rs", "", "run"): (1, ["staged_collection_extent"]),
-        ("src/shared/count.rs", "LocalCount", "release"): (1, ["shared_release_credit"]),
-        ("src/shared/count.rs", "AtomicCount", "buffered_clone_strong"): (1, ["shared_buffered_reservation_extent"]),
-        ("src/boxed/text.rs", "CharBytes", "try_next"): (1, ["utf8_byte_cursor"]),
-        ("src/boxed/text.rs", "CharBytes", "try_size_hint"): (1, ["utf8_byte_cursor"]),
-        ("src/budget_numeric.rs", "", "pending"): (2, ["reserved"]),
-        ("src/budget_numeric.rs", "", "reserve"): (1, ["reserve"]),
-        ("src/budget_numeric.rs", "", "credit"): (1, ["commit", "cancel"]),
-        ("src/budget_numeric.rs", "", "retire"): (1, ["release"]),
-        ("src/capacity.rs", "Capacity", "layout"): (1, ["capacity_bytes", "external_count_before_allocation"]),
-        ("src/compaction.rs", "Compaction", "remaining"): (1, ["c_remaining", "compaction_before_move"]),
-        ("src/compaction.rs", "Compaction", "previous_kept"): (1, ["c_previous_kept"]),
-        ("src/compaction.rs", "Compaction", "restored_len"): (1, ["c_restored_len", "compaction_before_move"]),
-        ("src/compaction.rs", "Compaction", "keep_next"): (2, ["c_keep_next", "compaction_before_element"]),
-        ("src/compaction.rs", "Compaction", "remove_next"): (1, ["c_remove_next", "compaction_before_element"]),
-        ("src/compaction.rs", "Compaction", "keep_live"): (2, ["c_keep_live"]),
-        ("src/compaction.rs", "Compaction", "remove_live"): (1, ["c_remove_live"]),
-        ("src/compaction.rs", "Extraction", "unvisited_len"): (1, ["e_unvisited_len", "extraction_before_move"]),
-        ("src/compaction.rs", "Extraction", "restored_len"): (1, ["e_restored_len", "extraction_before_move"]),
-        ("src/compaction.rs", "Extraction", "written"): (1, ["e_written"]),
-        ("src/compaction.rs", "Extraction", "remaining"): (1, ["e_remaining"]),
-        ("src/compaction.rs", "Extraction", "keep_next"): (1, ["e_keep_next"]),
-        ("src/compaction.rs", "Extraction", "remove_next"): (2, ["e_remove_next"]),
-        ("src/span.rs", "Span", "len"): (1, ["cursor_remaining", "cursor_before_read"]),
-        ("src/span.rs", "Span", "next"): (1, ["iterator_cursor", "cursor_before_read"]),
-        ("src/span.rs", "Span", "next_back"): (1, ["iterator_cursor", "cursor_before_read"]),
-        ("src/vec.rs", "Vec", "remaining_limit"): (1, ["owner_remaining_limit"]),
-        ("src/vec/convenience.rs", "Vec", "spare_capacity_mut"): (1, ["owner_spare_capacity", "spare_view_before_slice"]),
-        ("src/vec/convenience.rs", "Vec", "split_at_spare_mut"): (1, ["owner_spare_capacity", "spare_view_before_slice"]),
-        ("src/vec/edit.rs", "Vec", "try_dedup_by"): (1, ["c_previous_kept"]),
-        ("src/vec/edit.rs", "Drain", "restore_tail"): (1, ["drain_before_tail_restore"]),
-        # Calls inside functions verified directly on the product source: Verus
-        # checks each call's bounded precondition there (verify_direct_verus.py
-        # target fixed-bplus); coverage requires the enclosing verus_spec.
-        ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "assemble"): (1, ["direct:fixed-bplus"]),
-        ("src/collections/btree_map/view/bplus/fixed.rs", "FixedTree", "find"): (3, ["direct:fixed-bplus"]),
-        ("src/collections/btree_map/view/bplus/fixed.rs", "", "leaf_rank"): (1, ["direct:fixed-bplus"]),
-        ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize"): (3, ["direct:fixed-bplus"]),
-        ("src/collections/btree_map/view/bplus/fixed.rs", "", "summarize_branch"): (2, ["direct:fixed-bplus"]),
-        # The partial-key pass core, verified directly (target bplus-partial).
-        ("src/collections/btree_map/view/bplus/partial.rs", "", "pass_over"): (7, ["direct:bplus-partial"]),
-    }
+    families = FAMILIES
     found, ledger = {}, []
     for row in census:
         kind = row["kind"]
@@ -255,7 +263,7 @@ def coverage(census):
             key = (row["file"], row["context"].split("<")[0].strip(), row["function"])
             assert key in families, ("modular call has no verified contract", row)
             found[key] = found.get(key, 0) + 1
-            ledger.append(dict(site=row, contracts=families[key][1]))
+            ledger.append(dict(site=row, contracts=families[key][1], premise=row_premise(families[key][1])))
     assert {k: v[0] for k, v in families.items()} == found, (families, found)
     return ledger
 
@@ -276,7 +284,7 @@ def main():
     inputs += sorted((ROOT / "tools/direct-verus").glob("*.rs")) + [ROOT / "scripts/verus_composition.py"]
     inputs += sorted((ROOT / "tools/panic-audit/src").rglob("*.rs"))
     inputs += [ROOT / "tools/panic-audit/Cargo.toml", ROOT / "tools/panic-audit/Cargo.lock"]
-    inputs += [ROOT / "scripts" / name for name in ["verify_wrapping_memory.py", "verify_source.py", "verify_panic_state.py", "verify_state_types.py", "arithmetic_projection.py", "btree_bindings.py", "hash_map_bindings.py", "verify_scratch_slice.py"]]
+    inputs += [ROOT / "scripts" / name for name in ["verify_wrapping_memory.py", "premise_status.py", "verify_source.py", "verify_panic_state.py", "verify_state_types.py", "arithmetic_projection.py", "btree_bindings.py", "hash_map_bindings.py", "verify_scratch_slice.py"]]
     fingerprint = lambda: hashlib.sha256(b"".join(str(p.relative_to(ROOT)).encode() + b"\0" + p.read_bytes() for p in inputs)).hexdigest()
     before = fingerprint()
     report = dict(source_sha256=before, results={},
@@ -305,6 +313,9 @@ def main():
         assert state_report['source_sha256'][file] == hashlib.sha256((ROOT / file).read_bytes()).hexdigest()
     without_main = lambda text: re.sub(r"fn main\(\)\s*\{\}", "", text)
     combined = without_main(base) + generated
+    # Exec and proof functions only: a spec fn of the same name is not a proof.
+    known = verified_function_names(combined + "".join((ROOT / "tools/direct-verus" / name).read_text() for name in
+        ("state-adapters.rs", "budget-adapters.rs", "vec-adapters.rs", "layout-adapters.rs", "init-adapters.rs")))
     for row in ledger:
         direct = [c for c in row["contracts"] if c.startswith("direct:")]
         for contract in direct:
@@ -317,7 +328,7 @@ def main():
             head = re.search(r"\bfn\s+" + site["function"] + r"\b", source)
             assert head and "verus_spec(" in source[source.rfind("\n\n", 0, head.start()):head.start()], \
                 ("direct contract without a verus_spec on the enclosing function", site)
-        for contract in [c for c in row["contracts"] if not c.startswith("direct:")]: assert re.search(r"\bfn\s+" + contract + r"\(", combined + (ROOT / "tools/direct-verus/state-adapters.rs").read_text() + (ROOT / "tools/direct-verus/budget-adapters.rs").read_text() + (ROOT / "tools/direct-verus/vec-adapters.rs").read_text() + (ROOT / "tools/direct-verus/layout-adapters.rs").read_text() + (ROOT / "tools/direct-verus/init-adapters.rs").read_text()), contract
+        for contract in [c for c in row["contracts"] if not c.startswith("direct:")]: assert contract in known, contract
     path = OUT / "memory.generated.rs"; path.write_text(combined)
     report["results"]["verus"] = run("memory-verus", [str(VERUS), str(ROOT / "src/lib.rs"),
         "--crate-type", "lib", "--edition=2024", "--cfg", 'feature="alloc"',
@@ -327,7 +338,9 @@ def main():
     # Verus's unpinned usize domain is Either32Or64. Original state methods and
     # caller contracts are checked together; no usize -> u32 text translation.
     report["word_domain"] = state_report["word_domain"]
-    report.update(core_index=core, expressions=expressions, coverage=ledger, covered_modular_calls=len(ledger))
+    report.update(core_index=core, expressions=expressions, coverage=ledger, covered_modular_calls=len(ledger),
+                  premise_established_calls=sum(row["premise"] == "established" for row in ledger),
+                  premise_stated_not_proved_calls=sum(row["premise"] == "stated-not-proved" for row in ledger))
     proof_source = (ROOT / "src/wrapping_memory_proofs.rs").read_text()
     names = re.findall(r"^fn ((?:every_wrapping_result_|admitted_|all_word_range_)\w+)\(", proof_source, re.M)
     names += ["full_constructor_establishes_order", "both_transitions_preserve_order_and_exact_length", "constructors_establish_every_numeric_bound", "both_transitions_close_all_invariant_states_and_queries", "constructors_and_all_transitions_preserve_range_and_cleanup", "constructors_and_reconstructed_layout_preserve_each_byte_bound"]
@@ -346,7 +359,9 @@ def main():
     assert report["source_unchanged"]
     report["status"] = "pass"
     (OUT / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"{len(ledger)} internal modular calls covered; source-linked byte spans and {len(names)} real Rust/state harnesses verified.")
+    print(f"{len(ledger)} internal modular calls covered ({report['premise_established_calls']} with established premises, "
+          f"{report['premise_stated_not_proved_calls']} with stated premises not proved); "
+          f"source-linked byte spans and {len(names)} real Rust/state harnesses verified.")
 
 
 def verify_mutations(env, census, combined, generated):

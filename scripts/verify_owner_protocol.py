@@ -53,7 +53,7 @@ def main():
     files+=sorted((ROOT/'tools/direct-verus').glob('*.rs'))+[ROOT/'scripts/verus_composition.py']
     files+=sorted((ROOT/'tools/panic-audit/src').rglob('*.rs'))
     files+=[ROOT/'scripts/verify_string.py',ROOT/'scripts/shared_bindings.py',ROOT/'scripts/btree_bindings.py',ROOT/'scripts/hash_map_bindings.py',ROOT/'scripts/verify_hash_set.py',ROOT/'scripts/verify_binary_heap.py',ROOT/'scripts/verify_deque.py',ROOT/'scripts/verify_scratch_slice.py']
-    files+=[ROOT/'scripts'/name for name in ['init_bindings.py','verify_owner_protocol.py','owner_state_projection.py','closure_projection.py','credit_bindings.py','callsite_projection.py','caller_bindings.py','bplus_bindings.py','check_unsafe_inventory.py','verify_edit_loops.py','verify_wrapping_memory.py','verify_panic_state.py','verify_state_types.py','verify_pointer_checks.py','verify_source.py','arithmetic_projection.py']]
+    files+=[ROOT/'scripts'/name for name in ['init_bindings.py','premise_status.py','verify_owner_protocol.py','owner_state_projection.py','closure_projection.py','credit_bindings.py','callsite_projection.py','caller_bindings.py','bplus_bindings.py','check_unsafe_inventory.py','verify_edit_loops.py','verify_wrapping_memory.py','verify_panic_state.py','verify_state_types.py','verify_pointer_checks.py','verify_source.py','arithmetic_projection.py']]
     fingerprint=lambda:hashlib.sha256(b''.join(str(p.relative_to(ROOT)).encode()+b'\0'+p.read_bytes() for p in files)).hexdigest()
     before=fingerprint()
     check_bplus(ROOT)
@@ -114,7 +114,8 @@ def main():
     unsafe_rows=json.loads(subprocess.check_output([str(scanner('unsafe_sites')),*source_files],cwd=ROOT,text=True))
     for site in unsafe_rows:site['group']=group(site)
     memory_report=json.loads((ROOT/'target/verification/wrapping-memory/summary.json').read_text())
-    source_bindings=bind_callers(ROOT,text,state_rows,unsafe_rows,memory_report['kani_harnesses']+memory_report['direct_cursor_harnesses']+stage_harnesses)
+    checked_harnesses=memory_report['kani_harnesses']+memory_report['direct_cursor_harnesses']+stage_harnesses
+    source_bindings=bind_callers(ROOT,text,state_rows,unsafe_rows,checked_harnesses)
     if args.mutations:
         for name,file,old,new in [
             # A representation-only site that gains an element offset leaves the
@@ -240,6 +241,8 @@ def main():
     report=dict(staging_source=str(stage_output/'summary.json'),staging_harnesses=stage_harnesses,status='pass',source_sha256=before,source_unchanged=True,reused_prerequisites=args.reuse_generated,
                 results=results,owner_expressions=expressions,
                 source_bindings=source_bindings,
+                # The actual-Rust harnesses each `kani:` binding was checked against.
+                kani_harnesses=checked_harnesses,
                 state_adapter_sha256=hashlib.sha256((ROOT/'tools/direct-verus/state-adapters.rs').read_bytes()).hexdigest(),
                 word_domain='Verus Either32Or64; no usize-to-u32 body rewriting',
                 scope='Original Compaction/Extraction methods composed with pending projected owner/loop/credit/core caller contracts in the same product crate. Numeric word domain is Either32Or64; final link and executed memory targets are separate. Heap/alias behavior is covered separately by actual-source checks.',

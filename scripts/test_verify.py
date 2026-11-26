@@ -469,4 +469,73 @@ class LinkCampaignTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unexpected callers'):
             bind_pair_window_edges([edge], '\n'.join([*assembly, '50 <unexpected>:', *assembly[-1:]]), '')
 
+
+class PremiseTests(unittest.TestCase):
+    def test_spec_functions_are_not_verified_names(self):
+        from premise_status import verified_function_names
+        text = """verus! {
+            spec fn a() -> bool { true }
+            pub open spec fn b() -> bool { true }
+            pub(crate) closed spec fn c() -> bool { true }
+            spec(checked) fn d() -> bool { true }
+            proof fn e() {}
+            pub broadcast proof fn f() {}
+            fn g() {}
+            pub(crate) fn h<T>(x: T) {}
+            exec fn i() {}
+        }"""
+        self.assertEqual(verified_function_names(text), {'e', 'f', 'g', 'h', 'i'})
+
+    def test_disposition_requires_a_verified_contract_and_an_established_premise(self):
+        from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition
+        verified = {'c_keep_live', 'resized_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
+        self.assertEqual(disposition('c_keep_live', verified), PROVED)
+        self.assertEqual(disposition('direct:bplus-partial', verified), PROVED)
+        self.assertEqual(disposition('resized_owner', verified), STATED_NOT_PROVED)
+        # A projection-only backing is never reported as connected.
+        self.assertEqual(disposition('lookup_path_read', verified), STATED_NOT_PROVED)
+        self.assertEqual(disposition('btree_cursor', verified), UNPROVED)
+        with self.assertRaisesRegex(AssertionError, 'contract has no recorded premise status'):
+            disposition('unknown_contract', verified)
+
+    def test_every_modular_family_contract_has_a_premise_status(self):
+        from premise_status import premise
+        from verify_wrapping_memory import FAMILIES
+        for _, contracts in FAMILIES.values():
+            for contract in contracts:
+                self.assertIn(premise(contract)['status'], ('established', 'stated-not-proved'))
+
+    def test_modular_ledger_reports_each_call_premise(self):
+        from verify_wrapping_memory import FAMILIES, coverage
+        census = [dict(file=file, context=context, function=function, kind='modular_call', expression='')
+                  for (file, context, function), (count, _) in FAMILIES.items() for _ in range(count)]
+        premises = {(row['site']['file'], row['site']['function']): row['premise'] for row in coverage(census)}
+        self.assertEqual(premises[('src/compaction.rs', 'keep_live')], 'established')
+        self.assertEqual(premises[('src/collections/btree_map/view/bplus/partial.rs', 'pass_over')], 'established')
+        self.assertEqual(premises[('src/vec/edit.rs', 'restore_tail')], 'stated-not-proved')
+        # One stated contract makes the whole call stated.
+        self.assertEqual(premises[('src/span.rs', 'next')], 'stated-not-proved')
+
+    def test_certificate_rows_have_no_fixed_disposition(self):
+        from source_certificate import BPLUS_ANCESTOR, obligation_counts, obligations
+        from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED
+        site = dict(file='src/x.rs', function='f')
+        owner = dict(source_bindings=dict(bindings=[
+            dict(site=site, contract='c_keep_live', role='state-publication'),
+            dict(site=site, contract='resized_owner', role='state-publication'),
+            dict(site=site, contract='kani:within_capacity_push_preserves_every_numeric_owner', role='state-publication')]))
+        string = dict(bindings=[dict(site=site, contract='UTF-8-owner-transfer')])
+        area = dict(bindings=[dict(site=site, contract='btree_cursor', role='cursor')])
+        lookup = (ROOT / BPLUS_ANCESTOR['file']).read_text()
+        verified = {'c_keep_live', 'resized_owner', 'btree_cursor', 'lookup_path_read'}
+        rows = obligations(owner, string, (area,), verified, lookup)
+        self.assertEqual([r['disposition'] for r in rows],
+                         [PROVED, STATED_NOT_PROVED, UNPROVED, UNPROVED, STATED_NOT_PROVED, STATED_NOT_PROVED])
+        self.assertEqual(rows[-1]['contract'], 'lookup_path_read')
+        self.assertEqual(obligation_counts(rows), {PROVED: 1, STATED_NOT_PROVED: 3, UNPROVED: 2})
+        # Without a verified lemma the B+ ancestor row is unproved, not connected.
+        self.assertEqual(obligations(owner, string, (area,), verified - {'lookup_path_read'}, lookup)[-1]['disposition'], UNPROVED)
+        with self.assertRaisesRegex(AssertionError, 'B\\+ ancestor read moved'):
+            obligations(owner, string, (area,), verified, lookup.replace(BPLUS_ANCESTOR['expression'], 'ancestor.read()'))
+
 if __name__=='__main__':unittest.main()

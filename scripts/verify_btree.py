@@ -13,6 +13,7 @@ from btree_core import projection as core_projection
 from verus_composition import run as compose
 from verify_source import verify as direct
 import storage_kernel
+from premise_status import verified_function_names
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'target/verification/btree/proofs'
 def remaining_models(root=ROOT,core_root=None):
@@ -89,7 +90,7 @@ TEXT_CONTROLS=[
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--numeric-only',action='store_true');p.add_argument('--mutations',action='store_true');p.add_argument('--kani',action='store_true');args=p.parse_args()
     OUT.mkdir(parents=True,exist_ok=True);(OUT/'summary.json').unlink(missing_ok=True);validate_bounded(ROOT)
-    source=lambda:hashlib.sha256(b''.join(str(x.relative_to(ROOT)).encode()+b'\0'+x.read_bytes() for x in [*sorted((ROOT/'src').rglob('*.rs')),ROOT/'tools/memory-proof/btree.verus.rs',Path(__file__),ROOT/'scripts/btree_bindings.py',ROOT/'scripts/btree_callers.py',ROOT/'scripts/arithmetic_projection.py',ROOT/'tools/direct-verus/btree-adapters.rs',*storage_kernel.INPUTS])).hexdigest()
+    source=lambda:hashlib.sha256(b''.join(str(x.relative_to(ROOT)).encode()+b'\0'+x.read_bytes() for x in [*sorted((ROOT/'src').rglob('*.rs')),ROOT/'tools/memory-proof/btree.verus.rs',Path(__file__),ROOT/'scripts/premise_status.py',ROOT/'scripts/btree_bindings.py',ROOT/'scripts/btree_callers.py',ROOT/'scripts/arithmetic_projection.py',ROOT/'tools/direct-verus/btree-adapters.rs',*storage_kernel.INPUTS])).hexdigest()
     _,core,core_paths=core_projection(ROOT)
     product_source=source
     source=lambda:hashlib.sha256(product_source().encode()+b''.join(p.read_bytes() for p in core_paths)+(ROOT/'scripts/btree_core.py').read_bytes()).hexdigest()
@@ -177,7 +178,7 @@ def main():
                 controls.append(dict(name=name,compiled=True,detected_by='source ownership phase binding',diagnostic=diagnostic))
     assert before==source(),'BTree proof inputs changed during verification'
     summary=dict(status='numeric-pass' if args.numeric_only else 'pass',complete=not args.numeric_only and args.kani and args.mutations,source_sha256=before,source_unchanged=True,core=core,direct_source=direct_source,word_domain="Verus Either32Or64; no positive word-type rewriting; retained ownership/core models remain",results=results,kani_harnesses=kani,native_controls=native_controls,phase_controls=controls,phases=phases,bindings=sites,callers=callers,caller_controls=caller_controls,
-        verified_functions=re.findall(r'\b(?:proof\s+)?fn\s+(\w+)\s*\(',text),
+        verified_functions=sorted(verified_function_names(text)),
         scope='Direct executable BTree search/cursor, planning, frontier, deletion, packed-shape and node-span kernels and actual Rust callers; remaining ownership/core and logical credit models. Typed ownership, actual aliasing, initialization and destructors require the compiler/Miri/ASan suites separately.')
     (OUT/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print('BTree geometry/credit proofs passed; complete=',summary['complete'])
 if __name__=='__main__':main()

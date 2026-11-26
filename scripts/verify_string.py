@@ -13,6 +13,7 @@ from verify_edit_loops import block
 from verus_composition import run as compose
 import storage_kernel
 from verify_source import verify as direct
+from premise_status import verified_function_names
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'target/verification/string/proofs'
 FILES=['src/string.rs','src/string/edit.rs','src/string/convert.rs','src/string/traits.rs','src/string/encoding.rs','src/string/numeric.rs','src/fmt.rs']
@@ -119,7 +120,7 @@ def main():
  OUT.mkdir(parents=True,exist_ok=True)
  lock=(OUT/'.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX)
  (OUT/'summary.json').unlink(missing_ok=True)
- inputs=sorted((ROOT/'src').rglob('*.rs'))+sorted((ROOT/'tools/direct-verus').glob('*.rs'))+[Path(__file__),ROOT/'scripts/callsite_projection.py',ROOT/'scripts/verify_source.py',ROOT/'scripts/verify_direct_verus.py',ROOT/'scripts/verus_composition.py',ROOT/'tools/memory-proof/string.verus.rs',*storage_kernel.INPUTS]
+ inputs=sorted((ROOT/'src').rglob('*.rs'))+sorted((ROOT/'tools/direct-verus').glob('*.rs'))+[Path(__file__),ROOT/'scripts/premise_status.py',ROOT/'scripts/callsite_projection.py',ROOT/'scripts/verify_source.py',ROOT/'scripts/verify_direct_verus.py',ROOT/'scripts/verus_composition.py',ROOT/'tools/memory-proof/string.verus.rs',*storage_kernel.INPUTS]
  digest=lambda:hashlib.sha256(b''.join(str(x.relative_to(ROOT)).encode()+b'\0'+x.read_bytes() for x in inputs)).hexdigest()
  before=digest();cursor_report=direct(['string-cursors'],OUT/'direct-cursors',args.mutations);core=core_bindings();rows=bindings();text=storage_kernel.kernel()+(ROOT/'tools/memory-proof/string.verus.rs').read_text();expressions={};results=[]
  binary=Path(os.environ.get('JZAP_VERUS','/workspace/.devtools/verus/verus-x86-linux/verus'))
@@ -159,6 +160,6 @@ def main():
   assert len(core['kani_harnesses'])==9
   results.append(dict(name='actual-source-kani',command=command,exit_code=r.returncode))
  assert digest()==before,'String verification inputs changed'
- (OUT/'summary.json').write_text(json.dumps(dict(status='pass',source_sha256=before,source_unchanged=True,unsafe_blocks=len(rows),unsafe_functions=4,unsafe_impls=2,bindings=rows,core=core,verified_functions=re.findall(r'fn\s+(\w+)\s*\(',text),expressions=expressions,direct_cursors=cursor_report,word_domain='Verus Either32Or64; no word-type body rewriting',results=results,kani_run=args.kani,scope='Direct executable String cursor arithmetic and actual typed callers; original all-word Edit Kani, retained core UTF-8 models and read-only pointer routing. Typed-owner/provenance boundaries also use compiler/Miri/ASan'),indent=2)+'\n')
+ (OUT/'summary.json').write_text(json.dumps(dict(status='pass',source_sha256=before,source_unchanged=True,unsafe_blocks=len(rows),unsafe_functions=4,unsafe_impls=2,bindings=rows,core=core,verified_functions=sorted(verified_function_names(text)),expressions=expressions,direct_cursors=cursor_report,word_domain='Verus Either32Or64; no word-type body rewriting',results=results,kani_run=args.kani,scope='Direct executable String cursor arithmetic and actual typed callers; original all-word Edit Kani, retained core UTF-8 models and read-only pointer routing. Typed-owner/provenance boundaries also use compiler/Miri/ASan'),indent=2)+'\n')
  print('String: direct cursor kernels/callers, retained core models, read-only unsafe routing and selected controls pass.')
 if __name__=='__main__':main()

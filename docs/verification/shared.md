@@ -43,7 +43,10 @@ guards invalidate completion. Generated inputs and logs remain under ignored
 | Unsafe census | 97 shared blocks; complete reviewed phase/argument bindings, including macro signatures |
 
 The completed combined certificate has **624 source obligations, zero open
-obligations and zero unproved linked edges**. Its exact input fingerprint is:
+obligations and zero unproved linked edges**. Open obligations were counted by
+contract name only; rows whose premises are stated and not proved were counted
+as connected. The [premise rule](../direct-source-migration.md#certificate-dispositions-and-premise-status-2026-11-26) classifies 157 of the current 172 shared
+rows as stated and not proved. Its exact input fingerprint is:
 
 ```text
 a407fb1ff6ca7cc33c472d0819f0be5b69fc3753fc9bc956bf8d0704aae3c0fb

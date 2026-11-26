@@ -10,7 +10,10 @@ checks pass, and the reported timing and allocation criteria are met. The [guide
 
 The combined run, including the mandatory direct Rust budget checks, completed
 with **841 source obligations, zero open obligations and zero unproved linked
-edges**. Its input fingerprint is
+edges**. Open obligations were counted by contract name only: rows whose
+premises are stated and not proved, including the B-tree tree premises, were
+counted as connected. The [premise rule](../direct-source-migration.md#certificate-dispositions-and-premise-status-2026-11-26) classifies 221 of the current
+225 B-tree rows as stated and not proved. Its input fingerprint is
 `5da42073cad48bad7e92790d8d8685cdfbc853d37c3e0eff95ec78ef8d212571`.
 It attached 62 originating guards and five forwarders across four profiles,
 including the formatting protocol guards described below. The local budget's
@@ -29,7 +32,7 @@ was rejected at its actual source location.
 | Verus | 101 native-word and 99 32-bit contracts; arithmetic, cursor, append-credit and formatter defects rejected |
 | Actual Rust Kani | Seven node/borrowed-view harnesses; output-shape function separately checked over unrestricted word and 32-bit lengths |
 | Compiler boundaries | 22 accept/reject cases; four weakened thread bounds detected |
-| Source/guard closure | 841 obligations; zero open obligations or unproved linked edges; eight explicit exit controls detected |
+| Source/guard closure | 841 obligations; zero open obligations as counted before the [premise rule](../direct-source-migration.md#certificate-dispositions-and-premise-status-2026-11-26) (premises not checked) and zero unproved linked edges; eight explicit exit controls detected |
 | Unsafe census | 411 product blocks; the tree's 217 sites have separate source/contract routing |
 | LLVM coverage | 2,000/2,121 emitted tree lines and 423/512 branch outcomes; node kernels 261/261 lines and 28/28 outcomes |
 | Build and dependency checks | Core-only/default/std, wasm32/thumbv7em, no-global-OOM handling, Clippy, rustdoc, audit, licenses and software bill of materials |

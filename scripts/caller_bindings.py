@@ -211,13 +211,15 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     rows=[r for r in rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     unsafe_rows=[r for r in unsafe_rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     compaction_leaves(root,unsafe_rows,rows)
-    root=Path(root);theorems=set(re.findall(r'\b(?:proof\s+)?fn\s+(\w+)\b',generated))
+    from premise_status import verified_function_names
+    # Exec and proof functions only: a spec fn name is not a verified contract.
+    root=Path(root);theorems=verified_function_names(generated)
     for filename in ('state-adapters.rs','budget-adapters.rs','budget-ledger.rs','vec-adapters.rs','layout-adapters.rs','init-adapters.rs'):
         adapter=ROOT/'tools/direct-verus'/filename
         if 'include!('+json.dumps(str(adapter),ensure_ascii=False)+')' in generated:
             # Namespace routing only. Verus checks the maintained include in the
             # actual product crate; no declaration name is accepted as a proof.
-            theorems |= set(re.findall(r'\b(?:proof\s+)?fn\s+(\w+)\b',adapter.read_text()))
+            theorems |= verified_function_names(adapter.read_text())
     assert not [r for r in rows if r['kind']=='explicit_exit'],('explicit product exit', [r for r in rows if r['kind']=='explicit_exit'])
     seen={};bindings=[]
     def proof(name):

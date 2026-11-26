@@ -439,7 +439,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             contract,expected=factories[(ctx,fn)];assert actual==expected,(f,ctx,fn,actual,expected)
         elif ctx=='Vec' and ctor=='Self':
             if fn in ('new','empty'):contract='empty_owner'
-            elif fn=='from_raw_parts':contract='resized_owner'
+            elif fn=='from_raw_parts':contract='raw_parts_owner'
             elif fn=='try_from_std_in':contract='adopted_owner'
             elif fn=='from_boxed_slice':contract='boxed_to_owner'
             else:raise AssertionError(('unbound Vec factory',items))

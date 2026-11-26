@@ -488,10 +488,10 @@ class PremiseTests(unittest.TestCase):
 
     def test_disposition_requires_a_verified_contract_and_an_established_premise(self):
         from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition
-        verified = {'c_keep_live', 'resized_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
+        verified = {'c_keep_live', 'raw_parts_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
         self.assertEqual(disposition('c_keep_live', verified), PROVED)
         self.assertEqual(disposition('direct:bplus-partial', verified), PROVED)
-        self.assertEqual(disposition('resized_owner', verified), STATED_NOT_PROVED)
+        self.assertEqual(disposition('raw_parts_owner', verified), STATED_NOT_PROVED)
         # A projection-only backing is never reported as connected.
         self.assertEqual(disposition('lookup_path_read', verified), STATED_NOT_PROVED)
         self.assertEqual(disposition('btree_cursor', verified), UNPROVED)
@@ -522,12 +522,12 @@ class PremiseTests(unittest.TestCase):
         site = dict(file='src/x.rs', function='f')
         owner = dict(source_bindings=dict(bindings=[
             dict(site=site, contract='c_keep_live', role='state-publication'),
-            dict(site=site, contract='resized_owner', role='state-publication'),
+            dict(site=site, contract='raw_parts_owner', role='state-publication'),
             dict(site=site, contract='kani:within_capacity_push_preserves_every_numeric_owner', role='state-publication')]))
         string = dict(bindings=[dict(site=site, contract='UTF-8-owner-transfer')])
         area = dict(bindings=[dict(site=site, contract='btree_cursor', role='cursor')])
         lookup = (ROOT / BPLUS_ANCESTOR['file']).read_text()
-        verified = {'c_keep_live', 'resized_owner', 'btree_cursor', 'lookup_path_read'}
+        verified = {'c_keep_live', 'raw_parts_owner', 'btree_cursor', 'lookup_path_read'}
         rows = obligations(owner, string, (area,), verified, lookup)
         self.assertEqual([r['disposition'] for r in rows],
                          [PROVED, STATED_NOT_PROVED, UNPROVED, UNPROVED, STATED_NOT_PROVED, STATED_NOT_PROVED])

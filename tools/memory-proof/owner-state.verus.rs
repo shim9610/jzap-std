@@ -16,6 +16,15 @@ fn empty_owner(limit:usize,size:usize)->(r:OwnerState)
     OwnerState { len,cap,limit }
 }
 
+// The public unsafe contract of `Vec::from_raw_parts`: the caller promises the
+// three words. No library proof establishes a caller's promise.
+fn raw_parts_owner(len:usize,cap:usize,limit:usize,size:usize)->(r:OwnerState)
+    requires len<=cap<=limit,byte_valid(cap,size),
+    ensures owner_valid(r,size),r.len==len,r.cap==cap,r.limit==limit,
+{
+    OwnerState { len,cap,limit }
+}
+
 fn reserve_owner(s:OwnerState,size:usize,additional:usize,exact:bool,accepted:bool)
     ->(r:Option<(OwnerState,usize)>)
     requires owner_valid(s,size),

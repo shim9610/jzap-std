@@ -8,8 +8,13 @@
 //! decided.
 
 use super::Contents;
-use crate::Error;
+use crate::{
+    Error,
+    arithmetic::bounded::{wrapping_add, wrapping_sub},
+};
 use core::cmp::Ordering;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
 
 /// A key as stored in a node: complete, or only partly present.
 ///
@@ -499,6 +504,7 @@ struct Fence<T, I> {
 type Origin<I> = Option<(I, usize)>;
 
 /// The outcome of one comparison within a pass.
+#[cfg_attr(verus_keep_ghost, verus_verify)]
 enum Decision {
     Order(Ordering),
     /// The key at this index of the current node must be resolved.
@@ -581,6 +587,7 @@ enum Outcome<I> {
 /// How far a pass over one node got. Every completed check stays valid as
 /// long as no key's stored parts and no resolved key change, which
 /// `PartialVisit` enforces; `provide` starts from scratch on every call.
+#[cfg_attr(verus_keep_ghost, verus_verify)]
 #[derive(Clone, Copy, Default)]
 struct Progress {
     minimum: Check,
@@ -592,6 +599,7 @@ struct Progress {
     equal: Option<usize>,
 }
 
+#[cfg_attr(verus_keep_ghost, verus_verify)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Check {
     #[default]
@@ -599,6 +607,358 @@ enum Check {
     Passed,
     /// Decided only with the fence's full key.
     Fence,
+}
+
+#[cfg_attr(verus_keep_ghost, verus_verify)]
+impl Check {
+    #[cfg_attr(verus_keep_ghost, verus_spec(out => ensures out == (self == Check::Passed)))]
+    #[inline(always)]
+    fn passed(self) -> bool {
+        match self {
+            Check::Passed => true,
+            Check::Unchecked | Check::Fence => false,
+        }
+    }
+
+    #[cfg_attr(verus_keep_ghost, verus_spec(out => ensures out == (self == Check::Fence)))]
+    #[inline(always)]
+    fn deferred(self) -> bool {
+        match self {
+            Check::Fence => true,
+            Check::Unchecked | Check::Passed => false,
+        }
+    }
+}
+
+/// The answer of [`pass_over`] for a node of `n` keys; `Descend` names the
+/// separator whose child is next.
+#[cfg_attr(verus_keep_ghost, verus_verify)]
+enum Answer {
+    NeedKey(usize),
+    NeedFence,
+    Found(usize),
+    Absent,
+    Descend(usize),
+}
+
+/// The ghost model of a pass for the Verus proof of [`pass_over`]; erased
+/// from Cargo builds. `rank` orders the completions and `attached` marks the
+/// keys with an attached full key (see the specification below).
+#[cfg(not(verus_keep_ghost))]
+trait Completions {}
+#[cfg(verus_keep_ghost)]
+verus! {
+trait Completions {
+    spec fn rank(item: int) -> int;
+    spec fn attached(key: int) -> bool;
+}
+}
+
+/// The model `pass` instantiates [`pass_over`] with. The proof holds for
+/// every model, so the instance leaves both functions unspecified.
+#[cfg_attr(verus_keep_ghost, verus_verify)]
+struct Completed;
+#[cfg(not(verus_keep_ghost))]
+impl Completions for Completed {}
+#[cfg(verus_keep_ghost)]
+verus! {
+impl Completions for Completed {
+    closed spec fn rank(item: int) -> int { arbitrary() }
+    closed spec fn attached(key: int) -> bool { arbitrary() }
+}
+}
+
+// The specification of a pass, verified directly on this source with Verus
+// (scripts/verify_direct_verus.py, target `bplus-partial`). The completions
+// of the keys, the query and the fences' full keys are elements of one total
+// order (`PartialKey::Full: Ord`), and finitely many of them meet in a pass,
+// so `rank` places them on the integers: key `i` for `i < n`, the query at
+// `n`, the minimum fence at `n + 1` and the ceiling fence at `n + 2`. The
+// comparisons arrive as closures whose `Order` results are those of `rank`;
+// `PartialKey`'s laws give that for `order_keys`, `order_fence` and
+// `order_query`, and `attached` marks the keys with an attached full key.
+#[cfg(verus_keep_ghost)]
+verus! {
+
+type Rank = spec_fn(int) -> int;
+type Attached = spec_fn(int) -> bool;
+
+spec fn rank_of<R: Completions>() -> Rank {
+    |item: int| R::rank(item)
+}
+
+spec fn attached_of<R: Completions>() -> Attached {
+    |key: int| R::attached(key)
+}
+
+spec fn cmp_rank(a: int, b: int) -> Ordering {
+    if a < b { Ordering::Less } else if a == b { Ordering::Equal } else { Ordering::Greater }
+}
+
+spec fn ordered_at(rank: Rank, i: int) -> bool {
+    rank(i) < rank(i + 1)
+}
+
+spec fn sorted(rank: Rank, n: int) -> bool {
+    forall|i: int| 0 <= i && i + 1 < n ==> #[trigger] ordered_at(rank, i)
+}
+
+/// The node is valid: the first key equals the minimum fence, the keys are
+/// strictly increasing and the last is below the ceiling fence.
+spec fn valid(rank: Rank, n: int, minimum: bool, ceiling: bool) -> bool {
+    &&& (minimum ==> n > 0 && rank(0) == rank(n + 1))
+    &&& sorted(rank, n)
+    &&& (ceiling && n > 0 ==> rank(n - 1) < rank(n + 2))
+}
+
+/// Every check a progress records holds for the completions, so attaching
+/// keys, which leaves the completions unchanged, keeps it.
+spec fn recorded(p: Progress, rank: Rank, n: int, minimum: bool, ceiling: bool) -> bool {
+    &&& (p.minimum == Check::Passed ==> minimum && n > 0 && rank(0) == rank(n + 1))
+    &&& p.pairs as int <= if n > 0 { n - 1 } else { 0 }
+    &&& (forall|i: int| 0 <= i < p.pairs ==> #[trigger] ordered_at(rank, i))
+    &&& (p.ceiling == Check::Passed ==> ceiling && n > 0 && rank(n - 1) < rank(n + 2))
+    &&& (p.search matches Some((low, high)) ==> {
+        &&& low <= high <= n
+        &&& sorted(rank, n)
+        &&& (forall|i: int| 0 <= i < low ==> #[trigger] rank(i) < rank(n))
+        &&& (forall|i: int| high <= i < n ==> #[trigger] rank(i) > rank(n))
+    })
+    &&& (p.equal matches Some(e) ==> e < n && sorted(rank, n) && rank(e as int) == rank(n))
+}
+
+spec fn pair_decides(rank: Rank, attached: Attached, i: usize, d: Decision) -> bool {
+    match d {
+        Decision::Order(o) => o == cmp_rank(rank(i as int), rank(i + 1)),
+        Decision::Key(k) => (k == i || k == i + 1) && !attached(k as int),
+        Decision::Fence => false,
+    }
+}
+
+spec fn minimum_decides(rank: Rank, attached: Attached, n: usize, d: Decision) -> bool {
+    match d {
+        Decision::Order(o) => o == cmp_rank(rank(0), rank(n + 1)),
+        Decision::Key(k) => k == 0 && !attached(0),
+        Decision::Fence => true,
+    }
+}
+
+spec fn ceiling_decides(rank: Rank, attached: Attached, n: usize, i: usize, d: Decision) -> bool {
+    match d {
+        Decision::Order(o) => o == cmp_rank(rank(i as int), rank(n + 2)),
+        Decision::Key(k) => k == i && !attached(k as int),
+        Decision::Fence => true,
+    }
+}
+
+spec fn query_decides(rank: Rank, attached: Attached, n: usize, i: usize, d: Decision) -> bool {
+    match d {
+        Decision::Order(o) => o == cmp_rank(rank(i as int), rank(n as int)),
+        Decision::Key(k) => k == i && !attached(k as int),
+        Decision::Fence => false,
+    }
+}
+
+proof fn sorted_order(rank: Rank, n: int, i: int, j: int)
+    requires
+        sorted(rank, n),
+        0 <= i < j < n,
+    ensures
+        rank(i) < rank(j),
+    decreases j - i,
+{
+    assert(ordered_at(rank, i));
+    if i + 1 < j {
+        sorted_order(rank, n, i + 1, j);
+    }
+}
+
+} // verus!
+
+/// One pass over a node of `n` keys, continuing from `progress`: the
+/// minimum fence, every adjacent pair and the ceiling fence are checked,
+/// then the keys are searched. Returns at the first key it needs, or with the
+/// answer once every comparison is decided; fence comparisons that need the
+/// fence's full key are reported after everything else. The comparisons
+/// arrive as closures over key indices.
+#[cfg_attr(verus_keep_ghost, verus_spec(out =>
+    requires
+        recorded(*old(progress), rank_of::<R>(), n as int, minimum, ceiling),
+        forall|i: usize| i + 1 < n ==> pair.requires((i,)),
+        forall|i: usize, d: Decision| #[trigger] pair.ensures((i,), d)
+            ==> pair_decides(rank_of::<R>(), attached_of::<R>(), i, d),
+        minimum && n > 0 ==> first.requires(()),
+        forall|d: Decision| #[trigger] first.ensures((), d)
+            ==> minimum_decides(rank_of::<R>(), attached_of::<R>(), n, d),
+        forall|i: usize| ceiling && i + 1 == n ==> last.requires((i,)),
+        forall|i: usize, d: Decision| #[trigger] last.ensures((i,), d)
+            ==> ceiling_decides(rank_of::<R>(), attached_of::<R>(), n, i, d),
+        forall|i: usize| i < n ==> query.requires((i,)),
+        forall|i: usize, d: Decision| #[trigger] query.ensures((i,), d)
+            ==> query_decides(rank_of::<R>(), attached_of::<R>(), n, i, d),
+    ensures
+        recorded(*final(progress), rank_of::<R>(), n as int, minimum, ceiling),
+        match out {
+            Ok(Answer::NeedKey(k)) => k < n && !attached_of::<R>()(k as int),
+            Ok(Answer::NeedFence) => true,
+            Ok(Answer::Found(e)) => leaf && valid(rank_of::<R>(), n as int, minimum, ceiling)
+                && e < n && rank_of::<R>()(e as int) == rank_of::<R>()(n as int),
+            Ok(Answer::Absent) => valid(rank_of::<R>(), n as int, minimum, ceiling) && if leaf {
+                forall|i: int| 0 <= i < n ==> #[trigger] rank_of::<R>()(i) != rank_of::<R>()(n as int)
+            } else {
+                forall|i: int| 0 <= i < n ==> #[trigger] rank_of::<R>()(i) > rank_of::<R>()(n as int)
+            },
+            Ok(Answer::Descend(d)) => !leaf && valid(rank_of::<R>(), n as int, minimum, ceiling) && d < n
+                && rank_of::<R>()(d as int) <= rank_of::<R>()(n as int)
+                && (d + 1 < n ==> rank_of::<R>()(d + 1) > rank_of::<R>()(n as int)),
+            Err(_) => !valid(rank_of::<R>(), n as int, minimum, ceiling),
+        },
+))]
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn pass_over<R: Completions, P, M, C, Q>(
+    n: usize,
+    leaf: bool,
+    minimum: bool,
+    ceiling: bool,
+    progress: &mut Progress,
+    pair: &P,
+    first: &M,
+    last: &C,
+    query: &Q,
+) -> Result<Answer, Error>
+where
+    P: Fn(usize) -> Decision,
+    M: Fn() -> Decision,
+    C: Fn(usize) -> Decision,
+    Q: Fn(usize) -> Decision,
+{
+    if minimum && !progress.minimum.passed() {
+        if n == 0 {
+            return Err(Error::InvalidStructure);
+        }
+        progress.minimum = match first() {
+            Decision::Order(Ordering::Equal) => Check::Passed,
+            Decision::Order(_) => return Err(Error::InvalidStructure),
+            Decision::Key(index) => return Ok(Answer::NeedKey(index)),
+            Decision::Fence => Check::Fence,
+        };
+    }
+    let mut left = progress.pairs;
+    #[cfg_attr(verus_keep_ghost, verus_spec(
+        invariant
+            recorded(*progress, rank_of::<R>(), n as int, minimum, ceiling),
+            left as int <= if n > 0 { n - 1 } else { 0 },
+            forall|i: int| 0 <= i < left ==> #[trigger] ordered_at(rank_of::<R>(), i),
+            minimum ==> progress.minimum != Check::Unchecked,
+            forall|i: usize| i + 1 < n ==> pair.requires((i,)),
+            forall|i: usize, d: Decision| #[trigger] pair.ensures((i,), d)
+                ==> pair_decides(rank_of::<R>(), attached_of::<R>(), i, d),
+        decreases n - left,
+    ))]
+    // `left < n` keeps `left + 1` within `usize`.
+    while left < n && wrapping_add(left, 1) < n {
+        match pair(left) {
+            Decision::Order(Ordering::Less) => {}
+            Decision::Order(_) | Decision::Fence => {
+                #[cfg(verus_keep_ghost)]
+                proof! {
+                    assert(!ordered_at(rank_of::<R>(), left as int));
+                }
+                return Err(Error::InvalidStructure);
+            }
+            Decision::Key(index) => {
+                progress.pairs = left;
+                return Ok(Answer::NeedKey(index));
+            }
+        }
+        left = wrapping_add(left, 1);
+    }
+    progress.pairs = left;
+    if ceiling && n > 0 && !progress.ceiling.passed() {
+        progress.ceiling = match last(wrapping_sub(n, 1)) {
+            Decision::Order(Ordering::Less) => Check::Passed,
+            Decision::Order(_) => return Err(Error::InvalidStructure),
+            Decision::Key(index) => return Ok(Answer::NeedKey(index)),
+            Decision::Fence => Check::Fence,
+        };
+    }
+
+    // Binary search over the validated keys: `low` keys order below the
+    // query, and keys at `high` and above order above it.
+    let (mut low, mut high) = match progress.search {
+        Some(bounds) => bounds,
+        None => (0, n),
+    };
+    #[cfg_attr(verus_keep_ghost, verus_spec(
+        invariant
+            recorded(*progress, rank_of::<R>(), n as int, minimum, ceiling),
+            sorted(rank_of::<R>(), n as int),
+            low <= high <= n,
+            minimum ==> progress.minimum != Check::Unchecked,
+            ceiling && n > 0 ==> progress.ceiling != Check::Unchecked,
+            forall|i: int| 0 <= i < low ==> #[trigger] rank_of::<R>()(i) < rank_of::<R>()(n as int),
+            forall|i: int| high <= i < n ==> #[trigger] rank_of::<R>()(i) > rank_of::<R>()(n as int),
+            forall|i: usize| i < n ==> query.requires((i,)),
+            forall|i: usize, d: Decision| #[trigger] query.ensures((i,), d)
+                ==> query_decides(rank_of::<R>(), attached_of::<R>(), n, i, d),
+        decreases high - low + if progress.equal.is_none() { 1int } else { 0int },
+    ))]
+    while progress.equal.is_none() && low < high {
+        let middle = wrapping_add(low, wrapping_sub(high, low) / 2);
+        match query(middle) {
+            Decision::Order(Ordering::Less) => {
+                #[cfg(verus_keep_ghost)]
+                proof! {
+                    assert forall|i: int| 0 <= i <= middle implies #[trigger] rank_of::<R>()(i) < rank_of::<R>()(n as int) by {
+                        if i < middle {
+                            sorted_order(rank_of::<R>(), n as int, i, middle as int);
+                        }
+                    }
+                }
+                low = wrapping_add(middle, 1);
+            }
+            Decision::Order(Ordering::Greater) => {
+                #[cfg(verus_keep_ghost)]
+                proof! {
+                    assert forall|i: int| middle <= i < n implies #[trigger] rank_of::<R>()(i) > rank_of::<R>()(n as int) by {
+                        if i > middle {
+                            sorted_order(rank_of::<R>(), n as int, middle as int, i);
+                        }
+                    }
+                }
+                high = middle;
+            }
+            Decision::Order(Ordering::Equal) => progress.equal = Some(middle),
+            Decision::Key(index) => {
+                progress.search = Some((low, high));
+                return Ok(Answer::NeedKey(index));
+            }
+            Decision::Fence => return Err(Error::InvalidStructure),
+        }
+    }
+    progress.search = Some((low, high));
+    if progress.minimum.deferred() || progress.ceiling.deferred() {
+        return Ok(Answer::NeedFence);
+    }
+    Ok(match progress.equal {
+        Some(index) => {
+            #[cfg(verus_keep_ghost)]
+            proof! {
+                if index + 1 < n {
+                    sorted_order(rank_of::<R>(), n as int, index as int, index + 1);
+                }
+            }
+            if leaf {
+                Answer::Found(index)
+            } else {
+                Answer::Descend(index)
+            }
+        }
+        // The last separator at or below the query, if any.
+        None if leaf || low == 0 => Answer::Absent,
+        None => Answer::Descend(wrapping_sub(low, 1)),
+    })
 }
 
 impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
@@ -791,10 +1151,8 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
         })
     }
 
-    /// One pass over a node, continuing from `progress`. Returns at the
-    /// first key it needs, or with the answer once every comparison is
-    /// decided; fence comparisons that need the fence's full key are
-    /// reported after everything else.
+    /// One pass over a node, continuing from `progress`: [`pass_over`] with
+    /// this lookup's fences and query.
     fn pass<K, V>(
         &self,
         keys: &[K],
@@ -815,83 +1173,50 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                 _ => {}
             }
         }
-        if let Some(fence) = &self.minimum
-            && progress.minimum != Check::Passed
-        {
-            let first = keys.first().ok_or(Error::InvalidStructure)?;
-            progress.minimum = match order_fence(first, 0, &fence.key, minimum) {
-                Decision::Order(Ordering::Equal) => Check::Passed,
-                Decision::Order(_) => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Outcome::NeedKey(index)),
-                Decision::Fence => Check::Fence,
-            };
-        }
-        let mut left = progress.pairs;
-        for pair in keys.get(left..).unwrap_or(&[]).windows(2) {
-            let (Some(a), Some(b)) = (pair.first(), pair.last()) else {
-                return Err(Error::InvalidStructure);
-            };
-            let right = left.checked_add(1).ok_or(Error::InvalidStructure)?;
-            match order_keys(a, left, b, right) {
-                Decision::Order(Ordering::Less) => {}
-                Decision::Order(_) | Decision::Fence => return Err(Error::InvalidStructure),
-                Decision::Key(index) => {
-                    progress.pairs = left;
-                    return Ok(Outcome::NeedKey(index));
+        let pair = |left: usize| match left.checked_add(1) {
+            Some(right) => match (keys.get(left), keys.get(right)) {
+                (Some(a), Some(b)) => order_keys(a, left, b, right),
+                _ => Decision::Fence,
+            },
+            None => Decision::Fence,
+        };
+        let first = || match (keys.first(), &self.minimum) {
+            (Some(key), Some(fence)) => order_fence(key, 0, &fence.key, minimum),
+            _ => Decision::Fence,
+        };
+        let last = |index: usize| match (keys.get(index), &self.ceiling) {
+            (Some(key), Some(fence)) => order_fence(key, index, &fence.key, ceiling),
+            _ => Decision::Fence,
+        };
+        let query = |index: usize| match keys.get(index) {
+            Some(key) => order_query(key, index, self.query),
+            None => Decision::Fence,
+        };
+        let leaf = matches!(contents, Contents::Leaf(_));
+        Ok(
+            match pass_over::<Completed, _, _, _, _>(
+                keys.len(),
+                leaf,
+                self.minimum.is_some(),
+                self.ceiling.is_some(),
+                progress,
+                &pair,
+                &first,
+                &last,
+                &query,
+            )? {
+                Answer::NeedKey(index) => Outcome::NeedKey(index),
+                Answer::NeedFence => Outcome::NeedFence,
+                Answer::Found(index) => Outcome::Found(index),
+                Answer::Absent => Outcome::Absent,
+                Answer::Descend(index) => {
+                    let Contents::Branch(children) = contents else {
+                        return Err(Error::InvalidStructure);
+                    };
+                    Outcome::Descend(index, *children.get(index).ok_or(Error::InvalidStructure)?)
                 }
-            }
-            left = right;
-        }
-        progress.pairs = left;
-        if let (Some(fence), Some(last)) = (&self.ceiling, keys.last())
-            && progress.ceiling != Check::Passed
-        {
-            progress.ceiling = match order_fence(last, left, &fence.key, ceiling) {
-                Decision::Order(Ordering::Less) => Check::Passed,
-                Decision::Order(_) => return Err(Error::InvalidStructure),
-                Decision::Key(index) => return Ok(Outcome::NeedKey(index)),
-                Decision::Fence => Check::Fence,
-            };
-        }
-
-        // Binary search over the validated keys: `low` keys order below the
-        // query, and keys at `high` and above order above it.
-        let (mut low, mut high) = progress.search.unwrap_or((0, keys.len()));
-        while progress.equal.is_none() && low < high {
-            let span = high.checked_sub(low).ok_or(Error::InvalidStructure)?;
-            let middle = low.checked_add(span / 2).ok_or(Error::InvalidStructure)?;
-            let key = keys.get(middle).ok_or(Error::InvalidStructure)?;
-            match order_query(key, middle, self.query) {
-                Decision::Order(Ordering::Less) => {
-                    low = middle.checked_add(1).ok_or(Error::InvalidStructure)?;
-                }
-                Decision::Order(Ordering::Greater) => high = middle,
-                Decision::Order(Ordering::Equal) => progress.equal = Some(middle),
-                Decision::Key(index) => {
-                    progress.search = Some((low, high));
-                    return Ok(Outcome::NeedKey(index));
-                }
-                Decision::Fence => return Err(Error::InvalidStructure),
-            }
-        }
-        progress.search = Some((low, high));
-        if progress.minimum == Check::Fence || progress.ceiling == Check::Fence {
-            return Ok(Outcome::NeedFence);
-        }
-        Ok(match contents {
-            Contents::Leaf(_) => progress.equal.map_or(Outcome::Absent, Outcome::Found),
-            Contents::Branch(children) => {
-                // The last separator at or below the query.
-                let index = match progress.equal {
-                    Some(index) => index,
-                    None => match low.checked_sub(1) {
-                        Some(index) => index,
-                        None => return Ok(Outcome::Absent),
-                    },
-                };
-                Outcome::Descend(index, *children.get(index).ok_or(Error::InvalidStructure)?)
-            }
-        })
+            },
+        )
     }
 
     fn descend<'a, K, V>(
@@ -1083,6 +1408,55 @@ mod proofs {
         assert!(agrees(stored_a.cmp_stored(&attached_b), actual));
         assert!(agrees(attached_a.cmp_fence(&stored_b.fence()), actual));
         assert!(PrefixKey::from_full(a).fence() == stored_a.fence());
+    }
+
+    /// The contracts the Verus proof of `pass_over` assumes of its
+    /// comparison closures (`pair_decides`, `minimum_decides`,
+    /// `ceiling_decides` and `query_decides`), for the helpers `pass` builds
+    /// them from: over every two keys of up to 4 bytes with 2 inline bytes
+    /// and every attachment choice, an `Order` is the order of the
+    /// completions, a `Key` names an unattached key of the comparison, and
+    /// `Fence` comes only from a fence comparison without the fence's key.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn decisions_meet_the_pass_contracts() {
+        let (a, a_len) = bytes::<MAX>();
+        let (b, b_len) = bytes::<MAX>();
+        let (a, b) = (&a[..a_len], &b[..b_len]);
+        let (mut key, mut other) = (stored::<P>(a), stored::<P>(b));
+        if kani::any() {
+            let Ok(()) = key.attach(a) else {
+                panic!("attachment refused")
+            };
+        }
+        if kani::any() {
+            let Ok(()) = other.attach(b) else {
+                panic!("attachment refused")
+            };
+        }
+        let actual = a.cmp(b);
+        let (left, right): (usize, usize) = (kani::any(), kani::any());
+        kani::assume(left != right);
+        match order_keys(&key, left, &other, right) {
+            Decision::Order(order) => assert!(order == actual),
+            Decision::Key(index) => assert!(
+                (index == left && key.full().is_none())
+                    || (index == right && other.full().is_none())
+            ),
+            Decision::Fence => panic!("a key pair asked for a fence"),
+        }
+        // `b` as the fence's separator, with its full key passed or not.
+        let full: Option<&[u8]> = if kani::any() { Some(b) } else { None };
+        match order_fence(&key, left, &stored::<P>(b).fence(), full) {
+            Decision::Order(order) => assert!(order == actual),
+            Decision::Key(index) => assert!(index == left && key.full().is_none()),
+            Decision::Fence => assert!(full.is_none()),
+        }
+        match order_query(&key, left, b) {
+            Decision::Order(order) => assert!(order == actual),
+            Decision::Key(index) => assert!(index == left && key.full().is_none()),
+            Decision::Fence => panic!("a query comparison asked for a fence"),
+        }
     }
 
     /// A leaf of `N` keys, resolving each requested key with its completion,

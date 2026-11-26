@@ -506,6 +506,8 @@ region only (4,096 lookups, `BPLUS_PARTIAL_INSTRUCTIONS=1`).
 | Word-wise prefix comparison (`cmp_short`, `cmp_prefixes`) | 0.626–0.958 in all 12 partial conditions | not recorded here | 193 fewer `memcmp` calls per lookup | kept |
 | `PrefixKey` fields in `repr(C)` order, prefix first | 0.927–1.087 | 0.85–1.06 | equal or 0.2–2.2% fewer in all 12 conditions | kept; the largest ratio (1.087, shared 181,267 `partial_attached`) has identical instruction counts and is within the controls' movement |
 | `pass` split into `pass_over` and closures (Verus) | 0.904–1.033 | 0.958–1.098 | `pass` 3.2% fewer instructions, 21.8% more data reads per lookup | kept; no partial ratio is outside the controls' movement |
+| Attached key tails compared as slices instead of `Option<&[u8]>` (`72ebbdb`) | shared 181,267 `partial_attached` 1.26 (per seed 1.16–1.36); the other partial conditions 0.94–1.08. Over six seeds a build with only this expression restored measured 0.87–1.03 of `main` where the changed build measured 1.04–1.40 | 0.93–1.08 | `pass` 12,282 against 13,157 per lookup; simulated cache misses equal | rejected, reverted in `440f963`: two predicted `cmp $0x10; jb` per compared pair became `sub $0x10` and four `cmovb`, so both `memcmp` pointer arguments depend on the key length loads |
+| Listing only the keys the pass's search could compare (`a21c8ae`) | three seeds, all partial methods: 0.93–1.09; six seeds, listed methods: 0.96–1.05 | 0.91–1.05; 0.96–1.07 | distinct 181,267 `partial_listed`: 87.3M against 107.1M over 4,096 lookups; simulated conditional mispredictions of the listing 145,652 against 51,294 | rejected, reverted in `c7a3442`: no condition faster beyond the controls' movement |
 
 The split first passed the closures by reference with captures by
 reference; `pass` then reloaded the key slice through the closure
@@ -514,6 +516,9 @@ Passing the closures by value with moved captures restored the static stack
 loads of `pass` to the previous 52; three stack reads per pair-loop
 iteration remain (the loop end and two values kept across `memcmp`), which
 the timings above include.
+
+The two rejected changes were measured on 2026-11-26 against `main`
+(`5806316`); the source is `main`'s again.
 
 Raw records stay under `target/verification/`. Reproduce:
 

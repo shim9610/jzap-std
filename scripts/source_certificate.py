@@ -36,8 +36,25 @@ STAGES={
     'bplus': ('verus kani miri consumer-audit', ('bplus-debug','bplus-kani',
               'fixed-bplus-kani','bplus-range-kani','fixed-bplus-miri','fixed-bplus-miri-32','bplus-release',
               'bplus-strided-kani','bplus-strided-miri','bplus-strided-miri-32','bplus-strided-release')),
+    # Partial-key lookup: its Kani harnesses run in three parallel jobs
+    # (PARTIAL_KANI), its Miri and link checks in a fourth.
+    'bplus-partial-laws': ('kani', ('bplus-partial-kani-laws',)),
+    'bplus-partial-branch': ('kani', ('bplus-partial-kani-branch',)),
+    'bplus-partial-steps': ('kani', ('bplus-partial-kani-steps',)),
+    'bplus-partial': ('miri consumer-audit', ('bplus-partial-miri','bplus-partial-miri-32',
+                      'bplus-partial-release')),
 }
 BPLUS='collections::btree_map::view::bplus::'
+PARTIAL_PROOFS=BPLUS+'partial::proofs::'
+# Each partial-key Kani step selects harnesses by name prefix and must verify
+# the stated count; together they must cover every harness of the module.
+PARTIAL_KANI={
+    'bplus-partial-kani-laws': (('short_comparison','prefix_','eight_byte','key_pair_decisions',
+                                 'fence_decisions','query_decisions','partial_leaf_'),9),
+    'bplus-partial-kani-branch': (('partial_branch_routes',),4),
+    'bplus-partial-kani-steps': (('partial_child','listed_','visit','requests_and_refusals'),14),
+}
+PARTIAL_SOURCE='src/collections/btree_map/view/bplus/partial.rs'
 
 
 
@@ -167,7 +184,7 @@ class Campaign:
     def receipt_paths(self,name):
         paths=[self.root/p for p in RECEIPTS.get(name,[])]
         if name=='link':paths+=self.link_receipts()
-        if name in ('bplus-release','bplus-strided-release'):paths.append(self.out/name/'summary.json')
+        if name in ('bplus-release','bplus-strided-release','bplus-partial-release'):paths.append(self.out/name/'summary.json')
         return paths
     def receipts(self,name):
         return {str(p):digest(p) for p in self.receipt_paths(name)}
@@ -249,6 +266,19 @@ def commands(out,profiles):
         'bplus-strided-release': (['python3','scripts/check_consumer_link.py',
                                   '--source','tools/consumer-audit/cases/bplus_strided.rs',
                                   '--require-success','--output',str(out/'bplus-strided-release')],{}),
+        # Kissat keeps the largest partial-key harness near 4 GB; CaDiCaL needed about 13 GB.
+        # Lookup-level harnesses stub the word comparisons with byte order,
+        # which the two comparison lemmas prove the product functions equal to.
+        **{name: (['cargo','kani','--lib',*[a for prefix in prefixes for a in ('--harness',PARTIAL_PROOFS+prefix)],
+                   '--solver','kissat','-Z','stubbing','-Z','unstable-options','--cbmc-args','--object-bits','12'],{})
+           for name,(prefixes,_) in PARTIAL_KANI.items()},
+        'bplus-partial-miri': ([*miri,'--target','x86_64-unknown-linux-gnu','--all-features',
+                               '--test','bplus_partial'],miri_env),
+        'bplus-partial-miri-32': ([*miri,'--target','i686-unknown-linux-gnu','--all-features',
+                                  '--test','bplus_partial'],miri_env),
+        'bplus-partial-release': (['python3','scripts/check_consumer_link.py',
+                                  '--source','tools/consumer-audit/cases/bplus_partial.rs',
+                                  '--require-success','--output',str(out/'bplus-partial-release')],{}),
         'bplus-release': (['python3','scripts/check_consumer_link.py',
                            '--source','tools/consumer-audit/cases/bplus_pool.rs',
                            '--source-dependency','tools/throughput-analysis/src/bplus_pool.rs',
@@ -448,8 +478,18 @@ def main():
         assert '5 fixed B+ lookup defect controls rejected' in fixed_log
         for name in ('bplus-strided-miri','bplus-strided-miri-32'):
             assert re.search(r'test result: ok\. 7 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+        for name in PARTIAL_KANI:
+            assert run(name)==0
+        for name in STAGES['bplus-partial'][1]:
+            assert run(name)==0
+        for name,(_,count) in PARTIAL_KANI.items():
+            assert f'Complete - {count} successfully verified harnesses, 0 failures, {count} total.' in evidence(out/(name+'.log')).read_text()
+        # The prefix groups are disjoint, so their counts add up to the module's harnesses.
+        assert sum(count for _,count in PARTIAL_KANI.values())==(ROOT/PARTIAL_SOURCE).read_text().count('#[kani::proof]')
+        for name in ('bplus-partial-miri','bplus-partial-miri-32'):
+            assert re.search(r'test result: ok\. 10 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}
-        for name in ('bplus-release','bplus-strided-release'):
+        for name in ('bplus-release','bplus-strided-release','bplus-partial-release'):
             summary=json.loads(evidence(out/name/'summary.json').read_text())
             for profile in ('release-checked','release-lto-checked'):
                 outcomes={r['name']:r['status'] for r in summary['results'] if r['profile']==profile}

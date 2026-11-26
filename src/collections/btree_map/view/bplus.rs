@@ -7,8 +7,13 @@ use core::{borrow::Borrow, hint::select_unpredictable, mem::MaybeUninit};
 use vstd::prelude::*;
 
 mod fixed;
+mod partial;
 mod strided;
 pub use fixed::{FixedTree, Range};
+pub use partial::{
+    PartialKey, PartialLookup, PartialNode, PartialNodeMut, PartialStep, PartialVisit, PrefixFence,
+    PrefixKey, VisitStep,
+};
 pub use strided::{StridedFormat, StridedLayout, StridedNode, StridedTree};
 
 #[cfg_attr(verus_keep_ghost, verus_verify)]

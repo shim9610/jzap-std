@@ -1,0 +1,831 @@
+//! Partial-key B+ point lookup against `std::collections::BTreeMap`.
+use jzap::{
+    Error,
+    collections::btree_map::view::bplus::{
+        PartialKey, PartialLookup, PartialNode, PartialStep, PrefixKey,
+    },
+};
+use std::collections::BTreeMap as Model;
+
+const P: usize = 4;
+
+fn rng(s: &mut u64) -> u64 {
+    *s ^= *s << 13;
+    *s ^= *s >> 7;
+    *s ^= *s << 17;
+    *s
+}
+
+fn stored<'a>(full: &[u8]) -> PrefixKey<'a, P> {
+    let mut prefix = [0; P];
+    for (slot, byte) in prefix.iter_mut().zip(full) {
+        *slot = *byte;
+    }
+    PrefixKey::new(prefix, full.len())
+}
+
+/// A node as the caller stores it: full keys plus values or child IDs.
+struct Stored {
+    keys: Vec<Vec<u8>>,
+    values: Vec<u32>,
+    children: Option<Vec<usize>>,
+}
+
+struct Tree {
+    nodes: Vec<Stored>,
+    root: usize,
+    height: usize,
+}
+
+/// Build a B+ tree whose separators are the minima of their children.
+fn build(entries: &[(Vec<u8>, u32)], leaf: usize, branch: usize) -> Tree {
+    let mut nodes = Vec::new();
+    let mut level: Vec<(usize, Vec<u8>)> = Vec::new();
+    for chunk in entries.chunks(leaf) {
+        level.push((nodes.len(), chunk[0].0.clone()));
+        nodes.push(Stored {
+            keys: chunk.iter().map(|(key, _)| key.clone()).collect(),
+            values: chunk.iter().map(|(_, value)| *value).collect(),
+            children: None,
+        });
+    }
+    if level.is_empty() {
+        nodes.push(Stored {
+            keys: Vec::new(),
+            values: Vec::new(),
+            children: None,
+        });
+        return Tree {
+            nodes,
+            root: 0,
+            height: 0,
+        };
+    }
+    let mut height = 0;
+    while level.len() > 1 {
+        height += 1;
+        let mut next = Vec::new();
+        for chunk in level.chunks(branch) {
+            next.push((nodes.len(), chunk[0].1.clone()));
+            nodes.push(Stored {
+                keys: chunk.iter().map(|(_, key)| key.clone()).collect(),
+                values: Vec::new(),
+                children: Some(chunk.iter().map(|(id, _)| *id).collect()),
+            });
+        }
+        level = next;
+    }
+    Tree {
+        nodes,
+        root: level[0].0,
+        height,
+    }
+}
+
+#[derive(Default, Debug)]
+struct Counts {
+    keys: usize,
+    fences: usize,
+    listed: usize,
+}
+
+/// Run one lookup, attaching each requested key and passing the fences'
+/// full keys on request (or in advance when `eager_fences`). `attach` picks
+/// which keys are attached before the first call.
+fn lookup(
+    tree: &Tree,
+    query: &[u8],
+    attach: &mut impl FnMut() -> bool,
+    eager_fences: bool,
+    batched: bool,
+    counts: &mut Counts,
+) -> Result<Option<(Vec<u8>, u32)>, Error> {
+    let mut lookup = PartialLookup::new(tree.root, tree.height, query)?;
+    while let Some(id) = lookup.requested_node() {
+        let node = &tree.nodes[id];
+        let mut keys: Vec<PrefixKey<'_, P>> = node.keys.iter().map(|key| stored(key)).collect();
+        for (key, full) in keys.iter_mut().zip(&node.keys) {
+            if attach() {
+                key.attach(full).unwrap();
+            }
+        }
+        let incomplete = keys.iter().filter(|key| key.full().is_none()).count();
+        if batched {
+            // Attach every listed key before the first pass over the node.
+            let view = match &node.children {
+                Some(children) => PartialNode::branch(&keys, children)?,
+                None => PartialNode::leaf(&keys, &node.values)?,
+            };
+            let listed: Vec<usize> = lookup.unresolved_keys(&view).collect();
+            for index in listed {
+                keys[index].attach(&node.keys[index]).unwrap();
+                counts.listed += 1;
+            }
+        }
+        let mut fenced = eager_fences;
+        let mut requests = 0;
+        loop {
+            let view = match &node.children {
+                Some(children) => PartialNode::branch(&keys, children)?,
+                None => PartialNode::leaf(&keys, &node.values)?,
+            };
+            let (minimum, ceiling) = lookup.fence_origins();
+            let full = |origin: Option<(usize, usize)>| {
+                origin.map(|(node, index)| tree.nodes[node].keys[index].as_slice())
+            };
+            let step = if fenced {
+                lookup.provide_fenced(id, &view, full(minimum), full(ceiling))?
+            } else {
+                lookup.provide(id, &view)?
+            };
+            match step {
+                PartialStep::NeedNode(child) => {
+                    assert_eq!(lookup.requested_node(), Some(child));
+                    break;
+                }
+                PartialStep::NeedKey(index) => {
+                    assert!(!batched, "a listed node requested key {index}");
+                    assert!(keys[index].full().is_none(), "a resolved key was requested");
+                    assert_eq!(lookup.requested_node(), Some(id));
+                    keys[index].attach(&node.keys[index]).unwrap();
+                    counts.keys += 1;
+                    requests += 1;
+                    assert!(requests <= incomplete);
+                }
+                PartialStep::NeedFence => {
+                    assert!(!fenced && (minimum.is_some() || ceiling.is_some()));
+                    counts.fences += 1;
+                    fenced = true;
+                }
+                PartialStep::Found(key, value) => {
+                    return Ok(Some((key.full().unwrap().to_vec(), *value)));
+                }
+                PartialStep::Absent => return Ok(None),
+            }
+        }
+    }
+    unreachable!("the lookup finished without a result")
+}
+
+/// Keys from a two-letter alphabet with long shared prefixes.
+fn key(seed: &mut u64) -> Vec<u8> {
+    let shared: &[&[u8]] = &[b"", b"ab", b"abab", b"ababab", b"abababab"];
+    let mut key = shared[rng(seed) as usize % shared.len()].to_vec();
+    for _ in 0..rng(seed) % 6 {
+        key.push(b'a' + (rng(seed) % 2) as u8);
+    }
+    key
+}
+
+#[test]
+fn partial_lookup_matches_std_with_shared_prefixes() {
+    let rounds = if cfg!(miri) { 3 } else { 300 };
+    let mut seed = 0x9e37_79b9_7f4a_7c15;
+    let mut totals = Counts::default();
+    for _ in 0..rounds {
+        let mut model = Model::new();
+        for value in 0..rng(&mut seed) % 60 {
+            model.insert(key(&mut seed), value as u32);
+        }
+        let entries: Vec<_> = model.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let leaf = 2 + rng(&mut seed) as usize % 5;
+        let branch = 2 + rng(&mut seed) as usize % 4;
+        let tree = build(&entries, leaf, branch);
+        let rate = rng(&mut seed) % 3;
+        let eager = rng(&mut seed) % 2 == 0;
+        let batched = rng(&mut seed) % 2 == 0;
+        for _ in 0..if cfg!(miri) { 4 } else { 40 } {
+            let query = key(&mut seed);
+            let mut attach_seed = rng(&mut seed) | 1;
+            let mut attach = || rng(&mut attach_seed) % 3 < rate;
+            let actual = lookup(&tree, &query, &mut attach, eager, batched, &mut totals).unwrap();
+            let expected = model.get_key_value(&query).map(|(k, v)| (k.clone(), *v));
+            assert_eq!(actual, expected, "query {query:?}");
+        }
+    }
+    eprintln!("requests: {totals:?}");
+    if !cfg!(miri) {
+        assert!(
+            totals.keys > 0 && totals.fences > 0 && totals.listed > 0,
+            "{totals:?}"
+        );
+    }
+}
+
+#[test]
+fn attached_keys_need_no_requests() {
+    let mut seed = 7;
+    let mut model = Model::new();
+    for value in 0..50 {
+        model.insert(key(&mut seed), value);
+    }
+    let entries: Vec<_> = model.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let tree = build(&entries, 4, 3);
+    let mut counts = Counts::default();
+    for (query, value) in &entries {
+        let found = lookup(&tree, query, &mut || true, true, false, &mut counts).unwrap();
+        assert_eq!(found, Some((query.clone(), *value)));
+    }
+    assert_eq!((counts.keys, counts.fences), (0, 0));
+}
+
+fn leaf_result(keys: &[&[u8]], query: &[u8]) -> Result<PartialStep<'static, (), (), usize>, Error> {
+    let values: Vec<u32> = (0..keys.len() as u32).collect();
+    let mut stored: Vec<PrefixKey<'_, P>> = keys.iter().map(|key| stored(key)).collect();
+    let mut lookup = PartialLookup::new(0usize, 0, query)?;
+    loop {
+        let node = PartialNode::leaf(&stored, &values)?;
+        match lookup.provide(0, &node)? {
+            PartialStep::NeedKey(index) => stored[index].attach(keys[index])?,
+            PartialStep::Found(..) => return Ok(PartialStep::Found(&(), &())),
+            PartialStep::Absent => return Ok(PartialStep::Absent),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn damage_off_the_search_path_is_refused() {
+    // Ordered by the first byte only: 1 < 5 > 3 < 7. A search for 3 sees
+    // 5 and 1 and would answer absent without full validation.
+    let keys: [&[u8]; 4] = [b"1", b"5", b"3", b"7"];
+    assert_eq!(leaf_result(&keys, b"3"), Err(Error::InvalidStructure));
+    // The same damage hidden behind equal prefixes needs resolution first.
+    let keys: [&[u8]; 4] = [b"abcd1", b"abcd5", b"abcd3", b"abcd7"];
+    assert_eq!(leaf_result(&keys, b"abcd3"), Err(Error::InvalidStructure));
+    let keys: [&[u8]; 3] = [b"abcd1", b"abcd1", b"abcd7"];
+    assert_eq!(leaf_result(&keys, b"abcd7"), Err(Error::InvalidStructure));
+    let keys: [&[u8]; 4] = [b"abcd1", b"abcd3", b"abcd5", b"abcd7"];
+    assert_eq!(
+        leaf_result(&keys, b"abcd5"),
+        Ok(PartialStep::Found(&(), &()))
+    );
+    assert_eq!(leaf_result(&keys, b"abcd4"), Ok(PartialStep::Absent));
+}
+
+#[test]
+fn attachments_and_fences_must_match_the_stored_key() {
+    let mut key = stored(b"abcdef");
+    assert_eq!(key.attach(b"abcdeg!"), Err(Error::InvalidStructure));
+    assert_eq!(key.attach(b"abceef"), Err(Error::InvalidStructure));
+    assert!(key.full().is_none());
+    key.attach(b"abcdeg").unwrap();
+    assert_eq!(key.full(), Some(&b"abcdeg"[..]));
+
+    // Root branch over one leaf whose first key differs from the separator
+    // only after the inline prefix. The separator is resolved in the root,
+    // but its fence keeps only the prefix and length.
+    let separators = [PrefixKey::<P>::from_full(b"abcdef")];
+    let children = [1usize];
+    let query: &[u8] = b"abcdzz";
+    let mut lookup = PartialLookup::new(0usize, 1, query).unwrap();
+    let root = PartialNode::<_, u32, _>::branch(&separators, &children).unwrap();
+    assert!(matches!(
+        lookup.provide(0, &root),
+        Ok(PartialStep::NeedNode(1))
+    ));
+    assert_eq!(lookup.fence_origins(), (Some((0, 0)), None));
+
+    let mut leaf_keys = [PrefixKey::<P>::from_full(b"abcdeg")];
+    let values = [7u32];
+    let leaf = PartialNode::leaf(&leaf_keys, &values).unwrap();
+    // Out of turn: the root is no longer requested.
+    assert!(matches!(
+        lookup.provide(0, &leaf),
+        Err(Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        lookup.provide(1, &leaf),
+        Ok(PartialStep::NeedFence)
+    ));
+    // A full key the fence does not admit, or one for a missing fence.
+    let fence: &[u8] = b"abcdef";
+    assert!(matches!(
+        lookup.provide_fenced(1, &leaf, Some(&b"abcdefg"[..]), None),
+        Err(Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        lookup.provide_fenced(1, &leaf, Some(fence), Some(query)),
+        Err(Error::InvalidStructure)
+    ));
+    // The resolved separator differs from the child's minimum.
+    assert!(matches!(
+        lookup.provide_fenced(1, &leaf, Some(fence), None),
+        Err(Error::InvalidStructure)
+    ));
+    assert_eq!(lookup.requested_node(), Some(1));
+    // A matching child is accepted after the refusals.
+    leaf_keys = [PrefixKey::from_full(b"abcdef")];
+    let leaf = PartialNode::leaf(&leaf_keys, &values).unwrap();
+    assert!(matches!(
+        lookup.provide_fenced(1, &leaf, Some(fence), None),
+        Ok(PartialStep::Absent)
+    ));
+    assert_eq!(lookup.requested_node(), None);
+}
+
+#[test]
+fn prefix_keys_order_by_bytes() {
+    let words: [&[u8]; 9] = [
+        b"", b"a", b"abcd", b"abcda", b"abcdb", b"abce", b"abcd\0", b"b", b"abcdaa",
+    ];
+    for a in words {
+        for b in words {
+            let actual = a.cmp(b);
+            let (x, y) = (stored(a), stored(b));
+            for decided in [
+                x.cmp_stored(&y),
+                x.cmp_full(b),
+                x.cmp_fence(&y.fence()),
+                PrefixKey::<P>::fence_cmp_full(&x.fence(), b),
+            ] {
+                assert!(decided.is_none_or(|order| order == actual), "{a:?} {b:?}");
+            }
+            if a.len() <= P && b.len() <= P {
+                assert_eq!(x.cmp_stored(&y), Some(actual));
+            }
+            if a.len() > P && b.len() > P && a[..P] == b[..P] {
+                assert_eq!(x.cmp_stored(&y), None);
+            }
+        }
+    }
+}
+
+/// Every byte string of at most two bytes over {0, 1, 2, 3}. Four values
+/// realize every order of three keys and a query at each byte position.
+fn small_strings() -> Vec<Vec<u8>> {
+    let mut all = vec![Vec::new()];
+    for a in 0..4u8 {
+        all.push(vec![a]);
+        for b in 0..4u8 {
+            all.push(vec![a, b]);
+        }
+    }
+    all
+}
+
+/// Mirrors the Kani leaf harness exhaustively over a small alphabet: one
+/// inline byte, keys of up to two bytes, every attachment choice and query.
+#[test]
+fn exhaustive_small_leaves_match_complete_lookup() {
+    use jzap::collections::btree_map::view::{
+        LookupStep,
+        bplus::{Lookup, Node},
+    };
+    let strings = small_strings();
+    let counts = if cfg!(miri) { 1..=1 } else { 0..=3 };
+    let mut cases = 0usize;
+    for n in counts {
+        let mut index = vec![0usize; n];
+        loop {
+            let completed: Vec<&[u8]> = index.iter().map(|&i| strings[i].as_slice()).collect();
+            let values: Vec<u8> = (0..n as u8).collect();
+            for mask in 0..1u32 << n {
+                for query in &strings {
+                    let mut keys: Vec<PrefixKey<'_, 1>> = completed
+                        .iter()
+                        .map(|full| {
+                            PrefixKey::new([full.first().copied().unwrap_or(0)], full.len())
+                        })
+                        .collect();
+                    for (i, key) in keys.iter_mut().enumerate() {
+                        if mask >> i & 1 == 1 {
+                            key.attach(completed[i]).unwrap();
+                        }
+                    }
+                    // Attaching every listed key leaves a single pass that answers.
+                    let mut batch = PartialLookup::new(0usize, 0, query.as_slice()).unwrap();
+                    let listed: Vec<usize> = batch
+                        .unresolved_keys(&PartialNode::leaf(&keys, &values).unwrap())
+                        .collect();
+                    let mut batched = keys.clone();
+                    for &i in &listed {
+                        assert!(batched[i].full().is_none());
+                        batched[i].attach(completed[i]).unwrap();
+                    }
+                    let batched_result =
+                        match batch.provide(0, &PartialNode::leaf(&batched, &values).unwrap()) {
+                            Ok(PartialStep::Found(key, value)) => {
+                                Ok(Some((key.full().unwrap().to_vec(), *value)))
+                            }
+                            Ok(PartialStep::Absent) => Ok(None),
+                            Ok(step) => panic!("listed keys left {step:?}"),
+                            Err(error) => Err(error),
+                        };
+                    // The visit path: attach each requested key through the visit.
+                    let visited = {
+                        use jzap::collections::btree_map::view::bplus::{
+                            PartialNodeMut, VisitStep,
+                        };
+                        let mut copy = keys.clone();
+                        let mut lookup = PartialLookup::new(0usize, 0, query.as_slice()).unwrap();
+                        let mut visit = lookup
+                            .visit(0, PartialNodeMut::leaf(&mut copy, &values).unwrap())
+                            .unwrap();
+                        let mut failed = None;
+                        for _ in 0..=n {
+                            match visit.run(None, None) {
+                                Ok(VisitStep::NeedKey(i)) => visit
+                                    .attach_with(i, |key| key.attach(completed[i]))
+                                    .unwrap(),
+                                Ok(VisitStep::Done) => break,
+                                Ok(VisitStep::NeedFence) => unreachable!(),
+                                Err(error) => {
+                                    failed = Some(error);
+                                    break;
+                                }
+                            }
+                        }
+                        match failed {
+                            Some(error) => Err(error),
+                            None => match visit.finish() {
+                                Ok(PartialStep::Found(key, value)) => {
+                                    Ok(Some((key.full().unwrap().to_vec(), *value)))
+                                }
+                                Ok(PartialStep::Absent) => Ok(None),
+                                Ok(step) => panic!("visit finished with {step:?}"),
+                                Err(error) => Err(error),
+                            },
+                        }
+                    };
+                    let mut lookup = PartialLookup::new(0usize, 0, query.as_slice()).unwrap();
+                    let mut result = None;
+                    for _ in 0..=n {
+                        let node = PartialNode::leaf(&keys, &values).unwrap();
+                        let requested = match lookup.provide(0, &node) {
+                            Ok(PartialStep::Found(key, value)) => {
+                                result = Some(Ok(Some((key.full().unwrap().to_vec(), *value))));
+                                break;
+                            }
+                            Ok(PartialStep::Absent) => {
+                                result = Some(Ok(None));
+                                break;
+                            }
+                            Ok(PartialStep::NeedKey(i)) => i,
+                            Ok(step) => panic!("leaf returned {step:?}"),
+                            Err(error) => {
+                                result = Some(Err(error));
+                                break;
+                            }
+                        };
+                        assert!(keys[requested].full().is_none());
+                        keys[requested].attach(completed[requested]).unwrap();
+                    }
+                    let mut complete = Lookup::new(0usize, 0, query.as_slice()).unwrap();
+                    let expected = Node::leaf(&completed, &values).and_then(|node| {
+                        complete.provide(0, &node).map(|step| match step {
+                            LookupStep::Found(key, value) => Some((key.to_vec(), *value)),
+                            LookupStep::Absent => None,
+                            step => panic!("leaf returned {step:?}"),
+                        })
+                    });
+                    assert_eq!(
+                        result,
+                        Some(expected),
+                        "{completed:?} mask {mask} query {query:?}"
+                    );
+                    assert_eq!(
+                        Some(visited),
+                        result,
+                        "visit {completed:?} mask {mask} query {query:?}"
+                    );
+                    assert_eq!(
+                        Some(batched_result),
+                        result,
+                        "batched {completed:?} mask {mask} query {query:?}"
+                    );
+                    cases += 1;
+                }
+            }
+            // Next index tuple.
+            let mut position = 0;
+            while position < n {
+                index[position] += 1;
+                if index[position] < strings.len() {
+                    break;
+                }
+                index[position] = 0;
+                position += 1;
+            }
+            if position == n {
+                break;
+            }
+        }
+    }
+    eprintln!("exhaustive cases: {cases}");
+    if !cfg!(miri) {
+        // 21 strings: sum over n = 0..=3 of 21^n keys * 2^n masks * 21 queries.
+        assert_eq!(cases, 21 * (1 + 42 + 42 * 42 + 42 * 42 * 42));
+    }
+}
+
+/// Sixteen inline bytes take the word-wise comparison path. Random keys with
+/// shared prefixes of every length up to 24 bytes, with and without
+/// attachments, compare as their bytes do.
+#[test]
+fn sixteen_byte_prefix_keys_order_by_bytes() {
+    fn key16(full: &[u8]) -> PrefixKey<'_, 16> {
+        let mut prefix = [0; 16];
+        for (slot, byte) in prefix.iter_mut().zip(full) {
+            *slot = *byte;
+        }
+        PrefixKey::new(prefix, full.len())
+    }
+    let mut seed = 0x51f1_5eed;
+    let rounds = if cfg!(miri) { 200 } else { 200_000 };
+    for _ in 0..rounds {
+        let shared = (rng(&mut seed) % 25) as usize;
+        let mut make = || {
+            let mut key: Vec<u8> = (0..shared).map(|i| (i * 7) as u8).collect();
+            for _ in 0..rng(&mut seed) % 12 {
+                key.push((rng(&mut seed) % 4) as u8 * 85);
+            }
+            key
+        };
+        let (a, b) = (make(), make());
+        let actual = a.cmp(&b);
+        let (stored_a, stored_b) = (key16(&a), key16(&b));
+        let (attached_a, attached_b) = (
+            PrefixKey::<16>::from_full(&a),
+            PrefixKey::<16>::from_full(&b),
+        );
+        for decided in [
+            stored_a.cmp_stored(&stored_b),
+            stored_a.cmp_full(&b),
+            stored_a.cmp_fence(&stored_b.fence()),
+            PrefixKey::<16>::fence_cmp_full(&stored_a.fence(), &b),
+            attached_a.cmp_stored(&stored_b),
+            stored_a.cmp_stored(&attached_b),
+        ] {
+            assert!(decided.is_none_or(|order| order == actual), "{a:?} {b:?}");
+        }
+        assert_eq!(
+            attached_a.cmp_stored(&attached_b),
+            Some(actual),
+            "{a:?} {b:?}"
+        );
+        assert_eq!(attached_a.cmp_full(&b), Some(actual), "{a:?} {b:?}");
+        if a.len() <= 16 && b.len() <= 16 {
+            assert_eq!(stored_a.cmp_stored(&stored_b), Some(actual));
+        }
+    }
+}
+
+/// The same lookup through `PartialVisit`: keys are attached through the
+/// visit and each run resumes where the previous one stopped.
+fn lookup_visit(
+    tree: &Tree,
+    query: &[u8],
+    attach: &mut impl FnMut() -> bool,
+    eager_fences: bool,
+    batched: bool,
+    counts: &mut Counts,
+) -> Result<Option<(Vec<u8>, u32)>, Error> {
+    use jzap::collections::btree_map::view::bplus::{PartialNodeMut, VisitStep};
+    let mut lookup = PartialLookup::new(tree.root, tree.height, query)?;
+    while let Some(id) = lookup.requested_node() {
+        let node = &tree.nodes[id];
+        let mut keys: Vec<PrefixKey<'_, P>> = node.keys.iter().map(|key| stored(key)).collect();
+        for (key, full) in keys.iter_mut().zip(&node.keys) {
+            if attach() {
+                key.attach(full).unwrap();
+            }
+        }
+        let incomplete = keys.iter().filter(|key| key.full().is_none()).count();
+        let (minimum, ceiling) = lookup.fence_origins();
+        let full = |origin: Option<(usize, usize)>| {
+            origin.map(|(node, index)| tree.nodes[node].keys[index].as_slice())
+        };
+        let view = match &node.children {
+            Some(children) => PartialNodeMut::branch(&mut keys, children)?,
+            None => PartialNodeMut::leaf(&mut keys, &node.values)?,
+        };
+        let mut visit = lookup.visit(id, view)?;
+        if batched {
+            let listed: Vec<usize> = visit.unresolved_keys().collect();
+            for index in listed {
+                visit.attach_with(index, |key| key.attach(&node.keys[index]))?;
+                counts.listed += 1;
+            }
+        }
+        let mut fenced = eager_fences;
+        let mut requests = 0;
+        loop {
+            let (low, high) = if fenced {
+                (full(minimum), full(ceiling))
+            } else {
+                (None, None)
+            };
+            match visit.run(low, high)? {
+                VisitStep::NeedKey(index) => {
+                    assert!(!batched, "a listed node requested key {index}");
+                    visit.attach_with(index, |key| key.attach(&node.keys[index]))?;
+                    counts.keys += 1;
+                    requests += 1;
+                    assert!(requests <= incomplete);
+                }
+                VisitStep::NeedFence => {
+                    assert!(!fenced && (minimum.is_some() || ceiling.is_some()));
+                    counts.fences += 1;
+                    fenced = true;
+                }
+                VisitStep::Done => break,
+            }
+        }
+        match visit.finish()? {
+            PartialStep::NeedNode(child) => assert_eq!(lookup.requested_node(), Some(child)),
+            PartialStep::Found(key, value) => {
+                return Ok(Some((key.full().unwrap().to_vec(), *value)));
+            }
+            PartialStep::Absent => return Ok(None),
+            step => panic!("finish returned {step:?}"),
+        }
+    }
+    unreachable!("the lookup finished without a result")
+}
+
+#[test]
+fn visit_lookup_matches_std_with_shared_prefixes() {
+    let rounds = if cfg!(miri) { 3 } else { 300 };
+    let mut seed = 0x7e57_0f_7a11;
+    let mut totals = Counts::default();
+    for _ in 0..rounds {
+        let mut model = Model::new();
+        for value in 0..rng(&mut seed) % 60 {
+            model.insert(key(&mut seed), value as u32);
+        }
+        let entries: Vec<_> = model.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let tree = build(
+            &entries,
+            2 + rng(&mut seed) as usize % 5,
+            2 + rng(&mut seed) as usize % 4,
+        );
+        let rate = rng(&mut seed) % 3;
+        let eager = rng(&mut seed) % 2 == 0;
+        let batched = rng(&mut seed) % 2 == 0;
+        for _ in 0..if cfg!(miri) { 4 } else { 40 } {
+            let query = key(&mut seed);
+            let mut attach_seed = rng(&mut seed) | 1;
+            let mut attach = || rng(&mut attach_seed) % 3 < rate;
+            let actual =
+                lookup_visit(&tree, &query, &mut attach, eager, batched, &mut totals).unwrap();
+            let expected = model.get_key_value(&query).map(|(k, v)| (k.clone(), *v));
+            assert_eq!(actual, expected, "query {query:?}");
+        }
+    }
+    eprintln!("visit requests: {totals:?}");
+    if !cfg!(miri) {
+        assert!(
+            totals.keys > 0 && totals.fences > 0 && totals.listed > 0,
+            "{totals:?}"
+        );
+    }
+}
+
+#[test]
+fn visit_refuses_changed_keys_and_early_finish() {
+    use jzap::collections::btree_map::view::bplus::{PartialNodeMut, VisitStep};
+    let full: [&[u8]; 2] = [b"abcde1", b"abcde2"];
+    let values = [1u32, 2];
+    let query: &[u8] = b"abcde2";
+    let mut lookup = PartialLookup::new(0usize, 0, query).unwrap();
+
+    // Out of turn: a wrong identifier or kind leaves the lookup requested.
+    let mut keys = [stored(full[0]), stored(full[1])];
+    assert!(matches!(
+        lookup.visit(1, PartialNodeMut::leaf(&mut keys, &values).unwrap()),
+        Err(Error::InvalidStructure)
+    ));
+    assert!(matches!(
+        lookup.visit(
+            0,
+            PartialNodeMut::<_, u32, _>::branch(&mut keys, &[1, 2]).unwrap()
+        ),
+        Err(Error::InvalidStructure)
+    ));
+
+    // Finishing before the node is answered, then attachments that change
+    // the stored parts or are not a completion of them.
+    let mut visit = lookup
+        .visit(0, PartialNodeMut::leaf(&mut keys, &values).unwrap())
+        .unwrap();
+    assert_eq!(visit.run(None, None), Ok(VisitStep::NeedKey(0)));
+    assert!(matches!(
+        visit.attach_with(5, |_| Ok(())),
+        Err(Error::Bounds)
+    ));
+    assert_eq!(
+        visit.attach_with(0, |key| {
+            *key = stored(b"abcx11");
+            Ok(())
+        }),
+        Err(Error::InvalidStructure)
+    );
+    assert_eq!(visit.run(None, None), Err(Error::InvalidStructure));
+    assert!(matches!(visit.finish(), Err(Error::InvalidStructure)));
+    assert_eq!(lookup.requested_node(), Some(0));
+
+    // A dropped visit leaves the node requested; a correct visit answers.
+    let mut keys = [stored(full[0]), stored(full[1])];
+    let mut visit = lookup
+        .visit(0, PartialNodeMut::leaf(&mut keys, &values).unwrap())
+        .unwrap();
+    assert!(matches!(
+        visit.attach_with(0, |key| key.attach(b"abcde1")),
+        Ok(())
+    ));
+    // A resolved key cannot be attached again.
+    assert_eq!(
+        visit.attach_with(0, |key| key.attach(b"abcde1")),
+        Err(Error::InvalidStructure)
+    );
+    drop(visit);
+    let mut keys = [stored(full[0]), stored(full[1])];
+    let mut visit = lookup
+        .visit(0, PartialNodeMut::leaf(&mut keys, &values).unwrap())
+        .unwrap();
+    loop {
+        match visit.run(None, None).unwrap() {
+            VisitStep::NeedKey(index) => visit
+                .attach_with(index, |key| key.attach(full[index]))
+                .unwrap(),
+            VisitStep::NeedFence => unreachable!(),
+            VisitStep::Done => break,
+        }
+    }
+    assert!(matches!(visit.finish(), Ok(PartialStep::Found(_, 2))));
+    assert_eq!(lookup.requested_node(), None);
+}
+
+/// Mirrors the branch visit harness exhaustively over a small alphabet: two
+/// separators of up to two bytes with one inline byte, every attachment
+/// choice and query, against the route the complete-key lookup takes.
+#[test]
+fn exhaustive_branch_visits_route_as_complete_lookup() {
+    use jzap::collections::btree_map::view::bplus::{PartialNodeMut, VisitStep};
+    let strings = small_strings();
+    let children = [1usize, 2];
+    let mut cases = 0usize;
+    for a in &strings {
+        for b in &strings {
+            for mask in 0..4u32 {
+                for query in &strings {
+                    let completed: [&[u8]; 2] = [a, b];
+                    let mut keys: Vec<PrefixKey<'_, 1>> = completed
+                        .iter()
+                        .map(|full| {
+                            PrefixKey::new([full.first().copied().unwrap_or(0)], full.len())
+                        })
+                        .collect();
+                    for (i, key) in keys.iter_mut().enumerate() {
+                        if mask >> i & 1 == 1 {
+                            key.attach(completed[i]).unwrap();
+                        }
+                    }
+                    let mut lookup = PartialLookup::new(0usize, 1, query.as_slice()).unwrap();
+                    let mut visit = lookup
+                        .visit(
+                            0,
+                            PartialNodeMut::<_, u8, _>::branch(&mut keys, &children).unwrap(),
+                        )
+                        .unwrap();
+                    let mut failed = None;
+                    for _ in 0..3 {
+                        match visit.run(None, None) {
+                            Ok(VisitStep::NeedKey(i)) => visit
+                                .attach_with(i, |key| key.attach(completed[i]))
+                                .unwrap(),
+                            Ok(VisitStep::Done) => break,
+                            Ok(VisitStep::NeedFence) => unreachable!(),
+                            Err(error) => {
+                                failed = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    let result = match failed {
+                        Some(error) => Err(error),
+                        None => match visit.finish() {
+                            Ok(PartialStep::NeedNode(child)) => Ok(Some(child)),
+                            Ok(PartialStep::Absent) => Ok(None),
+                            Ok(step) => panic!("root finished with {step:?}"),
+                            Err(error) => Err(error),
+                        },
+                    };
+                    let expected: Result<Option<usize>, Error> = if a >= b {
+                        Err(Error::InvalidStructure)
+                    } else if b <= query {
+                        Ok(Some(2))
+                    } else if a <= query {
+                        Ok(Some(1))
+                    } else {
+                        Ok(None)
+                    };
+                    assert_eq!(result, expected, "{a:?} {b:?} mask {mask} query {query:?}");
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 21 * 21 * 4 * 21);
+}

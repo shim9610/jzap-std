@@ -145,7 +145,7 @@ def plan(area,checks,out,test_targets=None):
                     'loop:panic_proofs::box_iterator_counters_cover_every_machine_word_length',
                     'loop:boxed::slice::panic_proofs::box_iterator_preserves_every_valid_cursor_state','loop:boxed::text::panic_proofs::character_byte_cursor_preserves_every_valid_state'],
                 'vec':['proofs::vec_'],'string':['string::proofs::'],'shared':['shared::proofs::','budget::concurrent::proofs::'],
-                'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::','collections::btree_map::view::bplus::proofs::','collections::btree_map::view::bplus::fixed::proofs::'],
+                'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::','collections::btree_map::view::bplus::proofs::','collections::btree_map::view::bplus::fixed::proofs::','collections::btree_map::view::bplus::partial::proofs::'],
                 'hash-map':['collections::hash_map::proofs::','collections::hash_map::iter::scan_proofs::'],
                 'binary-heap':['collections::binary_heap::proofs::'],'deque':['deque::proofs::'],'scratch-slice':['scratch::proofs::','slice::proofs::'],
                 'hash-set':['collections::hash_set::proofs::','collections::hash_map::proofs::hash_set_replace_preserves_slot_class_length_and_credit'],
@@ -153,8 +153,9 @@ def plan(area,checks,out,test_targets=None):
             for index,pattern in enumerate(patterns[area]):
                 loop=pattern.startswith('loop:');pattern=pattern.removeprefix('loop:')
                 cmd=['cargo','kani','--lib']+(['-Z','loop-contracts'] if loop else [])+(['--harness',pattern] if pattern else [])
+                if 'partial::' in pattern:cmd+=['--solver','kissat','-Z','stubbing']
                 if area in ('foundation','box') and not pattern.endswith('::'):cmd+=['--exact']
-                if area!='box' and ('btree_map' in pattern or 'hash_map' in pattern or 'hash_set' in pattern or 'binary_heap' in pattern or 'deque::' in pattern or 'scratch::' in pattern or 'slice::' in pattern):cmd+=['-Z','unstable-options','--cbmc-args','--object-bits','12' if 'hash_map' in pattern or 'hash_set' in pattern or 'binary_heap' in pattern or 'deque::' in pattern or 'scratch::' in pattern or 'slice::' in pattern else '10']
+                if area!='box' and ('btree_map' in pattern or 'hash_map' in pattern or 'hash_set' in pattern or 'binary_heap' in pattern or 'deque::' in pattern or 'scratch::' in pattern or 'slice::' in pattern):cmd+=['-Z','unstable-options','--cbmc-args','--object-bits','12' if 'partial::' in pattern or 'hash_map' in pattern or 'hash_set' in pattern or 'binary_heap' in pattern or 'deque::' in pattern or 'scratch::' in pattern or 'slice::' in pattern else '10']
                 add('kani-'+str(index),cmd,'actual-Rust-model-check',{'RUSTFLAGS':'--cfg jzap_loop_contracts'} if loop else None)
             if area in ('all','budget'):script('kani-local-budget','verify_budget_native.py','--mutations',kind='actual-Rust-model-check')
         elif check=='loom':

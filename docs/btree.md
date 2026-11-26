@@ -166,7 +166,7 @@ contains a reference still borrows its referent. A `Found` result borrows the
 supplied leaf and a rejected node can be replaced without restarting the
 lookup. Supply a consistent tree snapshot for the lifetime of the lookup.
 
-The B+ streaming API covers point lookups with complete keys. [Partial-key comparison](https://github.com/shim9610/jzap-std/issues/10) · [Streaming range traversal](https://github.com/shim9610/jzap-std/issues/13)
+The B+ streaming API covers point lookups with complete keys. Keys stored only partly in the node, such as an inline prefix with the rest stored elsewhere, use the separate [partial-key lookup](bplus-partial-keys.md) over typed node slices. [Streaming range traversal](https://github.com/shim9610/jzap-std/issues/13)
 
 The point-lookup benchmark compares the same resident node slices against a
 checked Rust reference, with and without local node validation in the timed
@@ -211,7 +211,7 @@ integrity checks, I/O, and any interpretation of the returned value bytes.
 
 The byte view handles complete keys of any length the format can represent
 and retain in a fence. Out-of-line key resolution and streaming range
-traversal are tracked separately. [Raw pages and partial keys](https://github.com/shim9610/jzap-std/issues/10) · [Streaming ranges](https://github.com/shim9610/jzap-std/issues/13)
+traversal are tracked separately. The [partial-key lookup](bplus-partial-keys.md) covers typed node slices only. [Raw pages and partial keys](https://github.com/shim9610/jzap-std/issues/10) · [Streaming ranges](https://github.com/shim9610/jzap-std/issues/13)
 
 ##### Fixed-stride page timing
 

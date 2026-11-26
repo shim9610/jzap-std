@@ -317,8 +317,13 @@ Differences not removed:
 
 The paired timing protocol of step 4 has not been run.
 
+`scripts/check_link_exits.py` reports the same number of retained panic call
+sites per profile as the receipt of `f4bbaff` (release 6, release-lto 9,
+release-checked 6, debug 81); their attachment to proofs is the combined
+certificate's, which was not run.
+
 Not run for this change: the combined certificate
-(`scripts/source_certificate.py`), the link audit, the 32-bit and Tree Borrows
-Miri modes, Miri on tests other than `vec`, and the `BinaryHeap`, `VecDeque`
-and scratch area scripts (one `BinaryHeap` control anchor in `src/vec.rs` was
-renamed to the new text and not exercised).
+(`scripts/source_certificate.py`), the 32-bit and Tree Borrows Miri modes,
+Miri on tests other than `vec`, and the `BinaryHeap`, `VecDeque` and scratch
+area scripts (one `BinaryHeap` control anchor in `src/vec.rs` was renamed to
+the new text and not exercised).

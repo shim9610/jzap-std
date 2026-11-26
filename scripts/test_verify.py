@@ -488,8 +488,10 @@ class PremiseTests(unittest.TestCase):
 
     def test_disposition_requires_a_verified_contract_and_an_established_premise(self):
         from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition
-        verified = {'c_keep_live', 'raw_parts_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
-        self.assertEqual(disposition('c_keep_live', verified), PROVED)
+        verified = {'c_keep_next', 'c_keep_live', 'raw_parts_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
+        self.assertEqual(disposition('c_keep_next', verified), PROVED)
+        # A second, unverified caller keeps a verified-caller premise stated.
+        self.assertEqual(disposition('c_keep_live', verified), STATED_NOT_PROVED)
         self.assertEqual(disposition('direct:bplus-partial', verified), PROVED)
         self.assertEqual(disposition('raw_parts_owner', verified), STATED_NOT_PROVED)
         # A projection-only backing is never reported as connected.
@@ -510,7 +512,7 @@ class PremiseTests(unittest.TestCase):
         census = [dict(file=file, context=context, function=function, kind='modular_call', expression='')
                   for (file, context, function), (count, _) in FAMILIES.items() for _ in range(count)]
         premises = {(row['site']['file'], row['site']['function']): row['premise'] for row in coverage(census)}
-        self.assertEqual(premises[('src/compaction.rs', 'keep_live')], 'established')
+        self.assertEqual(premises[('src/compaction.rs', 'keep_live')], 'stated-not-proved')
         self.assertEqual(premises[('src/collections/btree_map/view/bplus/partial.rs', 'pass_over')], 'established')
         self.assertEqual(premises[('src/vec/edit.rs', 'restore_tail')], 'stated-not-proved')
         # One stated contract makes the whole call stated.
@@ -521,13 +523,13 @@ class PremiseTests(unittest.TestCase):
         from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED
         site = dict(file='src/x.rs', function='f')
         owner = dict(source_bindings=dict(bindings=[
-            dict(site=site, contract='c_keep_live', role='state-publication'),
+            dict(site=site, contract='c_keep_next', role='state-publication'),
             dict(site=site, contract='raw_parts_owner', role='state-publication'),
             dict(site=site, contract='kani:within_capacity_push_preserves_every_numeric_owner', role='state-publication')]))
         string = dict(bindings=[dict(site=site, contract='UTF-8-owner-transfer')])
         area = dict(bindings=[dict(site=site, contract='btree_cursor', role='cursor')])
         lookup = (ROOT / BPLUS_ANCESTOR['file']).read_text()
-        verified = {'c_keep_live', 'raw_parts_owner', 'btree_cursor', 'lookup_path_read'}
+        verified = {'c_keep_next', 'raw_parts_owner', 'btree_cursor', 'lookup_path_read'}
         rows = obligations(owner, string, (area,), verified, lookup)
         self.assertEqual([r['disposition'] for r in rows],
                          [PROVED, STATED_NOT_PROVED, UNPROVED, UNPROVED, STATED_NOT_PROVED, STATED_NOT_PROVED])

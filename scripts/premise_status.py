@@ -106,10 +106,6 @@ ESTABLISHED = {
             'closed as above (src/vec/staging_proofs.rs:10, src/vec/cursor_proofs.rs:35)',
             ['kani:staging_push_preserves_every_admitted_word_owner',
              'kani:within_capacity_push_preserves_every_numeric_owner']),
-    **_rows('verified-caller', 'Requires wf and read < original. The only product caller is '
-            'compact_one (src/vec/compaction_driver.rs:54-83), verified with its verus_spec; '
-            'caller_bindings.py admits no other call of keep_live/remove_live',
-            ['c_keep_live', 'c_remove_live']),
     **_rows('direct-source', 'The bound site is inside a product function with its own verus_spec, '
             'verified by the named target of verify_direct_verus.py',
             ['direct:budget-admit', 'direct:shared-numeric', 'direct:fixed-bplus',
@@ -135,12 +131,19 @@ STATED = {
                'span_next_back_caller', 'span_remaining_caller']),
     **_stated('len <= cap <= limit and the byte bound are the public unsafe contract of '
               'Vec::from_raw_parts (src/vec/ownership.rs), passed unchecked to the trusted entries '
-              'Extent::from_raw_parts and Capacity::from_validated_raw: a promise of the caller, which no '
-              'library proof establishes (trust boundary)',
+              'Extent::from_raw_parts and Capacity::from_validated_raw. For an external caller it is a '
+              'promise no library proof establishes (trust boundary). The library also calls it itself '
+              '(src/deque.rs into_vec and try_from_std_in, src/vec/convenience.rs, '
+              'src/string/convert.rs) and those calls are not verified to meet it',
               ['raw_parts_owner']),
     **_stated('Capacity cap * size <= isize::MAX: Capacity::from_validated_raw is an unsafe constructor '
               'whose bound is a caller obligation (src/capacity.rs), not a verified invariant',
               ['capacity_bytes']),
+    **_stated('Requires wf and read < original. compact_one (src/vec/compaction_driver.rs:54-83) is '
+              'verified and establishes it, but VecDeque::try_retain_mut (src/deque/edit.rs:259, :265) '
+              'also calls keep_live/remove_live and is unverified Rust; caller_bindings.py does not see '
+              'that caller because deque files are filtered out',
+              ['c_keep_live', 'c_remove_live']),
     **_stated('write > 0 is required (tools/direct-verus/state-adapters.rs:27); the try_dedup_by '
               'closure that calls previous_kept is unverified Rust',
               ['c_previous_kept']),

@@ -307,23 +307,16 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     }
     #[inline]
     fn grow_to(&mut self, needed: usize, exact: bool) -> Result<(), Error> {
-        let cap = geometry::growth_for_layout(
-            self.extent.cap(),
-            needed,
-            self.max_len(),
-            mem::size_of::<T>(),
-            exact,
-        )?;
-        self.resize_storage(cap)
+        let extent = self.extent.holding(needed, exact)?;
+        self.resize_storage(extent)
     }
+    /// Replace the storage by one of the admitted state's capacity, then
+    /// publish that state. The state was admitted before the storage changes,
+    /// so a refusal leaves this owner untouched and nothing can refuse after.
     #[inline(always)]
-    fn resize_storage(&mut self, cap: usize) -> Result<(), Error> {
-        let (capacity, new_layout) = crate::capacity::Capacity::try_new(cap)?;
-        // The state over the new capacity is admitted before the storage
-        // changes: a refusal leaves this owner untouched, and the admitted
-        // state is published after the storage without a second refusal.
-        let extent = self.extent.resized(capacity)?;
-        // SAFETY: checked new layout, identical alignment, unique storage; the
+    fn resize_storage(&mut self, extent: crate::extent::Extent<T, L>) -> Result<(), Error> {
+        let new_layout = extent.capacity().layout();
+        // SAFETY: valid new layout, identical alignment, unique storage; the
         // admitted state keeps all initialized elements and the limit.
         let ptr = if self.extent.cap() == 0 {
             storage::allocate(new_layout, self.policy.budget())?
@@ -348,7 +341,8 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         }
         let cap = self.extent.len().max(minimum_capacity);
         if cap < self.extent.cap() {
-            self.resize_storage(cap)?;
+            let extent = self.extent.holding(cap, true)?;
+            self.resize_storage(extent)?;
         }
         Ok(())
     }
@@ -370,7 +364,20 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             match unsafe { grow_for_push(&mut ptr, &mut extent, budget) } {
                 Ok(()) => {
                     self.ptr = ptr;
-                    self.extent = extent;
+                    // Publish the grown capacity over this owner's own length
+                    // word. Taking the length back from the copy would hide
+                    // from the optimizer that growth does not change it, and
+                    // a push loop would then count the length separately.
+                    match self.extent.resized(extent.capacity()) {
+                        Ok(grown) => self.extent = grown,
+                        Err(error) => {
+                            // The growth admitted this same state, so this is
+                            // not reached; the grown state it admitted keeps
+                            // the owner consistent with the new storage.
+                            self.extent = extent;
+                            return Err(Rejected { value, error });
+                        }
+                    }
                 }
                 Err(error) => return Err(Rejected { value, error }),
             }
@@ -542,6 +549,11 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             .map_err(|_| InitError::Storage(Error::Capacity))?;
         self.try_reserve(additional.get())
             .map_err(InitError::Storage)?;
+        // The reservation holds `new_len`. Checking it once here lets the
+        // per-element publication below be decided without a test in the loop.
+        if new_len > self.extent.cap() {
+            return Err(InitError::Storage(Error::Capacity));
+        }
         let original = self.extent.len();
         let guard = SuffixGuard {
             owner: self,
@@ -557,8 +569,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             let mut slot = unsafe { InitSlot::new(ptr) };
             initialize(index, &mut slot).map_err(InitError::Initialize)?;
             slot.finish().map_err(InitError::Storage)?;
-            // The reservation above holds `new_len`, so this is not refused;
-            // a refusal would leak the value just initialized, not expose it.
+            // Not refused: `next <= new_len`, which the capacity holds.
             guard
                 .owner
                 .extent
@@ -821,16 +832,9 @@ unsafe fn grow_for_push<T, L: LengthPolicy>(
     budget: crate::budget::Accounting<'_>,
 ) -> Result<(), Error> {
     let needed = required_len(extent.len(), 1, extent.max_len())?;
-    let grown = geometry::growth_for_layout(
-        extent.cap(),
-        needed,
-        extent.max_len(),
-        mem::size_of::<T>(),
-        false,
-    )?;
-    let (capacity, new_layout) = crate::capacity::Capacity::try_new(grown)?;
     // Admitted before the storage changes; published after it.
-    let grown = extent.resized(capacity)?;
+    let grown = extent.holding(needed, false)?;
+    let new_layout = grown.capacity().layout();
     let new = if extent.cap() == 0 {
         storage::allocate(new_layout, budget)?
     } else {

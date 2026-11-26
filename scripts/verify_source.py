@@ -131,7 +131,11 @@ GROUPS = {
         'compaction::proofs::constructors_and_all_transitions_preserve_range_and_cleanup',
         'span::proofs::full_constructor_establishes_order',
         'span::proofs::both_transitions_preserve_order_and_exact_length',
-    ], script='verify_state_types.py', scope='All 31 original Compaction/Extraction/Span numeric methods through Verus, including both 32/64-bit word domains, plus actual-Rust all-word inductive state harnesses. Pending caller projections call the original methods through maintained adapters.'),
+    ], script='verify_state_types.py', script_controls=(11, 5), scope='All 31 original Compaction/Extraction/Span numeric methods through Verus, including both 32/64-bit word domains, plus actual-Rust all-word inductive state harnesses. Pending caller projections call the original methods through maintained adapters.'),
+    'owner-extent': dict(harnesses=[
+        'extent::proofs::constructors_establish_the_order_for_every_word',
+        'extent::proofs::every_transition_preserves_the_order_for_every_state_and_argument',
+    ], verus=['vec-extent'], script='verify_owner_extent.py', script_controls=(0, 12), scope='Closed owner state of Vec: len <= cap <= limit and the byte bound of a sized capacity as Verus type invariants of src/extent.rs and src/capacity.rs, established by every constructor and preserved by every total transition for arbitrary arguments in both Verus word domains. The declaration check pins the private fields, the constructor and transition set, the bodies without a contract, construction and assignment sites and the callers of the two trusted entries. Actual-Rust harnesses cover every native-word state and argument at unit storage. Initialization and liveness of the storage are separate.'),
     'slot': dict(harnesses=[
         'proofs::slot_write_read_reject_and_cleanup',
         'proofs::slot_finish_requires_write_and_transfers_ownership',
@@ -492,10 +496,11 @@ def verify(groups, out, mutations=False):
             row['direct_state'] = json.loads((output / 'summary.json').read_text())
             if not (row['direct_state']['status'] == 'pass' and row['direct_state']['source_unchanged']):
                 raise RuntimeError('Missing original state proof result')
-            if not (row['direct_state']['controls_run'] and len(row['direct_state']['controls']) == 11
+            solver_controls, scope_controls = group['script_controls']
+            if not (row['direct_state']['controls_run'] and len(row['direct_state']['controls']) == solver_controls
                     and all(c['detected'] for c in row['direct_state']['controls'])):
                 raise RuntimeError('Missing actual state or word-domain negative controls')
-            if len(row['direct_state']['domain_controls']) != 5 or not all(
+            if len(row['direct_state']['domain_controls']) != scope_controls or not all(
                     c['detected'] and c['compiled'] for c in row['direct_state']['domain_controls']):
                 raise RuntimeError('Missing compiled state scope controls')
         if group.get('verus'):

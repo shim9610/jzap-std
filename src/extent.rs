@@ -18,8 +18,9 @@ use crate::capacity::byte_valid;
 use crate::vec::sealed::Sealed;
 use crate::vec::{LengthPolicy, Unlimited};
 use crate::{Checked, Error};
+use core::mem;
 #[cfg(verus_keep_ghost)]
-use vstd::prelude::*;
+use vstd::{arithmetic::div_mod::*, prelude::*};
 
 #[cfg_attr(verus_keep_ghost, verus_verify)]
 pub(crate) struct Extent<T, L: LengthPolicy> {
@@ -241,10 +242,61 @@ impl<T, L: LengthPolicy> Extent<T, L> {
             self.len = Checked::new(next);
         }
     }
+    /// The same length and limit over a capacity that holds `needed`
+    /// elements: exactly `needed` when `exact`, otherwise the amortized growth
+    /// of the current capacity. Refuses `needed` below the length or above the
+    /// limit, and an array beyond the address space.
+    ///
+    /// It returns a new state instead of changing this one: the owner obtains
+    /// it before it replaces the storage and publishes it afterwards without
+    /// a second refusal. Both comparisons repeat what a reservation has just
+    /// decided (`needed` is the length plus a count, within the limit), and
+    /// the capacity comes from the verified growth rule, so no test is added
+    /// to a growth path.
+    #[inline(always)]
+    #[cfg_attr(verus_keep_ghost, verus_spec(out =>
+        ensures match out {
+            Ok(extent) => self.len_spec() <= needed <= extent.cap_spec()
+                && extent.len_spec() == self.len_spec()
+                && extent.limit_spec() == self.limit_spec()
+                && (exact ==> extent.cap_spec() == needed),
+            Err(Error::Capacity) => needed < self.len_spec() || needed > self.limit_spec(),
+            Err(Error::Layout) => self.len_spec() <= needed <= self.limit_spec()
+                && needed as int > if vstd::layout::size_of::<T>() == 0 { usize::MAX as int }
+                    else { isize::MAX as int / vstd::layout::size_of::<T>() as int },
+            _ => false,
+        },
+    ))]
+    pub(crate) fn holding(&self, needed: usize, exact: bool) -> Result<Self, Error> {
+        let limit = self.limit.max_len();
+        if needed < self.len.get() || needed > limit {
+            return Err(Error::Capacity);
+        }
+        let size = mem::size_of::<T>();
+        let count =
+            crate::vec::geometry::growth_for_layout(self.cap.get(), needed, limit, size, exact)?;
+        #[cfg(verus_keep_ghost)]
+        proof! {
+            if size > 0 {
+                lemma_fundamental_div_mod(isize::MAX as int, size as int);
+                assert(count as int * size as int <= isize::MAX as int) by(nonlinear_arith)
+                    requires count as int <= isize::MAX as int / size as int, size > 0,
+                        isize::MAX as int == size as int * (isize::MAX as int / size as int)
+                            + isize::MAX as int % size as int,
+                        0 <= isize::MAX as int % size as int;
+            }
+        }
+        // SAFETY: the growth rule bounds the count by the array ceiling of the
+        // element size, which is the contract of the trusted entry.
+        let cap = unsafe { Capacity::from_validated_raw(count) };
+        Ok(Self {
+            len: self.len,
+            cap,
+            limit: self.limit,
+        })
+    }
     /// The same length and limit over `capacity`. Refuses a capacity below
-    /// the length or above the limit. It returns a new state instead of
-    /// changing this one, so that the owner can obtain it before it replaces
-    /// the storage and publish it afterwards without a second refusal.
+    /// the length or above the limit.
     #[inline(always)]
     #[cfg_attr(verus_keep_ghost, verus_spec(out =>
         ensures match out {

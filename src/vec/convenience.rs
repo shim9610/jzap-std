@@ -26,13 +26,15 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         // Keep the initialized address rather than reconstructing len-1 later.
         // SAFETY: spare slot, within the logical limit.
         let place = unsafe { self.ptr.as_ptr().add(self.extent.len()) };
-        // The length is admitted before the value moves, so that a refusal
-        // returns it. Nothing can observe the owner or unwind before the write.
-        if let Err(error) = self.extent.set_len_within(next.get()) {
-            return Err(Rejected { value, error });
-        }
         unsafe {
             place.write(value);
+        }
+        // The value is written before the length is stored: a push loop then
+        // advances one counter. A refused length leaves the slot unpublished.
+        if let Err(error) = self.extent.set_len_within(next.get()) {
+            // SAFETY: the slot was written above and is not part of the vector.
+            let value = unsafe { place.read() };
+            return Err(Rejected { value, error });
         }
         // SAFETY: just initialized, exclusively borrowed.
         Ok(unsafe { &mut *place })

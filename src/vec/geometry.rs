@@ -5,7 +5,7 @@ use vstd::prelude::*;
 
 #[inline]
 #[cfg_attr(verus_keep_ghost, verus_spec(out =>
-    requires current < needed <= limit,
+    requires needed <= limit,
     ensures match out {
         Ok(capacity) => needed <= capacity <= limit
             && capacity as int <= if size == 0 { usize::MAX as int }

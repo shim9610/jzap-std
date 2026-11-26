@@ -225,7 +225,7 @@ class Campaign:
 
 
 FOUNDATION_GROUPS=(
-    'arithmetic slot clone state budget '
+    'arithmetic slot clone state owner-extent budget '
     'vec-geometry vec-conversion layout vec-queries init-prefix '
     'buffer owner-metadata vec-cursors vec-layout-growth vec-compaction '
     'vec-compaction-values vec-extraction vec-extraction-values vec-splice-fill vec-staging '

@@ -44,16 +44,25 @@ BODIES = {
 
 BODIES.update({
     ('src/vec/edit.rs','fn fill('): """
-        let start=self.drain.owner.len;
+        let start=self.drain.owner.extent.length();
         let _=(Checked::new(self.drain.tail_start)-start).map_err(|_| Error::Bounds)?;
-        unsafe {crate::init::collection::fill(self.drain.owner.ptr,&mut self.drain.owner.len,self.drain.tail_start,&mut self.replacement,)}
+        let pointer=self.drain.owner.ptr;
+        let mut length=LentLength::new(&mut self.drain.owner.extent);
+        unsafe {crate::init::collection::fill(pointer,&mut length.cursor,self.drain.tail_start,&mut self.replacement,)}
         .map_err(InitError::Initialize)""",
     ('src/vec/edit.rs','fn stage_batch<'): """
         stage_push(extra,value).map_err(InitError::Storage)?;
         let end=extra.capacity();
-        if !unsafe {crate::init::collection::fill(extra.ptr,&mut extra.len,end,replacement)}
-            .map_err(InitError::Initialize)? {return Ok(None);}
+        let pointer=extra.ptr;
+        let mut length=LentLength::new(&mut extra.extent);
+        let filled=unsafe {crate::init::collection::fill(pointer,&mut length.cursor,end,replacement)};
+        drop(length);
+        if !filled.map_err(InitError::Initialize)? {return Ok(None);}
         replacement.try_next().map_err(InitError::Initialize)""",
+    # The owner's length is lent as a copy and published through the clamping
+    # transition when the borrower returns or unwinds.
+    ('src/vec/edit.rs',"fn new(extent: &'a mut crate::extent::Extent<T, L>) -> Self"): """
+        let cursor=extent.length(); Self {extent,cursor}""",
     ('src/init/collection.rs','unsafe fn write_next<T, I: TryIterator<Item = T>>('): """
         let value=iter.try_next().map_err(Stop::Source)?.ok_or(Stop::End)?;
         unsafe {ptr.as_ptr().add(index).write(value)}; Ok(())""",
@@ -94,3 +103,7 @@ def check(root):
         actual=block((root/file).read_text(),signature)
         actual=re.sub(r'//[^\n]*','',actual)
         assert compact(actual)==compact(expected), ('unbound collection extent' if file=='src/boxed/buffer.rs' and 'collect' in signature else 'initialization caller binding requires review',file,signature)
+    edit=(root/'src/vec/edit.rs').read_text()
+    assert edit.count('LentLength::new(')==2 and edit.count('LentLength {')==0, 'initialization caller binding requires review'
+    lent=edit[edit.index('Drop for LentLength'):]
+    assert compact(block(lent,'fn drop(&mut self)'))=='self.extent.set_len_clamped(self.cursor.get());', 'initialization caller binding requires review'

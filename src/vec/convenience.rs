@@ -91,7 +91,6 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     /// # Safety
     /// When growing to an in-bounds length, every new element must be initialized.
     pub unsafe fn try_set_len(&mut self, new_len: usize) -> Result<(), Error> {
-        required_len(0, new_len, self.extent.cap())?;
         self.extent.set_len_within(new_len)
     }
     /// Explicitly leak storage and its budget charge. The policy must outlive the
@@ -150,15 +149,18 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         let (start, end) = edit::checked_range(range, self.extent.len())?;
         let count = (Checked::new(end) - Checked::new(start)).map_err(|_| Error::Bounds)?;
         let needed = self.reserve_length(count.get())?;
+        // Admitted before the copy; a refusal changes nothing.
+        let original = self.extent.len();
+        self.extent.set_len_within(needed)?;
         // SAFETY: source lies in the original initialized prefix, destination after it.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 self.ptr.as_ptr().add(start),
-                self.ptr.as_ptr().add(self.extent.len()),
+                self.ptr.as_ptr().add(original),
                 count.get(),
             );
         }
-        self.extent.set_len_within(needed)
+        Ok(())
     }
     /// Owned-value resize matches std's n-1 clones followed by a move. Refusal
     /// returns the original input and rolls back the appended initialized suffix.
@@ -232,16 +234,15 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 });
             }
         };
-        // SAFETY: final reserved slot.
-        let place = unsafe { guard.owner.ptr.as_ptr().add(guard.owner.extent.len()) };
         // The length is admitted before the input moves, so that a refusal
         // returns it. Nothing can observe the owner or unwind before the write.
+        let index = guard.owner.extent.len();
         if let Err(error) = guard.owner.extent.set_len_within(next.get()) {
             return Err(Rejected { value, error });
         }
-        // SAFETY: admitted slot; move the input instead of cloning it.
+        // SAFETY: final admitted slot, move input instead of cloning it.
         unsafe {
-            place.write(value);
+            guard.owner.ptr.as_ptr().add(index).write(value);
         }
         mem::forget(guard);
         Ok(())
@@ -271,19 +272,19 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 error,
             });
         }
+        // Admitted before the transfer, so that a refusal returns the array.
+        if let Err(error) = result.extent.set_len_within(N) {
+            return Err(Rejected {
+                value: values,
+                error,
+            });
+        }
         let values = mem::ManuallyDrop::new(values);
-        // SAFETY: exact reserved destination; transfer array elements, no duplicate Drop.
+        // SAFETY: exact admitted destination; transfer array elements, no duplicate Drop.
         unsafe {
             core::ptr::copy_nonoverlapping(values.as_ptr(), result.ptr.as_ptr(), N);
         }
-        match result.extent.set_len_within(N) {
-            Ok(()) => Ok(result),
-            // The array still owns its elements: the copies stay unpublished.
-            Err(error) => Err(Rejected {
-                value: mem::ManuallyDrop::into_inner(values),
-                error,
-            }),
-        }
+        Ok(result)
     }
     pub fn try_from_slice_in(source: &[T], policy: P, limit: L) -> Result<Self, Error>
     where
@@ -430,6 +431,8 @@ impl<P: AllocationPolicy, L: LengthPolicy> Vec<u8, P, L> {
         // No fallible operation or user callback follows the reservation. Keep
         // a cursor into the reserved suffix and commit the checked length once.
         let mut destination = unsafe { self.ptr.as_ptr().add(self.extent.len()) };
+        // Admitted before the copies; a refusal changes nothing.
+        self.extent.set_len_within(needed)?;
         for part in parts {
             // SAFETY: total space reserved, disjoint input borrows.
             unsafe {
@@ -439,7 +442,6 @@ impl<P: AllocationPolicy, L: LengthPolicy> Vec<u8, P, L> {
             // the one-past destination after the final copy.
             destination = unsafe { destination.add(part.len()) };
         }
-        self.extent.set_len_within(needed)?;
         Ok(total.get())
     }
     /// Roll back appended bytes on formatting/storage failure, including when a

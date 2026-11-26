@@ -107,7 +107,7 @@ def main():
    ('peek-hidden-tail','src/collections/binary_heap.rs','core::set_len(&mut self.heap.data, len.get())','core::set_len(&mut self.heap.data, 1)','peek_mut_pop_read_mutation_forget_and_drain'),
    ('drain-double-owner','src/collections/binary_heap/iter.rs','super::core::set_len(&mut heap.data, 0)','super::core::set_len(&mut heap.data, 1)','peek_mut_pop_read_mutation_forget_and_drain'),
    ('append-ledger-identity','src/budget.rs','=> core::ptr::eq(a, b)', '=> true','metered_append_preserves_policy_handles_and_concurrent_domains'),
-   ('append-policy-handle','src/vec.rs','mem::swap(&mut self.cap, &mut other.cap);','mem::swap(&mut self.cap, &mut other.cap); mem::swap(&mut self.policy, &mut other.policy);', 'metered_append_preserves_policy_handles_and_concurrent_domains'),
+   ('append-policy-handle','src/vec.rs','mem::swap(&mut self.extent, &mut other.extent);','mem::swap(&mut self.extent, &mut other.extent); mem::swap(&mut self.policy, &mut other.policy);', 'metered_append_preserves_policy_handles_and_concurrent_domains'),
    ('append-exact-headroom','src/vec.rs','other.try_reserve_exact(self.len())?;','other.try_reserve(self.len())?;', 'metered_append_exact_growth_preserves_admission_and_refusal'),
    ('append-original-spare','src/vec.rs','if self.capacity() >= needed {','if false {', 'metered_append_keeps_original_spare_capacity_and_distinct_limits'),
    ('append-error-propagation','src/collections/binary_heap.rs','let reused = self.data.try_reuse_larger_buffer(&mut other.data)?;', 'let reused = self.data.try_reuse_larger_buffer(&mut other.data).unwrap_or(false);', 'metered_append_exact_growth_preserves_admission_and_refusal')]

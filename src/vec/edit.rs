@@ -538,20 +538,14 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
         self.move_tail(additional)?;
         let next =
             (self.drain.owner.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;
-        // SAFETY: move_tail created at least one uninitialized slot.
-        let place = unsafe {
-            self.drain
-                .owner
-                .ptr
-                .as_ptr()
-                .add(self.drain.owner.extent.len())
-        };
         // The length is admitted before the value moves; a refusal drops it
         // like the refusals above. Nothing can unwind before the write.
+        let index = self.drain.owner.extent.len();
         self.drain.owner.extent.set_len_within(next.get())?;
-        // SAFETY: the admitted slot.
+        // SAFETY: move_tail created at least one uninitialized slot, which
+        // the admitted length now holds.
         unsafe {
-            place.write(first);
+            self.drain.owner.ptr.as_ptr().add(index).write(first);
         }
         if !self.fill()? {
             return Ok(());
@@ -609,6 +603,10 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
             .map_err(|_| Error::Capacity)?;
         let next_len = (self.drain.owner.extent.length() + extra.extent.length())
             .map_err(|_| Error::Capacity)?;
+        // Admitted before the moves: a refusal leaves the tail in place and the
+        // staged values owned by `extra`.
+        let gap = self.drain.owner.extent.len();
+        self.drain.owner.extent.set_len_within(next_len.get())?;
         // SAFETY: storage includes tail and extra; shift tail right once, then move
         // staging ownership into the gap. No user code between the state updates.
         unsafe {
@@ -619,17 +617,11 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
             );
             core::ptr::copy_nonoverlapping(
                 extra.ptr.as_ptr(),
-                self.drain
-                    .owner
-                    .ptr
-                    .as_ptr()
-                    .add(self.drain.owner.extent.len()),
+                self.drain.owner.ptr.as_ptr().add(gap),
                 extra.extent.len(),
             );
         }
         self.drain.tail_start = next_tail.get();
-        // A refusal leaves the staged values owned by `extra`.
-        self.drain.owner.extent.set_len_within(next_len.get())?;
         extra.extent.shorten_to(0);
         Ok(())
     }
@@ -733,12 +725,11 @@ fn stage_push<T, P: AllocationPolicy>(
 ) -> Result<usize, Error> {
     let next = (extra.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;
     extra.try_reserve(1)?;
-    // SAFETY: reservation admits the owner's unwritten next slot.
-    let place = unsafe { extra.ptr.as_ptr().add(extra.extent.len()) };
     // The length is admitted before the value moves; a refusal drops it like
     // the refusals above. Nothing can unwind before the write.
+    let index = extra.extent.len();
     extra.extent.set_len_within(next.get())?;
-    // SAFETY: the admitted slot.
-    unsafe { place.write(value) };
+    // SAFETY: the admitted length holds the owner's unwritten next slot.
+    unsafe { extra.ptr.as_ptr().add(index).write(value) };
     Ok(extra.capacity())
 }

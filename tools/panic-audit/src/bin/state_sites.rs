@@ -266,6 +266,19 @@ impl<'a> Visit<'a> for Census {
                 json!({"method":n.method.to_string()}),
             );
         }
+        // The transitions of the closed owner extent: the only way a caller
+        // changes or replaces the length, capacity and limit words.
+        if [
+            "set_len_within",
+            "set_len_clamped",
+            "shorten_to",
+            "holding",
+            "resized",
+        ]
+        .contains(&n.method.to_string().as_str())
+        {
+            self.record("extent_transition",n,n.span(),json!({"method":n.method.to_string(),"receiver":n.receiver.to_token_stream().to_string(),"arguments":n.args.to_token_stream().to_string()}));
+        }
         if ["resize_storage", "grow_to"].contains(&n.method.to_string().as_str()) {
             self.record("private_helper",n,n.span(),json!({"method":n.method.to_string(),"receiver":n.receiver.to_token_stream().to_string(),"arguments":n.args.to_token_stream().to_string()}));
         }

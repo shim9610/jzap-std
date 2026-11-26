@@ -28,7 +28,7 @@ def generate(root):
     available=block(edit,'fn stage_excess(')
     formula=re.search(r'let available = (.*?)\s*\.get\(\);',available,re.S).group(1)
     available_formula=formula
-    assert compact(formula)=='((Checked::new(self.drain.owner.max_len())-self.drain.owner.len).map_err(|_|Error::Capacity)?-Checked::new(self.drain.tail_len)).map_err(|_|Error::Capacity)?'
+    assert compact(formula)=='((Checked::new(self.drain.owner.max_len())-self.drain.owner.extent.length()).map_err(|_|Error::Capacity)?-Checked::new(self.drain.tail_len)).map_err(|_|Error::Capacity)?'
     values['HOLE_AVAILABLE']='h.limit-h.len-h.tail_len'
     bind('hole_available','src/vec/edit.rs','stage_excess',formula)
 
@@ -48,15 +48,20 @@ def generate(root):
     values['HOLE_MOVE']=move;bind('hole_move','src/vec/edit.rs','move_tail',move)
 
     restore=block(edit,'fn restore_tail(')
-    formula=re.search(r'self.owner.len = Checked::new\((.*?)\);',restore,re.S).group(1)
-    values['HOLE_RESTORE']=bounded_projection(formula).replace('self.owner.len.get()','h.len').replace('self.tail_len','h.tail_len')
+    # The length transitions are lowered to their verified results: a clamp
+    # to the capacity, a refusal above it, and a length that never grows.
+    formula=re.search(r'self\s*\.owner\s*\.extent\s*\.set_len_clamped\((.*?)\);',clean(restore),re.S).group(1)
+    restored=bounded_projection(formula).replace('self.owner.extent.len()','h.len').replace('self.tail_len','h.tail_len')
+    restored=re.sub(r',\s*\)',')',restored.strip())
+    values['HOLE_RESTORE']='(if '+restored+'<=h.cap{'+restored+'}else{h.cap})'
     bind('hole_restore','src/vec/edit.rs','restore_tail',formula)
 
     drain=block(edit,'pub fn try_drain(')
-    assert 'checked_range(range, self.len.get())?' in drain
-    values['DRAIN_TAIL']=re.search(r'let tail_len = \(self.len - Checked::new\((.*?)\)\)',drain).group(1)
+    assert 'checked_range(range, self.extent.len())?' in drain
+    values['DRAIN_TAIL']=re.search(r'let tail_len = \(self.extent.length\(\) - Checked::new\((.*?)\)\)',drain).group(1)
     values['DRAIN_TAIL']='len-('+values['DRAIN_TAIL']+')'
-    values['DRAIN_LENGTH']=re.search(r'self.len = Checked::new\((.*?)\)',drain).group(1)
+    shortened=re.search(r'self.extent.shorten_to\((.*?)\)',drain).group(1)
+    values['DRAIN_LENGTH']='(if '+shortened+'<=len{'+shortened+'}else{len})'
     values['DRAIN_START']=re.search(r'tail_start:\s*(\w+)',drain).group(1)
     bind('drain_constructor','src/vec/edit.rs','try_drain',drain)
 
@@ -64,23 +69,26 @@ def generate(root):
     # Keep the entire real post-collection control flow, including the exact
     # growth condition and all state publications after the two transfers.
     stage=stage[stage.index('let total = required_len('):]
-    stage=replace_once(stage,'let total = required_len(self.drain.owner.len.get(),self.drain.tail_len,self.drain.owner.max_len(),)?;',
+    stage=replace_once(stage,'let total = required_len(self.drain.owner.extent.len(),self.drain.tail_len,self.drain.owner.max_len(),)?;',
         'let Ok(total)=needed_length(h.len,h.tail_len,h.limit) else{return false;};')
-    stage=replace_once(stage,'let needed = required_len(total, extra.len.get(), self.drain.owner.max_len())?;',
+    stage=replace_once(stage,'let needed = required_len(total, extra.extent.len(), self.drain.owner.max_len())?;',
         'let Ok(needed)=needed_length(total,extra_len,h.limit) else{return false;};')
-    stage=replace_once(stage,'self.drain.owner.grow((Checked::new(needed)-self.drain.owner.len).map_err(|_|Error::Capacity)?.get(),self.drain.owner.cap.get()!=initial_capacity,)?;',
+    stage=replace_once(stage,'self.drain.owner.grow((Checked::new(needed)-self.drain.owner.extent.length()).map_err(|_|Error::Capacity)?.get(),self.drain.owner.extent.cap()!=initial_capacity,)?;',
         'let additional=needed-h.len; if !hole_reserve(h,size,additional,h.cap!=initial_capacity,accepted){return false;}')
-    stage=replace_once(stage,'let next_tail = (Checked::new(self.drain.tail_start) + extra.len).map_err(|_| Error::Capacity)?;',
+    stage=replace_once(stage,'let next_tail = (Checked::new(self.drain.tail_start) + extra.extent.length()).map_err(|_| Error::Capacity)?;',
         'let Some(next_tail)=h.tail.checked_add(extra_len) else{return false;};')
-    stage=replace_once(stage,'let next_len = (self.drain.owner.len + extra.len).map_err(|_| Error::Capacity)?;',
+    stage=replace_once(stage,'let next_len = (self.drain.owner.extent.length() + extra.extent.length()).map_err(|_| Error::Capacity)?;',
         'let Some(next_len)=h.len.checked_add(extra_len) else{return false;};')
+    # The length is admitted before the two transfers, which use the old one.
+    stage=replace_once(stage,'let gap = self.drain.owner.extent.len();','let gap=h.len;')
+    stage=replace_once(stage,'self.drain.owner.extent.set_len_within(next_len.get())?;',
+        'if next_len>h.cap{return false;} h.len=next_len;')
     pointer=block(stage,'unsafe')
-    assert compact(pointer)=='core::ptr::copy(self.drain.owner.ptr.as_ptr().add(self.drain.tail_start),self.drain.owner.ptr.as_ptr().add(next_tail.get()),self.drain.tail_len,);core::ptr::copy_nonoverlapping(extra.ptr.as_ptr(),self.drain.owner.ptr.as_ptr().add(self.drain.owner.len.get()),extra.len.get(),);'
+    assert compact(pointer)=='core::ptr::copy(self.drain.owner.ptr.as_ptr().add(self.drain.tail_start),self.drain.owner.ptr.as_ptr().add(next_tail.get()),self.drain.tail_len,);core::ptr::copy_nonoverlapping(extra.ptr.as_ptr(),self.drain.owner.ptr.as_ptr().add(gap),extra.extent.len(),);'
     stage=replace_once(stage,'unsafe {'+pointer+'}',
-        'staged_splice_before_moves(h.len,h.tail,h.tail_len,extra_len,h.cap,size); proof {memory_span(extra_cap,size,0,extra_len as int);}')
-    stage=stage.replace('self.drain.owner.cap.get()','h.cap').replace('self.drain.tail_start = next_tail.get();','h.tail=next_tail;')
-    stage=stage.replace('self.drain.owner.len = next_len;','h.len=next_len;')
-    stage=replace_once(stage,'extra.len = Checked::new(0);','let extra_len=0usize;')
+        'staged_splice_before_moves(gap,h.tail,h.tail_len,extra_len,h.cap,size); proof {memory_span(extra_cap,size,0,extra_len as int);}')
+    stage=stage.replace('self.drain.owner.extent.cap()','h.cap').replace('self.drain.tail_start = next_tail.get();','h.tail=next_tail;')
+    stage=replace_once(stage,'extra.extent.shorten_to(0);','let extra_len=0usize;')
     stage=replace_once(stage,'Ok(())','true')
     values['STAGE_COMMIT']=stage;bind('stage_commit','src/vec/edit.rs','stage_excess',stage)
 
@@ -114,26 +122,29 @@ def generate(root):
         'let Some(reserve)=h.tail_len.checked_add(1) else{return false;};')
     finish=replace_once(finish,'self.drain.owner.try_reserve(reserve.get())?;',
         'if !hole_reserve(h,size,reserve,false,alloc(h.len)){return false;}')
-    finish=replace_once(finish,'((self.drain.owner.cap - self.drain.owner.len).map_err(|_| Error::Capacity)? - Checked::new(self.drain.tail_len)).map_err(|_| Error::Capacity)?.get()',
+    finish=replace_once(finish,'((self.drain.owner.extent.capacity() - self.drain.owner.extent.length()).map_err(|_| Error::Capacity)? - Checked::new(self.drain.tail_len)).map_err(|_| Error::Capacity)?.get()',
         'h.cap-h.len-h.tail_len')
     finish=replace_once(finish,'self.move_tail(additional)?;',
         'if !hole_move(h,size,additional,move_accepts){return false;}')
-    finish=replace_once(finish,'let next = (self.drain.owner.len + Checked::new(1)).map_err(|_| Error::Capacity)?;',
+    finish=replace_once(finish,'let next = (self.drain.owner.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;',
         'let Some(next)=h.len.checked_add(1) else{return false;};')
+    # The length is admitted, then the value moves into the slot at the old
+    # length.
+    finish=replace_once(finish,'let index = self.drain.owner.extent.len();','let index=h.len;')
+    finish=replace_once(finish,'self.drain.owner.extent.set_len_within(next.get())?;','if next>h.cap{return false;} h.len=next;')
     pointer=block(finish,'unsafe')
-    assert compact(pointer)=='self.drain.owner.ptr.as_ptr().add(self.drain.owner.len.get()).write(first);'
-    finish=replace_once(finish,'unsafe {'+pointer+'}','let _=observed_element(h.cap,size,h.len);')
-    finish=finish.replace('self.drain.owner.cap.get()','h.cap').replace('self.drain.tail_len','h.tail_len')
-    finish=finish.replace('self.drain.owner.len = next;','h.len=next;')
+    assert compact(pointer)=='self.drain.owner.ptr.as_ptr().add(index).write(first);'
+    finish=replace_once(finish,'unsafe {'+pointer+'}','let _=observed_element(h.cap,size,index);')
+    finish=finish.replace('self.drain.owner.extent.cap()','h.cap').replace('self.drain.tail_len','h.tail_len')
     finish=replace_once(finish,'self.stage_excess(first, initial_capacity)',
         'stage_operation(h,size,initial_capacity,cb,alloc,stage_accepts)')
     finish=finish.replace('return Ok(());','return true;').replace('return Err(InitError::Storage(Error::Capacity));','return false;')
     values['SPLICE_OPERATION']=finish;bind('splice_operation','src/vec/edit.rs','try_finish',finish)
 
     initialize=clean(block(vector,'pub fn try_resize_with_init'))
-    loop=block(initialize,'while guard.owner.len.get() < new_len')
-    loop=replace_once(loop,'let index = guard.owner.len.get();','let index=state.len;')
-    loop=replace_once(loop,'let next = (guard.owner.len + Checked::new(1)).map_err(|_| InitError::Storage(Error::Capacity))?;',
+    loop=block(initialize,'while guard.owner.extent.len() < new_len')
+    loop=replace_once(loop,'let index = guard.owner.extent.len();','let index=state.len;')
+    loop=replace_once(loop,'let next = (guard.owner.extent.length() + Checked::new(1)).map_err(|_| InitError::Storage(Error::Capacity))?;',
         'let Some(next)=state.len.checked_add(1) else{state.len=original;return (false,state);};')
     loop=replace_once(loop,'let ptr = unsafe { NonNull::new_unchecked(guard.owner.ptr.as_ptr().add(index)) };',
         'let ptr=observed_element(state.cap,size,index);')
@@ -141,11 +152,15 @@ def generate(root):
     loop=replace_once(loop,'initialize(index, &mut slot).map_err(InitError::Initialize)?;',
         'let reply=cb(index); if reply!=1{state.len=original;return (false,state);}')
     loop=replace_once(loop,'slot.finish().map_err(InitError::Storage)?;','assert(reply==1);')
-    loop=replace_once(loop,'guard.owner.len = next;','state.len=next;')
+    loop=replace_once(loop,'guard.owner.extent.set_len_within(next.get()).map_err(InitError::Storage)?;',
+        'if next>state.cap{state.len=original;return (false,state);} state.len=next;')
+    # The reservation is compared with the capacity once before the loop.
+    assert compact(initialize).count('ifnew_len>self.extent.cap(){returnErr(InitError::Storage(Error::Capacity));}letoriginal=self.extent.len();')==1
     values['INITIALIZED_OPERATION']='''if target<=s.len{return (true,OwnerState{len:target,..s});}
         let additional=target-s.len;let original=s.len;
         let Some((mut state,needed))=reserve_owner(s,size,additional,false,accepted) else{return (false,s);};
         assert(needed==target);
+        if target>state.cap{return (false,state);}
         while state.len<target
             invariant owner_valid(state,size),original==s.len,original<=state.len<=target<=state.cap,
                 state.limit==s.limit,forall|i:usize| call_requires(*cb,(i,)),

@@ -28,7 +28,7 @@ def main():
     before = fingerprint(); results = []
     for name, file, marker, old, new, test, expected in [
         ("overlapping_split", "src/vec/convenience.rs", "pub fn split_at_spare_mut(",
-         "self.ptr.as_ptr().add(self.len.get()).cast()", "self.ptr.as_ptr().add(0).cast()",
+         "self.ptr.as_ptr().add(self.extent.len()).cast()", "self.ptr.as_ptr().add(0).cast()",
          "split_borrows_reallocation_and_noncopy_values_keep_distinct_ownership", ["borrow", "tag", "permission"]),
         ("uninitialized_slot", "src/init.rs", "pub fn get(",
          "if self.initialized {", "if !self.initialized {",

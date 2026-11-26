@@ -57,6 +57,12 @@ def check(source_root, out):
 
     replacements = {
         "self . drain . owner . max_len ()": "limit",
+        # The owner's words are read through the getters of its closed extent.
+        "self . drain . owner . extent . length ()": "owner_len",
+        "self . drain . owner . extent . capacity ()": "cap",
+        "guard . owner . extent . length ()": "len",
+        "extra . extent . length ()": "extra_len",
+        "self . extent . capacity ()": "cap", "self . extent . length ()": "len",
         "self . drain . owner . len": "owner_len",
         "self . drain . owner . cap": "cap",
         "self . drain . tail_start": "tail_start",
@@ -116,51 +122,51 @@ def check(source_root, out):
     vector_queries=(source_root/"src/vec.rs").read_text()
     convenience_queries=(source_root/"src/vec/convenience.rs").read_text()
     compact_query=lambda text: re.sub(r"\s+","",re.sub(r"//[^\n]*","",text))
-    assert compact_query(body(vector_queries,"pub fn remaining_limit("))=="crate::arithmetic::bounded::wrapping_sub(self.max_len(),self.len.get())", "Unbound remaining-limit query"
+    assert compact_query(body(vector_queries,"pub fn remaining_limit("))=="crate::arithmetic::bounded::wrapping_sub(self.max_len(),self.extent.len())", "Unbound remaining-limit query"
     spare_body=compact_query(body(convenience_queries,"pub fn spare_capacity_mut("))
     split_body=compact_query(body(convenience_queries,"pub fn split_at_spare_mut("))
-    suffix="core::slice::from_raw_parts_mut(self.ptr.as_ptr().add(self.len.get()).cast(),crate::arithmetic::bounded::wrapping_sub(self.cap.get(),self.len.get()),)"
+    suffix="core::slice::from_raw_parts_mut(self.ptr.as_ptr().add(self.extent.len()).cast(),crate::arithmetic::bounded::wrapping_sub(self.extent.cap(),self.extent.len()),)"
     assert spare_body=="unsafe{"+suffix+"}", "Unbound spare-capacity query"
-    assert split_body=="unsafe{(core::slice::from_raw_parts_mut(self.ptr.as_ptr(),self.len.get()),"+suffix+",)}", "Unbound spare partition query"
+    assert split_body=="unsafe{(core::slice::from_raw_parts_mut(self.ptr.as_ptr(),self.extent.len()),"+suffix+",)}", "Unbound spare partition query"
     bindings["DIRECT_VEC_SCALAR_QUERIES"]=dict(
         related_proofs="Original bounded::wrapping_sub, original length policies, and vec::query_proofs::every_valid_zst_owner_query_and_spare_partition",
         boundary="All-word numeric queries and actual ZST owner states; nonzero-element provenance/aliasing remain with the existing physical scenarios.")
     ranges=pick("src/vec/convenience.rs","try_extend_from_within","Checked :: new (end)")+pick("src/vec/convenience.rs","try_extend_copy_from_within","Checked :: new (end)")
     projected("INTERNAL_RANGE_LENGTH",ranges)
     projected("CLONE_INPUT_OFFSET",pick("src/vec.rs","try_extend_cloned","Checked :: new (index)"))
-    projected("SPLIT_LENGTH",pick("src/vec.rs","try_split_off","self . len -"))
-    projected("DRAIN_TAIL_LENGTH",pick("src/vec/edit.rs","try_drain","self . len -"))
+    projected("SPLIT_LENGTH",pick("src/vec.rs","try_split_off","self . extent . length () -"))
+    projected("DRAIN_TAIL_LENGTH",pick("src/vec/edit.rs","try_drain","self . extent . length () -"))
     layout=body((source_root/"src/layout.rs").read_text(),"pub fn array<T>(")
     expected="letsize=core::mem::size_of::<T>();letbytes=numeric::array_bytes(count,size)?;Layout::from_size_align(bytes,core::mem::align_of::<T>()).map_err(|_|Error::Layout)"
     assert re.sub(r"\s+","",re.sub(r"//[^\n]*","",layout))==expected, "Unbound actual array-layout numeric arguments"
     vector=(source_root/"src/vec.rs").read_text()
     split=body(vector,"pub fn try_split_off(")
-    bindings["SPLIT_REJECT"]=dict(expression=re.search(r"if (.*?) \{",split,re.S).group(1).replace("self.len.get()","len"))
+    bindings["SPLIT_REJECT"]=dict(expression=re.search(r"if (.*?) \{",split,re.S).group(1).replace("self.extent.len()","len"))
     reserve_sites=[]
     for fn in ["try_reserve","try_reserve_exact"]:
         method=body(vector,"pub fn "+fn+"(")
         assert "if additional > spare.get()" in method
-        reserve_sites+=pick("src/vec.rs",fn,"self . cap -")
+        reserve_sites+=pick("src/vec.rs",fn,"self . extent . capacity () -")
     bindings["RESERVE_GROW"]=dict(sites=reserve_sites,expression="additional > ("+normalized(reserve_sites[0]["expression"])+")")
     convenience=(source_root/"src/vec/convenience.rs").read_text()
     owned=body(convenience,"pub fn try_resize_owned(")
     condition=re.search(r"if (.*?) \{",owned,re.S).group(1)
-    bindings["RESIZE_SHRINK"]=dict(expression=condition.replace("new_len","target").replace("self.len.get()","len"))
+    bindings["RESIZE_SHRINK"]=dict(expression=condition.replace("new_len","target").replace("self.extent.len()","len"))
     projected("RESIZE_ADDITIONAL",pick("src/vec/convenience.rs","try_resize_owned","Checked :: new (new_len) - self"))
     condition=re.search(r"while (.*?) \{",owned,re.S).group(1)
-    bindings["OWNED_RESIZE_GUARD"]=dict(expression=condition.replace("guard.owner.len.get()","len").replace("last","(target - 1)"),sites=pick("src/vec/convenience.rs","try_resize_owned","Checked :: new (new_len) - Checked :: new (1)"))
-    rows=pick("src/vec/convenience.rs","try_resize_owned","guard . owner . len +",2)
+    bindings["OWNED_RESIZE_GUARD"]=dict(expression=condition.replace("guard.owner.extent.len()","len").replace("last","(target - 1)"),sites=pick("src/vec/convenience.rs","try_resize_owned","Checked :: new (new_len) - Checked :: new (1)"))
+    rows=pick("src/vec/convenience.rs","try_resize_owned","guard . owner . extent . length () +",2)
     projected("OWNED_RESIZE_ADVANCE",rows,assignment="len")
     projected("OWNED_RESIZE_FINAL",rows,assignment="len",index=1)
-    projected("WITHIN_ADVANCE",pick("src/vec/convenience.rs","try_extend_from_within","guard . owner . len +"),assignment="len")
+    projected("WITHIN_ADVANCE",pick("src/vec/convenience.rs","try_extend_from_within","guard . owner . extent . length () +"),assignment="len")
     normal_resize=body(vector,"pub fn try_resize_with_init<E>(")
     condition=re.search(r"if (.*?) \{",normal_resize,re.S).group(1)
-    bindings["INIT_RESIZE_SHRINK"]=dict(expression=condition.replace("new_len","target").replace("self.len.get()","len"))
+    bindings["INIT_RESIZE_SHRINK"]=dict(expression=condition.replace("new_len","target").replace("self.extent.len()","len"))
     condition=re.search(r"while (.*?) \{",normal_resize,re.S).group(1)
-    bindings["INIT_RESIZE_GUARD"]=dict(expression=condition.replace("guard.owner.len.get()","len").replace("new_len","target"))
+    bindings["INIT_RESIZE_GUARD"]=dict(expression=condition.replace("guard.owner.extent.len()","len").replace("new_len","target"))
     projected("INIT_RESIZE_ADDITIONAL",pick("src/vec.rs","try_resize_with_init","Checked :: new (new_len)"))
-    projected("INIT_RESIZE_ADVANCE",pick("src/vec.rs","try_resize_with_init","guard . owner . len +"),assignment="len")
-    assert normal_resize.index("initialize(index, &mut slot)") < normal_resize.index("slot.finish()") < normal_resize.index("guard.owner.len = next;")
+    projected("INIT_RESIZE_ADVANCE",pick("src/vec.rs","try_resize_with_init","guard . owner . extent . length () +"),assignment="len")
+    assert normal_resize.index("initialize(index, &mut slot)") < normal_resize.index("slot.finish()") < normal_resize.index(".set_len_within(next.get())")
     # The native UTF-8 cursor still has a maximum of four encoded bytes.
     projected("UTF8_ADVANCE",pick("src/boxed/text.rs","try_next","self . position"),assignment="position")
     projected("UTF8_REMAINING",pick("src/boxed/text.rs","try_size_hint","self . len -"))
@@ -177,13 +183,13 @@ def check(source_root, out):
     init_bindings(source_root)
     bindings['DIRECT_SPLICE_FILL']=dict(sites=pick('src/vec/edit.rs','fill','Checked :: new (self . drain . tail_start) -'),
         related_proofs='Original initialization cursor and actual all-word Splice hole/tail adapter; no fill-loop or increment projection')
-    projected("SPLICE_ADVANCE_ONE",pick("src/vec/edit.rs","try_finish","self . drain . owner . len +"),assignment="owner_len")
+    projected("SPLICE_ADVANCE_ONE",pick("src/vec/edit.rs","try_finish","self . drain . owner . extent . length () +"),assignment="owner_len")
     projected("STAGED_GROWTH_COUNT",pick("src/vec/edit.rs","stage_excess","Checked :: new (needed) -"))
     # The staged leaf owns its length increment since the executable staging controller.
-    projected("EXCESS_ADVANCE",pick("src/vec/edit.rs","stage_push","extra . len +"),assignment="extra_len")
+    projected("EXCESS_ADVANCE",pick("src/vec/edit.rs","stage_push","extra . extent . length () +"),assignment="extra_len")
     projected("STAGED_TAIL_DESTINATION",pick("src/vec/edit.rs","stage_excess","Checked :: new (self . drain . tail_start) +"))
     projected("STAGED_TAIL_ADVANCE",pick("src/vec/edit.rs","stage_excess","Checked :: new (self . drain . tail_start) +"),assignment="tail_start")
-    projected("STAGED_OWNER_ADVANCE",pick("src/vec/edit.rs","stage_excess","self . drain . owner . len +"),assignment="owner_len")
+    projected("STAGED_OWNER_ADVANCE",pick("src/vec/edit.rs","stage_excess","self . drain . owner . extent . length () +"),assignment="owner_len")
     # The representation has closed constructor/transition proofs, so bind the
     # shared arithmetic once rather than reintroducing every old cursor formula.
     state_out=out/"closed-state-types"
@@ -270,10 +276,10 @@ def main():
         return code
     results = []
     cases = [
-        ("within_advance", "vec/convenience.rs", "(guard.owner.len + Checked::new(1))", "(guard.owner.len + Checked::new(2))"),
+        ("within_advance", "vec/convenience.rs", "(guard.owner.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;", "(guard.owner.extent.length() + Checked::new(2)).map_err(|_| Error::Capacity)?;"),
         ("utf8_advance", "boxed/text.rs", "self.position = wrapping_add(self.position, 1);", "self.position = wrapping_add(self.position, 2);"),
-        ("staged_owner_length", "vec/edit.rs", "self.drain.owner.len + extra.len",
-         "self.drain.owner.len + Checked::new(1)"),
+        ("staged_owner_length", "vec/edit.rs", "(self.drain.owner.extent.length() + extra.extent.length())",
+         "(self.drain.owner.extent.length() + Checked::new(1))"),
     ]
     for name, file, old, new in cases:
         with tempfile.TemporaryDirectory(prefix="jzap-panic-state-") as tmp:

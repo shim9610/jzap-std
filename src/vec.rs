@@ -460,31 +460,36 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         T: Copy,
     {
         let needed = self.reserve_length(source.len())?;
-        // SAFETY: disjoint borrowed input and reserved unwritten suffix.
+        // The length is admitted before the copy: a refusal changes nothing,
+        // and nothing can observe the owner or unwind before the copy ends.
+        let start = self.extent.len();
+        self.extent.set_len_within(needed)?;
+        // SAFETY: disjoint borrowed input and admitted unwritten suffix.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 source.as_ptr(),
-                self.ptr.as_ptr().add(self.extent.len()),
+                self.ptr.as_ptr().add(start),
                 source.len(),
             )
         };
-        self.extent.set_len_within(needed)
+        Ok(())
     }
     pub fn try_append<Q: AllocationPolicy, M: LengthPolicy>(
         &mut self,
         other: &mut Vec<T, Q, M>,
     ) -> Result<(), Error> {
         let needed = self.reserve_length(other.extent.len())?;
+        // Admitted before the copy; a refusal leaves both owners unchanged.
+        let start = self.extent.len();
+        self.extent.set_len_within(needed)?;
         // SAFETY: exclusive distinct owners; destination has enough unused slots.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 other.ptr.as_ptr(),
-                self.ptr.as_ptr().add(self.extent.len()),
+                self.ptr.as_ptr().add(start),
                 other.extent.len(),
             )
         };
-        // A refusal leaves the copied values owned by `other`.
-        self.extent.set_len_within(needed)?;
         other.extent.shorten_to(0);
         Ok(())
     }
@@ -525,12 +530,12 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             .get();
         let mut tail = Self::empty(self.policy.try_clone()?, self.extent.limit());
         tail.try_reserve_exact(len)?;
+        // Admitted before the copy; a refusal leaves this vector unchanged.
+        tail.extent.set_len_within(len)?;
         // SAFETY: fresh disjoint storage; transfer the initialized suffix once.
         unsafe {
             core::ptr::copy_nonoverlapping(self.ptr.as_ptr().add(at), tail.ptr.as_ptr(), len)
         };
-        // A refusal leaves the copied values owned by this vector.
-        tail.extent.set_len_within(len)?;
         self.extent.shorten_to(at);
         Ok(tail)
     }
@@ -612,17 +617,20 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             // primitives) are copied once instead of initializing each element
             // through a slot (one call per element and per array item).
             let needed = self.reserve_length(source.len())?;
+            // Admitted before the copy; a refusal changes nothing.
+            let start = self.extent.len();
+            self.extent.set_len_within(needed)?;
             // SAFETY: the private witness permits bitwise duplication of the
             // initialized source; the borrowed input is disjoint from the
-            // reserved unwritten suffix, which then becomes initialized.
+            // admitted unwritten suffix, which the copy initializes.
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     source.as_ptr(),
-                    self.ptr.as_ptr().add(self.extent.len()),
+                    self.ptr.as_ptr().add(start),
                     source.len(),
                 )
             };
-            return self.extent.set_len_within(needed);
+            return Ok(());
         }
         let start = self.extent.len();
         self.try_resize_with_init(end, |index, slot| {
@@ -838,8 +846,9 @@ unsafe fn grow_for_push<T, L: LengthPolicy>(
     let new = if extent.cap() == 0 {
         storage::allocate(new_layout, budget)?
     } else {
+        let layout = extent.capacity().layout();
         // SAFETY: caller's unique allocation, same alignment, initialized prefix retained.
-        unsafe { storage::reallocate(ptr.cast(), extent.capacity().layout(), new_layout, budget) }?
+        unsafe { storage::reallocate(ptr.cast(), layout, new_layout, budget) }?
     };
     *ptr = new.cast();
     *extent = grown;

@@ -5,7 +5,7 @@ use core::{mem::MaybeUninit, ops::RangeBounds};
 impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     #[inline]
     pub fn try_push_mut(&mut self, value: T) -> Result<&mut T, Rejected<T>> {
-        let index = self.extent.len();
+        let index = self.len.get();
         self.try_push(value)?;
         // SAFETY: successful push initialized the final element.
         Ok(unsafe { &mut *self.ptr.as_ptr().add(index) })
@@ -17,7 +17,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     }
     /// Never allocates. The configured limit still applies (cap <= max_len).
     pub fn push_within_capacity(&mut self, value: T) -> Result<&mut T, Rejected<T>> {
-        let next = match geometry::append_cursor(self.extent.length(), self.extent.cap()) {
+        let next = match geometry::append_cursor(self.len, self.cap.get()) {
             Ok(next) => next,
             Err(error) => {
                 return Err(Rejected { value, error });
@@ -25,17 +25,11 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         };
         // Keep the initialized address rather than reconstructing len-1 later.
         // SAFETY: spare slot, within the logical limit.
-        let place = unsafe { self.ptr.as_ptr().add(self.extent.len()) };
+        let place = unsafe { self.ptr.as_ptr().add(self.len.get()) };
         unsafe {
             place.write(value);
         }
-        // The value is written before the length is stored: a push loop then
-        // advances one counter. A refused length leaves the slot unpublished.
-        if let Err(error) = self.extent.set_len_within(next.get()) {
-            // SAFETY: the slot was written above and is not part of the vector.
-            let value = unsafe { place.read() };
-            return Err(Rejected { value, error });
-        }
+        self.len = next;
         // SAFETY: just initialized, exclusively borrowed.
         Ok(unsafe { &mut *place })
     }
@@ -63,14 +57,14 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         &self.policy
     }
     pub fn length_policy(&self) -> L {
-        self.extent.limit()
+        self.limit
     }
     pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
         // SAFETY: uniquely borrowed uninitialized suffix, with validated layout.
         unsafe {
             core::slice::from_raw_parts_mut(
-                self.ptr.as_ptr().add(self.extent.len()).cast(),
-                crate::arithmetic::bounded::wrapping_sub(self.extent.cap(), self.extent.len()),
+                self.ptr.as_ptr().add(self.len.get()).cast(),
+                crate::arithmetic::bounded::wrapping_sub(self.cap.get(), self.len.get()),
             )
         }
     }
@@ -78,10 +72,10 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         // SAFETY: initialized prefix and spare suffix are disjoint logical ranges.
         unsafe {
             (
-                core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.extent.len()),
+                core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len.get()),
                 core::slice::from_raw_parts_mut(
-                    self.ptr.as_ptr().add(self.extent.len()).cast(),
-                    crate::arithmetic::bounded::wrapping_sub(self.extent.cap(), self.extent.len()),
+                    self.ptr.as_ptr().add(self.len.get()).cast(),
+                    crate::arithmetic::bounded::wrapping_sub(self.cap.get(), self.len.get()),
                 ),
             )
         }
@@ -91,7 +85,9 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     /// # Safety
     /// When growing to an in-bounds length, every new element must be initialized.
     pub unsafe fn try_set_len(&mut self, new_len: usize) -> Result<(), Error> {
-        self.extent.set_len_within(new_len)
+        required_len(0, new_len, self.cap.get())?;
+        self.len = Checked::new(new_len);
+        Ok(())
     }
     /// Explicitly leak storage and its budget charge. The policy must outlive the
     /// returned borrow; raw recovery requires the original capacity and policy.
@@ -112,28 +108,25 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     where
         T: TryClone,
     {
-        let (start, end) = edit::checked_range(range, self.extent.len())?;
+        let (start, end) = edit::checked_range(range, self.len.get())?;
         let count = (Checked::new(end) - Checked::new(start)).map_err(|_| Error::Bounds)?;
         self.try_reserve(count.get())?;
-        let original = self.extent.len();
+        let original = self.len.get();
         let guard = SuffixGuard {
             owner: self,
             original,
         };
         for i in start..end {
-            let next =
-                (guard.owner.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;
+            let next = (guard.owner.len + Checked::new(1)).map_err(|_| Error::Capacity)?;
             // SAFETY: old prefix and new suffix disjoint; reservation already finished.
             let source = unsafe { &*guard.owner.ptr.as_ptr().add(i) };
             let ptr = unsafe {
-                NonNull::new_unchecked(guard.owner.ptr.as_ptr().add(guard.owner.extent.len()))
+                NonNull::new_unchecked(guard.owner.ptr.as_ptr().add(guard.owner.len.get()))
             };
             let mut slot = unsafe { InitSlot::new(ptr) };
             source.try_clone_into(&mut slot)?;
             slot.finish()?;
-            // The reservation above holds every clone, so this is not refused;
-            // a refusal would leak the value just initialized, not expose it.
-            guard.owner.extent.set_len_within(next.get())?;
+            guard.owner.len = next;
         }
         mem::forget(guard);
         Ok(())
@@ -146,20 +139,18 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     where
         T: Copy,
     {
-        let (start, end) = edit::checked_range(range, self.extent.len())?;
+        let (start, end) = edit::checked_range(range, self.len.get())?;
         let count = (Checked::new(end) - Checked::new(start)).map_err(|_| Error::Bounds)?;
         let needed = self.reserve_length(count.get())?;
-        // Admitted before the copy; a refusal changes nothing.
-        let original = self.extent.len();
-        self.extent.set_len_within(needed)?;
         // SAFETY: source lies in the original initialized prefix, destination after it.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 self.ptr.as_ptr().add(start),
-                self.ptr.as_ptr().add(original),
+                self.ptr.as_ptr().add(self.len.get()),
                 count.get(),
             );
         }
+        self.len = Checked::new(needed);
         Ok(())
     }
     /// Owned-value resize matches std's n-1 clones followed by a move. Refusal
@@ -168,7 +159,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
     where
         T: TryClone,
     {
-        if new_len <= self.extent.len() {
+        if new_len <= self.len.get() {
             self.truncate(new_len);
             return Ok(());
         }
@@ -181,7 +172,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 });
             }
         };
-        let additional = match Checked::new(new_len) - self.extent.length() {
+        let additional = match Checked::new(new_len) - self.len {
             Ok(additional) => additional,
             Err(_) => {
                 return Err(Rejected {
@@ -193,13 +184,13 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         if let Err(error) = self.try_reserve(additional.get()) {
             return Err(Rejected { value, error });
         }
-        let original = self.extent.len();
+        let original = self.len.get();
         let guard = SuffixGuard {
             owner: self,
             original,
         };
-        while guard.owner.extent.len() < last {
-            let next = match guard.owner.extent.length() + Checked::new(1) {
+        while guard.owner.len.get() < last {
+            let next = match guard.owner.len + Checked::new(1) {
                 Ok(next) => next,
                 Err(_) => {
                     return Err(Rejected {
@@ -210,7 +201,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             };
             // SAFETY: reserved unwritten suffix slot, recorded initialization.
             let ptr = unsafe {
-                NonNull::new_unchecked(guard.owner.ptr.as_ptr().add(guard.owner.extent.len()))
+                NonNull::new_unchecked(guard.owner.ptr.as_ptr().add(guard.owner.len.get()))
             };
             let mut slot = unsafe { InitSlot::new(ptr) };
             if let Err(error) = value.try_clone_into(&mut slot) {
@@ -219,13 +210,9 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             if let Err(error) = slot.finish() {
                 return Err(Rejected { value, error });
             }
-            // The reservation above holds `new_len`, so this is not refused;
-            // a refusal would leak the clone just initialized, not expose it.
-            if let Err(error) = guard.owner.extent.set_len_within(next.get()) {
-                return Err(Rejected { value, error });
-            }
+            guard.owner.len = next;
         }
-        let next = match guard.owner.extent.length() + Checked::new(1) {
+        let next = match guard.owner.len + Checked::new(1) {
             Ok(next) => next,
             Err(_) => {
                 return Err(Rejected {
@@ -234,29 +221,29 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 });
             }
         };
-        // The length is admitted before the input moves, so that a refusal
-        // returns it. Nothing can observe the owner or unwind before the write.
-        let index = guard.owner.extent.len();
-        if let Err(error) = guard.owner.extent.set_len_within(next.get()) {
-            return Err(Rejected { value, error });
-        }
-        // SAFETY: final admitted slot, move input instead of cloning it.
+        // SAFETY: final reserved slot, move input instead of cloning it.
         unsafe {
-            guard.owner.ptr.as_ptr().add(index).write(value);
+            guard
+                .owner
+                .ptr
+                .as_ptr()
+                .add(guard.owner.len.get())
+                .write(value);
         }
+        guard.owner.len = next;
         mem::forget(guard);
         Ok(())
     }
     /// Move into an array; mismatch returns the original Vec. This by-value API
     /// has the same caller stack-size constraints as returning any [T; N].
     pub fn try_into_array<const N: usize>(mut self) -> Result<[T; N], Rejected<Self>> {
-        if self.extent.len() != N {
+        if self.len.get() != N {
             return Err(Rejected {
                 value: self,
                 error: Error::Bounds,
             });
         }
-        self.extent.shorten_to(0);
+        self.len = Checked::new(0);
         // SAFETY: exact initialized length; ownership moved once, Vec frees only storage.
         Ok(unsafe { self.ptr.as_ptr().cast::<[T; N]>().read() })
     }
@@ -272,18 +259,12 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 error,
             });
         }
-        // Admitted before the transfer, so that a refusal returns the array.
-        if let Err(error) = result.extent.set_len_within(N) {
-            return Err(Rejected {
-                value: values,
-                error,
-            });
-        }
         let values = mem::ManuallyDrop::new(values);
-        // SAFETY: exact admitted destination; transfer array elements, no duplicate Drop.
+        // SAFETY: exact reserved destination; transfer array elements, no duplicate Drop.
         unsafe {
             core::ptr::copy_nonoverlapping(values.as_ptr(), result.ptr.as_ptr(), N);
         }
+        result.len = Checked::new(N);
         Ok(result)
     }
     pub fn try_from_slice_in(source: &[T], policy: P, limit: L) -> Result<Self, Error>
@@ -373,8 +354,8 @@ impl<T, const N: usize, P: AllocationPolicy, L: LengthPolicy> Vec<[T; N], P, L> 
     /// fixed; reject if the flattened length or capacity would exceed it.
     pub fn try_into_flattened(self) -> Result<Vec<T, P, L>, Rejected<Self>> {
         let Some((len, cap)) = super::geometry::flatten(
-            self.extent.len(),
-            self.extent.cap(),
+            self.len.get(),
+            self.cap.get(),
             self.max_len(),
             mem::size_of::<T>(),
             N,
@@ -430,9 +411,7 @@ impl<P: AllocationPolicy, L: LengthPolicy> Vec<u8, P, L> {
         let needed = self.reserve_length(total.get())?;
         // No fallible operation or user callback follows the reservation. Keep
         // a cursor into the reserved suffix and commit the checked length once.
-        let mut destination = unsafe { self.ptr.as_ptr().add(self.extent.len()) };
-        // Admitted before the copies; a refusal changes nothing.
-        self.extent.set_len_within(needed)?;
+        let mut destination = unsafe { self.ptr.as_ptr().add(self.len.get()) };
         for part in parts {
             // SAFETY: total space reserved, disjoint input borrows.
             unsafe {
@@ -442,6 +421,7 @@ impl<P: AllocationPolicy, L: LengthPolicy> Vec<u8, P, L> {
             // the one-past destination after the final copy.
             destination = unsafe { destination.add(part.len()) };
         }
+        self.len = Checked::new(needed);
         Ok(total.get())
     }
     /// Roll back appended bytes on formatting/storage failure, including when a
@@ -463,7 +443,7 @@ impl<P: AllocationPolicy, L: LengthPolicy> Vec<u8, P, L> {
                 Ok(())
             }
         }
-        let original = self.extent.len();
+        let original = self.len.get();
         let guard = SuffixGuard {
             owner: self,
             original,

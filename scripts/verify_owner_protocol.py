@@ -133,21 +133,21 @@ def main():
         # Owner-invariant callers are bound by whole-block text. A changed
         # block is refused before any proof text is composed.
         for name,file,old,new in [
-            ('expose_spare_as_initialized','src/vec.rs','unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.extent.len()) }','unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.extent.cap()) }'),
+            ('expose_spare_as_initialized','src/vec.rs','unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len.get()) }','unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.cap.get()) }'),
             ('scalar_gains_offset','src/boxed/owned.rs','unsafe { ptr.as_ptr().read() }','unsafe { ptr.as_ptr().add(1).read() }'),
             ('into_iter_stale_index','src/vec/ownership.rs','let index = self.span.next()?;','let index = self.span.next()?; let index = self.span.len() + index;'),
-            ('drain_clear_after_count','src/vec/edit.rs','let start = self.span.front();\n        let count = self.span.len();\n        self.span.clear();','self.span.clear();\n        let start = self.span.front();\n        let count = self.owner.extent.cap();'),
+            ('drain_clear_after_count','src/vec/edit.rs','let start = self.span.front();\n        let count = self.span.len();\n        self.span.clear();','self.span.clear();\n        let start = self.span.front();\n        let count = self.owner.cap.get();'),
             ('array_clone_shifted_index','src/clone.rs','unsafe { self.get_unchecked(i) }.try_clone()','unsafe { self.get_unchecked(i + 1) }.try_clone()'),
             ('prefix_driver_longer_count','src/init/prefix.rs','super::driver::run(&mut prefix.state, length, |index| unsafe {','super::driver::run(&mut prefix.state, length + 1, |index| unsafe {'),
-            ('pop_one_past','src/vec.rs','Some(unsafe { self.ptr.as_ptr().add(next.get()).read() })','Some(unsafe { self.ptr.as_ptr().add(self.extent.cap()).read() })'),
+            ('pop_one_past','src/vec.rs','Some(unsafe { self.ptr.as_ptr().add(next.get()).read() })','Some(unsafe { self.ptr.as_ptr().add(self.cap.get()).read() })'),
             ('truncate_from_capacity','src/vec.rs','self.ptr.as_ptr().add(len),\n                removed.get(),','self.ptr.as_ptr().add(removed.get()),\n                len,'),
             ('collection_write_shifted','src/init/collection.rs','unsafe { ptr.as_ptr().add(index).write(value) };','unsafe { ptr.as_ptr().add(index + 1).write(value) };'),
             ('collection_publication_omitted','src/init/collection.rs','*self.output = *self.current;','*self.output = *self.output;'),
-            ('append_from_capacity','src/vec.rs','other.ptr.as_ptr(),\n                self.ptr.as_ptr().add(start),\n                other.extent.len(),','other.ptr.as_ptr(),\n                self.ptr.as_ptr().add(self.extent.cap()),\n                other.extent.len(),'),
-            ('reserve_without_growth','src/vec.rs','if needed > self.extent.cap() {\n            self.grow_to(needed, false)?;\n        }\n        Ok(needed)','Ok(needed)'),
-            ('compact_drop_whole','src/vec/edit.rs','let remaining = self.state.remaining();','let remaining = self.owner.extent.cap();'),
+            ('append_from_capacity','src/vec.rs','other.ptr.as_ptr(),\n                self.ptr.as_ptr().add(self.len.get()),\n                other.len.get(),','other.ptr.as_ptr(),\n                self.ptr.as_ptr().add(self.cap.get()),\n                other.len.get(),'),
+            ('reserve_without_growth','src/vec.rs','if needed > self.cap.get() {\n            self.grow_to(needed, false)?;\n        }\n        Ok(needed)','Ok(needed)'),
+            ('compact_drop_whole','src/vec/edit.rs','let remaining = self.state.remaining();','let remaining = self.owner.cap.get();'),
             ('empty_slice_length','src/boxed/slice.rs','NonNull::slice_from_raw_parts(NonNull::dangling(), 0)','NonNull::slice_from_raw_parts(NonNull::dangling(), 1)'),
-            ('drop_whole_capacity','src/vec.rs','core::ptr::slice_from_raw_parts_mut(\n                self.ptr.as_ptr(),\n                self.extent.len(),\n            ))','core::ptr::slice_from_raw_parts_mut(\n                self.ptr.as_ptr(),\n                self.extent.cap(),\n            ))'),
+            ('drop_whole_capacity','src/vec.rs','core::ptr::slice_from_raw_parts_mut(\n                self.ptr.as_ptr(),\n                self.len.get(),\n            ))','core::ptr::slice_from_raw_parts_mut(\n                self.ptr.as_ptr(),\n                self.cap.get(),\n            ))'),
         ]:
             with tempfile.TemporaryDirectory(prefix='jzap-owner-model-') as tmp:
                 source=Path(tmp);shutil.copytree(ROOT/'src',source/'src')
@@ -194,8 +194,8 @@ def main():
              '            mem::size_of::<T>(),\n            extra.capacity(),',
              '            0,\n            extra.capacity(),',
              'staging controller arguments and error routing'),
-            ('splice_fill_end','src/vec/edit.rs','                self.drain.tail_start,\n                &mut self.replacement,','                usize::MAX,\n                &mut self.replacement,','initialization caller binding requires review'),
-            ('staging_fill_end','src/vec/edit.rs','    let end = extra.capacity();','    let end = extra.extent.len();','initialization caller binding requires review'),
+            ('splice_fill_end','src/vec/edit.rs','                self.drain.tail_start,\n                &mut self.replacement,','                self.drain.owner.cap.get(),\n                &mut self.replacement,','initialization caller binding requires review'),
+            ('staging_fill_end','src/vec/edit.rs','    let end = extra.capacity();','    let end = extra.len.get();','initialization caller binding requires review'),
             ('extraction_error_routing','src/vec/edit.rs','Err(error) => self.fail(error),','Err(error) => Some(Err(error)),','extraction adapter statements'),
             ('extraction_source_routing','src/vec/edit.rs','filter(unsafe { &mut *pointer.as_ptr().add(read) })','filter(unsafe { &mut *pointer.as_ptr() })','extraction physical leaf routing'),
             ('shadowed_compaction_index','src/vec/edit.rs','keep(unsafe { &mut *pointer.as_ptr().add(read) })','let read = original; keep(unsafe { &mut *pointer.as_ptr().add(read) })','compaction adapter statements'),
@@ -207,7 +207,7 @@ def main():
             ('dedup_initial_state','src/vec/edit.rs','state: Compaction::first_kept(original)','state: Compaction::full(original)','compaction adapter statements'),
             ('dedup_driver_route','src/vec/edit.rs','compaction_driver::run::<false, E, _, _>(\n            &mut g.state,\n            original,\n            |read, write| {','compaction_driver::run::<true, E, _, _>(\n            &mut g.state,\n            original,\n            |read, write| {','compaction driver routing'),
             ('duplicate_release','src/storage.rs','budget.release(layout.size());','budget.release(layout.size()); budget.release(layout.size());','accounting argument/order mismatch'),
-            ('unbound_capacity_caller','src/vec.rs','self.truncate(0);','let _ = self.resize_storage(self.extent); self.truncate(0);','unbound private-capacity caller'),
+            ('unbound_capacity_caller','src/vec.rs','self.truncate(0);','let _ = self.resize_storage(0); self.truncate(0);','unbound private-capacity caller'),
             ('wrong_array_reservation','src/vec/convenience.rs','result.try_reserve_exact(N)','result.try_reserve_exact(0)','unbound array reservation'),
             ('unknown_unsafe_intrinsic','src/boxed.rs','ptr.as_ptr().write(value);','core::arch::asm!(""); ptr.as_ptr().write(value);','unbound unsafe operation'),
             ('wrong_release_layout','src/boxed/owned.rs','AllocationGuard(ptr.cast(), Layout::new::<T>(), policy.budget())','AllocationGuard(ptr.cast(), Layout::new::<u8>(), policy.budget())','allocation guard identity/layout mismatch'),
@@ -246,7 +246,7 @@ def main():
                 state_adapter_sha256=hashlib.sha256((ROOT/'tools/direct-verus/state-adapters.rs').read_bytes()).hexdigest(),
                 word_domain='Verus Either32Or64; no usize-to-u32 body rewriting',
                 scope='Original Compaction/Extraction methods composed with pending projected owner/loop/credit/core caller contracts in the same product crate. Numeric word domain is Either32Or64; final link and executed memory targets are separate. Heap/alias behavior is covered separately by actual-source checks.',
-                source_closure_complete=source_bindings['unsafe_callers']==184 and len(expressions['caller_bindings'])==184,
+                source_closure_complete=source_bindings['unsafe_callers']==181 and len(expressions['caller_bindings'])==181,
                 boundary='The final link certificate is produced separately by verify_panic_paths.py; these source-model results do not certify arbitrary user callbacks or Rust provenance.')
     (OUT/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     print('Owner/loop/credit models, actual core-call queries and exhaustive source publications pass; final-link attachment is checked by verify_panic_paths.py.')

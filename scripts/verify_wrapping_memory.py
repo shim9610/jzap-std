@@ -52,22 +52,27 @@ def call_args(text, marker):
 def scalar(text, extra=None):
     text = compact(text)
     substitutions = {
-        "self.owner.extent.len()": "len", "self.extent.len()": "len",
-        "self.extent.length()": "len",
-        "self.extent.cap()": "cap", "self.state.read()": "s@.read",
+        "self.owner.len.get()": "len", "self.len.get()": "len",
+        "self.cap.get()": "cap", "self.state.read()": "s@.read",
         "self.state.written()": "s@.write", "self.tail_start": "tail_start",
     }
     substitutions.update(extra or {})
     for old, new in substitutions.items(): text = text.replace(old, new)
     text = re.sub(r"Checked::new\((\w+)\)", r"\1", text).replace(".get()", "")
+    text = re.sub(r"\bself\.len\b", "len", text)
     assert re.fullmatch(r"[a-zA-Z_0-9@.()+*<>=!&| -]+", text), text
     return text
 
 
 SINGLE_ELEMENT_MOVES = {
-    "try_insert": "{letshifted=matchgeometry::insertion(self.extent.length(),index){Ok(shifted)=>shifted,Err(error)=>returnErr(Rejected{value,error}),};letneeded=matchself.reserve_length(1){Ok(needed)=>needed,Err(error)=>returnErr(Rejected{value,error}),};ifletErr(error)=self.extent.set_len_within(needed){returnErr(Rejected{value,error});}unsafe{letplace=self.ptr.as_ptr().add(index);core::ptr::copy(place,place.add(1),shifted.get());place.write(value);}Ok(())}",
-    "remove": "{let(next,shifted)=geometry::removal(self.extent.length(),index)?;unsafe{letplace=self.ptr.as_ptr().add(index);letvalue=place.read();core::ptr::copy(place.add(1),place,shifted.get());self.extent.shorten_to(next.get());Ok(value)}}",
-    "swap_remove": "{letnext=geometry::shortened(self.extent.length(),index)?;self.extent.shorten_to(next.get());unsafe{letplace=self.ptr.as_ptr().add(index);letvalue=place.read();core::ptr::copy(self.ptr.as_ptr().add(self.extent.len()),place,1);Ok(value)}}",
+    "try_insert": "{letshifted=matchgeometry::insertion(self.len,index){Ok(shifted)=>shifted,Err(error)=>returnErr(Rejected{value,error}),};"
+        "letneeded=matchself.reserve_length(1){Ok(needed)=>needed,Err(error)=>returnErr(Rejected{value,error}),};"
+        "unsafe{letplace=self.ptr.as_ptr().add(index);core::ptr::copy(place,place.add(1),shifted.get());place.write(value);}"
+        "self.len=Checked::new(needed);Ok(())}",
+    "remove": "{let(next,shifted)=geometry::removal(self.len,index)?;"
+        "unsafe{letplace=self.ptr.as_ptr().add(index);letvalue=place.read();core::ptr::copy(place.add(1),place,shifted.get());self.len=next;Ok(value)}}",
+    "swap_remove": "{letnext=geometry::shortened(self.len,index)?;self.len=next;"
+        "unsafe{letplace=self.ptr.as_ptr().add(index);letvalue=place.read();core::ptr::copy(self.ptr.as_ptr().add(self.len.get()),place,1);Ok(value)}}",
 }
 
 
@@ -87,21 +92,15 @@ def generate(source_root, census):
     # Check the real composition: final length -> growth -> checked layout ->
     # successful storage call -> publish capacity. No invented success guard.
     assert body(vector, "reserve_length", "Vec") == (
-        "{letneeded=required_len(self.extent.len(),additional,self.max_len())?;"
-        "ifneeded>self.extent.cap(){self.grow_to(needed,false)?;}Ok(needed)}")
+        "{letneeded=required_len(self.len.get(),additional,self.max_len())?;"
+        "ifneeded>self.cap.get(){self.grow_to(needed,false)?;}Ok(needed)}")
     growing = body(vector, "grow_to", "Vec")
-    assert growing=='{letextent=self.extent.holding(needed,exact)?;self.resize_storage(extent)}', 'unbound layout-growth arguments/publication'
-    # The growth transition of the owner extent passes the current capacity,
-    # the needed length, the limit and the element size to the growth kernel
-    # and builds the admitted state from its result.
-    holding = body("src/extent.rs", "holding", "Extent")
-    assert holding.startswith("{letlimit=self.limit.max_len();ifneeded<self.len.get()||needed>limit{returnErr(Error::Capacity);}letsize=mem::size_of::<T>();letcount=crate::vec::geometry::growth_for_layout(self.cap.get(),needed,limit,size,exact)?;"), 'unbound layout-growth arguments/publication'
-    assert holding.endswith("letcap=unsafe{Capacity::from_validated_raw(count)};Ok(Self{len:self.len,cap,limit:self.limit,})}"), 'unbound layout-growth arguments/publication'
+    assert growing=='{letcap=geometry::growth_for_layout(self.cap.get(),needed,self.max_len(),mem::size_of::<T>(),exact,)?;self.resize_storage(cap)}', 'unbound layout-growth arguments/publication'
     resizing = body(vector, "resize_storage", "Vec")
-    assert resizing.startswith("{letnew_layout=extent.capacity().layout();")
+    assert resizing.startswith("{let(capacity,new_layout)=crate::capacity::Capacity::try_new(cap)?;")
     assert "storage::allocate(new_layout,self.policy.budget())?" in resizing
     assert "storage::reallocate(self.ptr.cast(),self.layout(),new_layout,self.policy.budget(),)}?" in resizing
-    assert resizing.endswith("self.ptr=ptr.cast();self.extent=extent;Ok(())}")
+    assert resizing.endswith("self.ptr=ptr.cast();self.cap=capacity;Ok(())}")
     # The single-element moves take their positions from product kernels
     # verified on the source (insertion, removal, shortened in vec/geometry.rs).
     # No expression is extracted: each caller body is compared whole, so any
@@ -120,7 +119,7 @@ def generate(source_root, census):
         ("src/vec/edit.rs", "try_drain", "checked_range"),
         ("src/vec/edit.rs", "try_extract_if", "checked_range"),
     ]:
-        assert body(file, function, "Vec").startswith("{let(start,end)=" + callee + "(range,self.extent.len())?;"), (file, function)
+        assert body(file, function, "Vec").startswith("{let(start,end)=" + callee + "(range,self.len.get())?;"), (file, function)
     sysroot = Path(subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip())
     core_index = sysroot / "lib/rustlib/src/rust/library/core/src/slice/index.rs"
     core = compact(core_index.read_text())
@@ -133,14 +132,12 @@ def generate(source_root, census):
     copying = body("src/vec/convenience.rs", "try_extend_copy_from_within", "Vec")
     src, dst, count = call_args(copying, "core::ptr::copy_nonoverlapping")
     expressions["WITHIN_COPY_SOURCE"] = scalar(call_args(src, "self.ptr.as_ptr().add")[0])
-    # The destination is the length before it is admitted.
-    assert "letoriginal=self.extent.len();self.extent.set_len_within(needed)?;" in copying
-    expressions["WITHIN_COPY_DESTINATION"] = scalar(call_args(dst, "self.ptr.as_ptr().add")[0], {"original": "len"})
+    expressions["WITHIN_COPY_DESTINATION"] = scalar(call_args(dst, "self.ptr.as_ptr().add")[0])
     expressions["WITHIN_COPY_COUNT"] = scalar(count)
     cloning = body("src/vec/convenience.rs", "try_extend_from_within", "Vec")
     assert "foriinstart..end{" in cloning
     expressions["CLONE_SOURCE_INDEX"] = scalar(call_args(cloning, "guard.owner.ptr.as_ptr().add")[0], {"i": "index"})
-    pointers = [r for r in census if r["file"] == "src/vec/convenience.rs" and r["function"] == "try_extend_from_within" and r["kind"] == "memory_method" and ". add (guard . owner . extent . len ())" in r["expression"]]
+    pointers = [r for r in census if r["file"] == "src/vec/convenience.rs" and r["function"] == "try_extend_from_within" and r["kind"] == "memory_method" and ". add (guard . owner . len . get ())" in r["expression"]]
     assert len(pointers) == 1
     expressions["CLONE_DESTINATION_INDEX"] = "prefix"
     assert cloning.index("self.try_reserve(count.get())?") < cloning.index("guard.owner.ptr.as_ptr().add")
@@ -158,7 +155,7 @@ def generate(source_root, census):
     expressions["DRAIN_SOURCE"] = scalar(call_args(src, "self.owner.ptr.as_ptr().add")[0])
     expressions["DRAIN_DESTINATION"] = scalar(call_args(dst, "self.owner.ptr.as_ptr().add")[0])
     original = json.loads((ROOT / "target/verification/panic-state/summary.json").read_text())
-    expressions["DRAIN_RESTORED"] = original["bindings"]["DRAIN_RESTORED"]["expression"] if "DRAIN_RESTORED" in original["bindings"] else scalar(bounded_projection(re.search(r"set_len_clamped\((.*)\);self.tail_len=0", drain).group(1)), {"self.tail_len": "tail_len"})
+    expressions["DRAIN_RESTORED"] = original["bindings"]["DRAIN_RESTORED"]["expression"] if "DRAIN_RESTORED" in original["bindings"] else scalar(bounded_projection(re.search(r"Checked::new\((.*)\);self.tail_len=0", drain).group(1)), {"self.tail_len": "tail_len"})
     for function, prefix in [("move_tail", "SPLICE_MOVE"), ("stage_excess", "STAGED_TAIL")]:
         text = body(edit, function, "Splice")
         src, dst, count = call_args(text, "core::ptr::copy")
@@ -167,20 +164,15 @@ def generate(source_root, census):
             expressions[prefix + "_" + label] = scalar(call_args(pointer, "self.drain.owner.ptr.as_ptr().add")[0], {"self.drain.tail_start": "tail_start", "next_tail.get()": "destination"})
         if function == "stage_excess":
             src, dst, count = call_args(text, "core::ptr::copy_nonoverlapping")
-            assert src == "extra.ptr.as_ptr()" and count == "extra.extent.len()"
-            # `gap` is the owner's length before the staged length is admitted.
-            assert "letgap=self.drain.owner.extent.len();self.drain.owner.extent.set_len_within(next_len.get())?;" in text
-            expressions["STAGED_EXTRA_DESTINATION"] = scalar(call_args(dst, "self.drain.owner.ptr.as_ptr().add")[0], {"gap": "len"})
+            assert src == "extra.ptr.as_ptr()" and count == "extra.len.get()"
+            expressions["STAGED_EXTRA_DESTINATION"] = scalar(call_args(dst, "self.drain.owner.ptr.as_ptr().add")[0], {"self.drain.owner.len.get()": "len"})
     # Safe capacity constructors close the multiplication invariant. Raw import
     # stays an explicit unsafe caller obligation, not an arbitrary safe escape.
     cap_source = compact((source_root / "src/capacity.rs").read_text())
-    assert "pub(crate)structCapacity<T>{count:Checked<usize>,element:PhantomData<T>,}" in cap_source
+    assert "pub(crate)structCapacity<T>{count:Checked<usize>,element:PhantomData<fn()->T>,}" in cap_source
     assert "pub(crate)unsafefnfrom_validated_raw(count:usize)->Self" in cap_source
-    # The checked constructor repeats the byte admission of the layout.
     creation = body("src/capacity.rs", "try_new", "Capacity")
-    assert creation.index("crate::layout::array::<T>(count)?") < creation.index("Self::admitted(count)?")
-    admitted = body("src/capacity.rs", "admitted", "Capacity")
-    assert admitted.index("crate::layout::numeric::array_bytes(count,mem::size_of::<T>())?") < admitted.index("Self{count:Checked::new(count)")
+    assert creation.index("crate::layout::array::<T>(count)?") < creation.index("Self{count:Checked::new(count)")
     assert "logical_capacity(mem::size_of::<T>(),0,limit)" in body("src/capacity.rs", "empty", "Capacity")
     assert "logical_capacity(mem::size_of::<T>(),values.len(),limit)" in body("src/capacity.rs", "for_slice", "Capacity")
     # The element-extent lemmas are a maintained file of their own, shared with
@@ -419,7 +411,7 @@ def verify_mutations(env, census, combined, generated):
         while depth:
             depth += (text[end] == "{") - (text[end] == "}"); end += 1
         block = text[opening:end]
-        changed = replace_once(block, "self.ptr.as_ptr().add(index)", "self.ptr.as_ptr().add(self.extent.cap())")
+        changed = replace_once(block, "self.ptr.as_ptr().add(index)", "self.ptr.as_ptr().add(self.cap.get())")
         text = text[:opening] + changed + text[end:]
         file.write_text(text)
         command = ["cargo", "kani", "--lib", "--harness", "admitted_indices_are_bounded_before_single_element_moves", "--harness-timeout", "180s", "--solver", "cadical", "-Z", "unstable-options", "--cbmc-args", "--object-bits", "10"]

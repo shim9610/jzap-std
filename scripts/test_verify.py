@@ -488,12 +488,12 @@ class PremiseTests(unittest.TestCase):
 
     def test_disposition_requires_a_verified_contract_and_an_established_premise(self):
         from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition
-        verified = {'c_keep_next', 'c_keep_live', 'raw_parts_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
+        verified = {'c_keep_next', 'c_keep_live', 'resized_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}
         self.assertEqual(disposition('c_keep_next', verified), PROVED)
         # A second, unverified caller keeps a verified-caller premise stated.
         self.assertEqual(disposition('c_keep_live', verified), STATED_NOT_PROVED)
         self.assertEqual(disposition('direct:bplus-partial', verified), PROVED)
-        self.assertEqual(disposition('raw_parts_owner', verified), STATED_NOT_PROVED)
+        self.assertEqual(disposition('resized_owner', verified), STATED_NOT_PROVED)
         # A projection-only backing is never reported as connected.
         self.assertEqual(disposition('lookup_path_read', verified), STATED_NOT_PROVED)
         self.assertEqual(disposition('btree_cursor', verified), UNPROVED)
@@ -524,12 +524,12 @@ class PremiseTests(unittest.TestCase):
         site = dict(file='src/x.rs', function='f')
         owner = dict(source_bindings=dict(bindings=[
             dict(site=site, contract='c_keep_next', role='state-publication'),
-            dict(site=site, contract='raw_parts_owner', role='state-publication'),
+            dict(site=site, contract='resized_owner', role='state-publication'),
             dict(site=site, contract='kani:within_capacity_push_preserves_every_numeric_owner', role='state-publication')]))
         string = dict(bindings=[dict(site=site, contract='UTF-8-owner-transfer')])
         area = dict(bindings=[dict(site=site, contract='btree_cursor', role='cursor')])
         lookup = (ROOT / BPLUS_ANCESTOR['file']).read_text()
-        verified = {'c_keep_next', 'raw_parts_owner', 'btree_cursor', 'lookup_path_read'}
+        verified = {'c_keep_next', 'resized_owner', 'btree_cursor', 'lookup_path_read'}
         rows = obligations(owner, string, (area,), verified, lookup)
         self.assertEqual([r['disposition'] for r in rows],
                          [PROVED, STATED_NOT_PROVED, UNPROVED, UNPROVED, STATED_NOT_PROVED, STATED_NOT_PROVED])
@@ -539,90 +539,5 @@ class PremiseTests(unittest.TestCase):
         self.assertEqual(obligations(owner, string, (area,), verified - {'lookup_path_read'}, lookup)[-1]['disposition'], UNPROVED)
         with self.assertRaisesRegex(AssertionError, 'B\\+ ancestor read moved'):
             obligations(owner, string, (area,), verified, lookup.replace(BPLUS_ANCESTOR['expression'], 'ancestor.read()'))
-
-class OwnerExtentTests(unittest.TestCase):
-    def test_group_target_and_certificate_stage_are_registered(self):
-        from source_certificate import FOUNDATION_GROUPS
-        from verify_direct_verus import TARGETS
-        from verify_owner_extent import CONTROLS
-        from verify_source import GROUPS
-        group = GROUPS['owner-extent']
-        self.assertEqual(group['script'], 'verify_owner_extent.py')
-        self.assertEqual(group['script_controls'], (0, len(CONTROLS)))
-        self.assertEqual(group['verus'], ['vec-extent'])
-        self.assertEqual(len(group['harnesses']), 2)
-        self.assertGreaterEqual(TARGETS['vec-extent']['minimum'], 310)
-        self.assertEqual(TARGETS['vec-extent']['entry'], 'src/lib.rs')
-        self.assertIn('owner-extent', FOUNDATION_GROUPS)
-        self.assertIn('owner-extent', plan('vec', ['direct-source'], ROOT / 'target/probe')[0]['command'])
-        self.assertIn('vec-extent', plan('vec', ['verus'], ROOT / 'target/probe')[0]['command'])
-        # The state group keeps its own control counts.
-        self.assertEqual(GROUPS['state']['script_controls'], (11, 5))
-
-    def test_solver_controls_name_one_source_anchor_each(self):
-        import ast
-        tree = ast.parse((ROOT / 'scripts/verify_direct_verus.py').read_text())
-        variants = [ast.literal_eval(node.value) for node in ast.walk(tree)
-                    if isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', None) == 'variants'][0]
-        mine = {name: (file, old, new) for name, target, file, old, new in variants if target == 'vec-extent'}
-        for required in ('extent-skipped-check', 'extent-constructor-order', 'extent-clamp-above-capacity',
-                         'extent-shorten-lengthens', 'extent-growth-below-length', 'extent-growth-above-limit',
-                         'extent-resize-below-length', 'extent-resize-above-limit',
-                         'capacity-unchecked-count', 'extent-trusted-entry-precondition'):
-            self.assertIn(required, mine)
-        for name, (file, old, new) in mine.items():
-            with self.subTest(control=name):
-                self.assertEqual((ROOT / file).read_text().count(old), 1)
-                self.assertNotEqual(old, new)
-
-    def test_declarations_accept_the_source_and_reject_an_unverified_writer(self):
-        import shutil
-        from verify_owner_extent import PINNED, VERIFIED, declarations
-        functions = declarations(ROOT)
-        self.assertEqual(len(functions), len(VERIFIED) + len(PINNED))
-        self.assertEqual(sum(f['contract'] for f in functions), len(VERIFIED))
-        defects = {
-            'declaration domain changed': ('src/extent.rs', '\n#[cfg(kani)]\nmod proofs {',
-                '\nimpl<T, L: LengthPolicy> Extent<T, L> { pub(crate) fn publish(&mut self, n: usize) '
-                '{ self.len = Checked::new(n); } }\n#[cfg(kani)]\nmod proofs {'),
-            'private representation': ('src/extent.rs', '    len: Checked<usize>,\n    cap: Capacity<T>,',
-                '    pub(crate) len: Checked<usize>,\n    cap: Capacity<T>,'),
-            'written outside a verified transition': ('src/extent.rs',
-                '    pub(crate) fn len(&self) -> usize {\n        self.len.get()',
-                '    pub(crate) fn len(&mut self) -> usize {\n        self.len = Checked::new(0);\n        self.len.get()'),
-            'constructed outside a verified constructor': ('src/extent.rs',
-                '    pub(crate) fn limit(&self) -> L {\n        self.limit',
-                '    pub(crate) fn limit(&self) -> L {\n        let _ = Self { len: self.len, cap: self.cap, limit: self.limit };\n        self.limit'),
-            'Trusted entry callers changed': ('src/deque.rs', 'use crate::{',
-                'fn second<T>() -> crate::capacity::Capacity<T> { unsafe { crate::capacity::Capacity::from_validated_raw(0) } }\nuse crate::{'),
-            'only in the closed extent': ('src/vec.rs', '    extent: crate::extent::Extent<T, L>,',
-                '    extent: crate::extent::Extent<T, L>,\n    len: usize,'),
-        }
-        for expected, (file, old, new) in defects.items():
-            with self.subTest(defect=expected), tempfile.TemporaryDirectory() as tmp:
-                work = Path(tmp)
-                shutil.copytree(ROOT / 'src', work / 'src')
-                text = (work / file).read_text()
-                self.assertEqual(text.count(old), 1)
-                (work / file).write_text(text.replace(old, new))
-                with self.assertRaisesRegex(RuntimeError, expected):
-                    declarations(work)
-
-    def test_script_group_requires_its_registered_control_counts(self):
-        from types import SimpleNamespace
-        import verify_source
-        summary = dict(status='pass', source_unchanged=True, controls_run=True, controls=[],
-                       domain_controls=[dict(detected=True, compiled=True)])
-        def fake_run(command, **kwargs):
-            out = Path(command[command.index('--output') + 1])
-            out.mkdir(parents=True, exist_ok=True)
-            (out / 'summary.json').write_text(json.dumps(summary))
-            return SimpleNamespace(returncode=0)
-        with tempfile.TemporaryDirectory(dir=ROOT / 'target') as tmp, \
-             patch('verify_source.subprocess.run', side_effect=fake_run), \
-             patch('verify_source.verus', return_value={}), patch('verify_source.kani', return_value={}):
-            # One scope control where twelve are registered is not a pass.
-            with self.assertRaisesRegex(RuntimeError, 'Missing compiled state scope controls'):
-                verify_source.verify(['owner-extent'], Path(tmp) / 'short')
 
 if __name__=='__main__':unittest.main()

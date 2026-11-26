@@ -23,6 +23,6 @@ fn vec_iterator_preserves_every_valid_cursor_state() {
         front <= it.span.front() && it.span.front() <= it.span.back() && it.span.back() <= back
     );
     assert!(it.len() == it.span.back() - it.span.front());
-    assert!(it.owner.extent.len() == 0);
+    assert!(it.owner.len.get() == 0);
     drop(it);
 }

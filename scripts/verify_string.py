@@ -56,10 +56,6 @@ CONTRACTS={
 }
 assert {k:len(v) for k,v in CONTRACTS.items()}=={k:len(v) for k,v in EXPECTED.items()}
 RESERVATION={name:PINNED_BODIES[('src/vec.rs',name,'Vec')] for name in ('try_reserve','grow','grow_to','resize_storage')}
-# grow_to takes its capacity from the growth transition of the owner extent,
-# whose pinned body calls the growth kernel that `string_try_reserve` calls.
-GROWTH=PINNED_BODIES[('src/extent.rs','holding','Extent')]
-assert 'crate::vec::geometry::growth_for_layout(self.cap.get(),needed,limit,size,exact)?' in GROWTH and 'self.extent.holding(needed,exact)?' in RESERVATION['grow_to']
 # Maintained callers and the product kernels each must call.
 CALLERS={'string_replace_caller':['crate::string::edit::Edit::new(len,start,end,inserted,limit)','string_try_reserve(len,cap,limit,plan.additional)','overlapping_copy_caller(s,plan.end,plan.destination,plan.tail)','distinct_nonoverlap_caller(text,s,0,plan.start,inserted)'],
  'string_push_caller':['crate::string::edit::Edit::new(len,len,len,width,usize::MAX)','string_try_reserve(len,cap,limit,plan.additional)','slice_caller(s,plan.start,width)'],

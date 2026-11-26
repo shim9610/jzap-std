@@ -225,7 +225,7 @@ class Campaign:
 
 
 FOUNDATION_GROUPS=(
-    'arithmetic slot clone state owner-extent budget '
+    'arithmetic slot clone state budget '
     'vec-geometry vec-conversion layout vec-queries init-prefix '
     'buffer owner-metadata vec-cursors vec-layout-growth vec-compaction '
     'vec-compaction-values vec-extraction vec-extraction-values vec-splice-fill vec-staging '
@@ -470,10 +470,10 @@ def main():
         assert not owner['reused_prerequisites']
         if collected is None:
             assert owner_path.stat().st_mtime_ns>=started
-    assert owner['source_bindings']['state_writes']==97
-    assert owner['source_bindings']['constructor_fields']==122
-    assert owner['source_bindings']['unsafe_callers']==184
-    assert len(owner['owner_expressions']['caller_bindings'])==184
+    assert owner['source_bindings']['state_writes']==91
+    assert owner['source_bindings']['constructor_fields']==132
+    assert owner['source_bindings']['unsafe_callers']==181
+    assert len(owner['owner_expressions']['caller_bindings'])==181
     generated=evidence(ROOT/'target/verification/owner-protocol/owner-protocol.generated.rs').read_text()
     native=next(r for r in owner['results'] if r['name']=='owner-protocol')
     assert hashlib.sha256(generated.encode()).hexdigest()==native['generated_sha256'],'generated proof input differs from the verified input'

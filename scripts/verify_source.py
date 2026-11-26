@@ -131,11 +131,7 @@ GROUPS = {
         'compaction::proofs::constructors_and_all_transitions_preserve_range_and_cleanup',
         'span::proofs::full_constructor_establishes_order',
         'span::proofs::both_transitions_preserve_order_and_exact_length',
-    ], script='verify_state_types.py', script_controls=(11, 5), scope='All 31 original Compaction/Extraction/Span numeric methods through Verus, including both 32/64-bit word domains, plus actual-Rust all-word inductive state harnesses. Pending caller projections call the original methods through maintained adapters.'),
-    'owner-extent': dict(harnesses=[
-        'extent::proofs::constructors_establish_the_order_for_every_word',
-        'extent::proofs::every_transition_preserves_the_order_for_every_state_and_argument',
-    ], verus=['vec-extent'], script='verify_owner_extent.py', script_controls=(0, 12), scope='Closed owner state of Vec: len <= cap <= limit and the byte bound of a sized capacity as Verus type invariants of src/extent.rs and src/capacity.rs, established by every constructor and preserved by every total transition for arbitrary arguments in both Verus word domains. The declaration check pins the private fields, the constructor and transition set, the bodies without a contract, construction and assignment sites and the callers of the two trusted entries. Actual-Rust harnesses cover every native-word state and argument at unit storage. Initialization and liveness of the storage are separate.'),
+    ], script='verify_state_types.py', scope='All 31 original Compaction/Extraction/Span numeric methods through Verus, including both 32/64-bit word domains, plus actual-Rust all-word inductive state harnesses. Pending caller projections call the original methods through maintained adapters.'),
     'slot': dict(harnesses=[
         'proofs::slot_write_read_reject_and_cleanup',
         'proofs::slot_finish_requires_write_and_transfers_ownership',
@@ -148,19 +144,19 @@ GROUPS = {
 }
 CONTROLS = [
     ('staging-publication','vec-staging','src/vec/edit.rs',
-     '    extra.extent.set_len_within(next.get())?;', '    extra.extent.set_len_within(extra.extent.len())?;',
+     '    extra.len = next;', '    extra.len = extra.len;',
      'vec::edit::staging_proofs::staging_push_preserves_every_admitted_word_owner'),
     ('staging-source-classification','vec-staging','src/vec/staging_driver.rs',
      '            Err(error) => return (Err(error), new_len, new_cap),',
      '            Err(_) => return (Ok(false), new_len, new_cap),',
      'vec::edit::staging_proofs::staging_controller_preserves_word_extents_and_source_order'),
     ('staging-slot','vec-staging','src/vec/edit.rs',
-     'unsafe { extra.ptr.as_ptr().add(index).write(value) };',
-     'unsafe { extra.ptr.as_ptr().write(value) };',
+     'extra.ptr.as_ptr().add(extra.len.get()).write(value)',
+     'extra.ptr.as_ptr().write(value)',
      'vec::edit::staging_proofs::staging_push_preserves_every_three_byte_prefix'),
     ('vec-splice-fill-end', 'vec-splice-fill', 'src/vec/edit.rs',
      '                self.drain.tail_start,\n                &mut self.replacement,',
-     '                self.drain.tail_start.saturating_add(self.drain.tail_len),\n                &mut self.replacement,',
+     '                self.drain.owner.cap.get(),\n                &mut self.replacement,',
      'vec::edit::panic_proofs::splice_fill_preserves_every_admitted_word_hole_and_tail'),
     ('vec-splice-fill-error', 'vec-splice-fill', 'src/vec/edit.rs',
      '        .map_err(InitError::Initialize)\n    }\n    /// Complete replacement',
@@ -237,21 +233,21 @@ CONTROLS = [
      'shared::proofs::retirement_preserves_every_valid_weak_credit'),
     # Changing the push's additional count to zero is an equivalent mutant: the
     # doubling proposal or the later capacity refusal gives the same result.
-    # The growth proposal of both growth paths is the verified transition.
-    ('push-growth-current-capacity-argument', 'vec-layout-growth', 'src/extent.rs',
-     'growth_for_layout(self.cap.get(), needed, limit, size, exact)', 'growth_for_layout(0, needed, limit, size, exact)',
+    ('push-growth-current-capacity-argument', 'vec-layout-growth', 'src/vec.rs',
+     'growth_for_layout(cap.get(), needed, max_len', 'growth_for_layout(0, needed, max_len',
      'vec::growth_proofs::push_growth_matches_grow_one_for_every_full_numeric_owner'),
     ('push-growth-exact-argument', 'vec-layout-growth', 'src/vec.rs',
-     'let grown = extent.holding(needed, false)?;', 'let grown = extent.holding(needed, true)?;',
+     'mem::size_of::<T>(), false)?;', 'mem::size_of::<T>(), true)?;',
      'vec::growth_proofs::push_growth_matches_grow_one_for_every_full_numeric_owner'),
-    ('layout-growth-size-argument', 'vec-layout-growth', 'src/extent.rs',
-     'growth_for_layout(self.cap.get(), needed, limit, size, exact)', 'growth_for_layout(self.cap.get(), needed, limit, 1, exact)',
+    ('layout-growth-size-argument', 'vec-layout-growth', 'src/vec.rs',
+     '            mem::size_of::<T>(),\n            exact,', '            1,\n            exact,',
      'vec::growth_proofs::storage_growth_publishes_only_the_admitted_capacity_for_every_numeric_owner'),
     ('layout-growth-needed-argument', 'vec-layout-growth', 'src/vec.rs',
-     'let extent = self.extent.holding(needed, exact)?;', 'let extent = self.extent.holding(0, exact)?;',
+     '            self.cap.get(),\n            needed,\n            self.max_len(),',
+     '            self.cap.get(),\n            0,\n            self.max_len(),',
      'vec::growth_proofs::storage_growth_publishes_only_the_admitted_capacity_for_every_numeric_owner'),
     ('layout-growth-exact-argument', 'vec-layout-growth', 'src/vec.rs',
-     'let extent = self.extent.holding(needed, exact)?;', 'let extent = self.extent.holding(needed, false)?;',
+     '            mem::size_of::<T>(),\n            exact,', '            mem::size_of::<T>(),\n            false,',
      'vec::growth_proofs::storage_growth_publishes_only_the_admitted_capacity_for_every_numeric_owner'),
     ('string-retain-written-argument', 'string-cursors', 'src/string/edit.rs',
      'super::numeric::advance(guard.written.get(), width)', 'super::numeric::advance(guard.read.get(), width)',
@@ -264,12 +260,8 @@ CONTROLS = [
      'super::numeric::drain(self.start, self.end, owner.len())',
      'super::numeric::drain(self.end, self.end, owner.len())',
      'string::cursor_proofs::drain_cleanup_removes_only_the_validated_scalar_range'),
-    # A cursor admitted against the limit instead of the capacity is now
-    # refused by the length transition (the previous form of this control), so
-    # the control removes the publication instead.
-    ('push-length-publication', 'vec-cursors', 'src/vec/convenience.rs',
-     'if let Err(error) = self.extent.set_len_within(next.get()) {\n            // SAFETY: the slot was written above',
-     'if let Err(error) = self.extent.set_len_within(self.extent.len()) {\n            // SAFETY: the slot was written above',
+    ('push-capacity-argument', 'vec-cursors', 'src/vec/convenience.rs',
+     'geometry::append_cursor(self.len, self.cap.get())', 'geometry::append_cursor(self.len, self.max_len())',
      'vec::cursor_proofs::within_capacity_push_preserves_every_numeric_owner'),
     ('suffix-original-length', 'vec-cursors', 'src/vec.rs',
      'self.owner.truncate(self.original);', 'self.owner.truncate(0);',
@@ -288,17 +280,11 @@ CONTROLS = [
     ('owner-slice-capacity-argument', 'owner-metadata', 'src/capacity.rs',
      'logical_capacity(mem::size_of::<T>(), values.len(), limit)', 'logical_capacity(mem::size_of::<T>(), values.len(), 0)',
      'vec::metadata_proofs::boxed_and_vector_unit_owners_transfer_every_word_length_without_moving_storage'),
-    # A length left out of the adoption admission is now refused by the state
-    # constructor (the previous form of this control), so the control adopts
-    # the wrong length instead.
     ('owner-adoption-length-argument', 'owner-metadata', 'src/vec/ownership.rs',
-     'crate::extent::Extent::try_new(source.len(), capacity, limit)', 'crate::extent::Extent::try_new(0, capacity, limit)',
+     '            source.len(),\n            source.capacity(),', '            0,\n            source.capacity(),',
      'vec::metadata_proofs::original_empty_constructors_and_standard_adoption_cover_every_unit_length_limit'),
-    # try_set_len is the length transition alone; its capacity comparison is
-    # a direct Verus control of vec-extent (extent-skipped-check).
-    ('owner-length-argument', 'owner-metadata', 'src/vec/convenience.rs',
-     '        self.extent.set_len_within(new_len)\n    }\n    /// Explicitly leak storage',
-     '        self.extent.set_len_within(0)\n    }\n    /// Explicitly leak storage',
+    ('owner-length-capacity-argument', 'owner-metadata', 'src/vec/convenience.rs',
+     'required_len(0, new_len, self.cap.get())?', 'required_len(0, new_len, self.max_len())?',
      'vec::metadata_proofs::every_numeric_length_update_and_refusal_preserves_other_metadata'),
     ('collection-missing-write', 'buffer', 'src/init/collection.rs',
      'unsafe { ptr.as_ptr().add(index).write(value) };', 'drop(value);',
@@ -349,12 +335,12 @@ CONTROLS = [
      '                self.state.get(),', '                0,',
      'init::prefix::proofs::cleanup_owns_exactly_the_completed_prefix_and_current_slot'),
     ('query-remaining-input', 'vec-queries', 'src/vec.rs',
-     'wrapping_sub(self.max_len(), self.extent.len())',
-     'wrapping_sub(self.extent.len(), self.extent.len())',
+     'wrapping_sub(self.max_len(), self.len.get())',
+     'wrapping_sub(self.len.get(), self.len.get())',
      'vec::query_proofs::every_valid_zst_owner_query_and_spare_partition'),
     ('query-spare-count', 'vec-queries', 'src/vec/convenience.rs',
-     '\n                crate::arithmetic::bounded::wrapping_sub(self.extent.cap(), self.extent.len()),\n',
-     '\n                crate::arithmetic::bounded::wrapping_sub(self.extent.cap(), 0),\n',
+     '\n                crate::arithmetic::bounded::wrapping_sub(self.cap.get(), self.len.get()),\n',
+     '\n                crate::arithmetic::bounded::wrapping_sub(self.cap.get(), 0),\n',
      'vec::query_proofs::every_valid_zst_owner_query_and_spare_partition'),
     ('capacity-runtime-callee', 'layout', 'src/capacity.rs',
      'wrapping_mul(self.count.get(), mem::size_of::<T>())',
@@ -506,11 +492,10 @@ def verify(groups, out, mutations=False):
             row['direct_state'] = json.loads((output / 'summary.json').read_text())
             if not (row['direct_state']['status'] == 'pass' and row['direct_state']['source_unchanged']):
                 raise RuntimeError('Missing original state proof result')
-            solver_controls, scope_controls = group['script_controls']
-            if not (row['direct_state']['controls_run'] and len(row['direct_state']['controls']) == solver_controls
+            if not (row['direct_state']['controls_run'] and len(row['direct_state']['controls']) == 11
                     and all(c['detected'] for c in row['direct_state']['controls'])):
                 raise RuntimeError('Missing actual state or word-domain negative controls')
-            if len(row['direct_state']['domain_controls']) != scope_controls or not all(
+            if len(row['direct_state']['domain_controls']) != 5 or not all(
                     c['detected'] and c['compiled'] for c in row['direct_state']['domain_controls']):
                 raise RuntimeError('Missing compiled state scope controls')
         if group.get('verus'):

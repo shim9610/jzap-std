@@ -45,11 +45,10 @@ fn pure_expression(expr: &syn::Expr, metadata: bool) -> bool {
         syn::Expr::MethodCall(e) if metadata => {
             let receiver = e.receiver.to_token_stream().to_string().replace(' ', "");
             let method = e.method.to_string();
-            let scalar_get = (method == "get" && e.args.is_empty() && receiver == "prefix.len")
-                // The directly verified getters of the closed owner extent.
-                || (["len", "cap"].contains(&method.as_str())
-                    && e.args.is_empty()
-                    && receiver == "guard.owner.extent");
+            let scalar_get = method == "get"
+                && e.args.is_empty()
+                && ["prefix.len", "guard.owner.len", "guard.owner.cap"]
+                    .contains(&receiver.as_str());
             let predicate = method == "valid_for"
                 && ["state", "g.state"].contains(&receiver.as_str())
                 && e.args.len() == 1
@@ -188,7 +187,6 @@ fn validate_metadata_getters() -> Result<bool, Box<dyn std::error::Error>> {
         "src/arithmetic/checked.rs",
         "src/compaction.rs",
         "src/capacity.rs",
-        "src/extent.rs",
     ];
     if !paths.iter().all(|p| std::path::Path::new(p).exists()) {
         return Ok(false);
@@ -229,9 +227,6 @@ fn validate_metadata_getters() -> Result<bool, Box<dyn std::error::Error>> {
                             "valid",
                             "valid_for",
                             "total",
-                            // The owner extent's length and capacity getters.
-                            "len",
-                            "cap",
                         ]
                         .contains(&method.sig.ident.to_string().as_str())
                         {
@@ -254,7 +249,7 @@ fn validate_metadata_getters() -> Result<bool, Box<dyn std::error::Error>> {
             }
         }
     }
-    assert!(checked >= 12, "metadata getter definitions missing");
+    assert!(checked >= 10, "metadata getter definitions missing");
     assert_eq!(
         extraction_observers, 1,
         "expected one reviewed Extraction observer"

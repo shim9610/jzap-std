@@ -16,7 +16,7 @@ from verify_edit_loops import block
 
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'target/verification/unsafe-inventory'
-EXPECTED={'G01':15,'G02':20,'G03':17,'G04':35,'G05':31,'G06':10,'G07':20,'G08':4,'G09':22,'G10':3,'G11':5,'G12':2,'G13':0,'G14':14,'G15':98,'G16':131,'G17':72,'G18':42,'G19':57,'G20':13}
+EXPECTED={'G01':13,'G02':20,'G03':17,'G04':34,'G05':31,'G06':10,'G07':20,'G08':4,'G09':22,'G10':3,'G11':5,'G12':2,'G13':0,'G14':14,'G15':98,'G16':131,'G17':72,'G18':42,'G19':57,'G20':13}
 
 
 def group(row):
@@ -29,8 +29,7 @@ def group(row):
     if f=='src/shared.rs' or f.startswith('src/shared/') or f=='src/budget/owned.rs':return 'G15'
     if f=='src/string.rs' or f.startswith('src/string/'):return 'G14'
     if row['kind']=='unsafe_impl':return 'G13'
-    # The owner extent constructs its capacity from the verified growth rule.
-    if f in ('src/storage.rs','src/capacity.rs','src/extent.rs'):return 'G01'
+    if f in ('src/storage.rs','src/capacity.rs'):return 'G01'
     if f=='src/init/collection.rs':return 'G04'
     if f=='src/init.rs' or f.startswith('src/init/'):return 'G02'
     if f=='src/span.rs' or f=='src/compaction.rs':return 'closed-state'
@@ -87,8 +86,8 @@ def main():
         assert row['kind'] in ('unsafe_block','macro_unsafe_block','unsafe_fn','macro_unsafe_fn','unsafe_impl','metadata_write','metadata_init'),('unsupported unsafe syntax',row)
         row['group']=group(row)
     blocks=Counter(row['group'] for row in rows if row['kind'] in ('unsafe_block','macro_unsafe_block'))
-    assert {k:blocks[k] for k in EXPECTED}==EXPECTED and sum(blocks.values())==611,blocks
-    assert sum(row['kind']=='unsafe_fn' for row in rows)==119
+    assert {k:blocks[k] for k in EXPECTED}==EXPECTED and sum(blocks.values())==608,blocks
+    assert sum(row['kind']=='unsafe_fn' for row in rows)==118
     assert sum(row['kind']=='macro_unsafe_fn' for row in rows)==2
     assert sum(row['kind']=='unsafe_impl' for row in rows)==42
     (OUT/'sites.json').write_text(json.dumps(rows,indent=2)+'\n')
@@ -127,13 +126,13 @@ def main():
     assert len(scratch_sites)==25
     assert fingerprint()==before
     report=dict(status='pass',source_sha256=before,blocks=dict(blocks),
-        unsafe_functions=119,macro_unsafe_functions=2,unsafe_impls=42,
+        unsafe_functions=118,macro_unsafe_functions=2,unsafe_impls=42,
         metadata_writes=sum(r['kind']=='metadata_write' for r in rows),
         metadata_initializers=sum(r['kind']=='metadata_init' for r in rows),
         macro_expansion=dict(command=command,markers=markers,blocks=len(gaps),test='macro_expansions_preserve_field_pin_and_call_ownership'),
         scope='Complete source census and expansion-to-test routing; not a per-site formal or dynamic coverage certificate.')
     (OUT/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
-    print('611 blocks, 119 ordinary + 2 macro unsafe signatures and 42 impls routed; String/shared/BTreeMap/HashMap have separate source-connected certificates.')
+    print('608 blocks, 118 ordinary + 2 macro unsafe signatures and 42 impls routed; String/shared/BTreeMap/HashMap have separate source-connected certificates.')
 
 
 if __name__=='__main__':main()

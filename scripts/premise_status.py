@@ -60,23 +60,16 @@ ESTABLISHED = {
             'owner (src/boxed.rs, src/boxed/foreign.rs, src/boxed/slice.rs, src/boxed/string.rs, '
             'src/clone.rs), and the contract states only that the published words are the replacement\'s',
             ['replaced_owner']),
+    **_rows('no-premise', 'The only requires of staged_collection_loop '
+            '(tools/memory-proof/edit-loops.verus.rs) is call_requires of its two callbacks, which '
+            'holds for every safe Rust closure; it has no numeric premise. The numeric requires of the '
+            'driver it models is the premise of staged_collection_extent, which is stated-not-proved',
+            ['staged_collection_loop']),
     **_rows('no-premise', 'safe_iterator_state has no requires (tools/memory-proof/operation-closure.verus.rs). '
             'Its eight rows are in src/iter.rs, which has no unsafe code and no storage state '
             '(scripts/caller_bindings.py asserts both): checked countdowns of Take and the default '
-            'methods (:67, :140, :199), a moved fold value (:82) and the fields of Take, FromStd and '
-            'FromResults (:108, :109, :225, :276)',
+            'methods, a moved fold value and the fields of Take, FromStd and FromResults',
             ['safe_iterator_state']),
-    **_rows('direct-source', 'The bound rows are inside Capacity::admitted (src/capacity.rs) and '
-            'Extent::holding (src/extent.rs). Each carries its own verus_spec, verified on the product '
-            'source by the direct target vec-extent: admitted returns Ok only after array_bytes accepts '
-            'the count, and holding proves count * size <= isize::MAX before the trusted entry. '
-            'scripts/caller_bindings.py asserts the verus_spec on the enclosing function',
-            ['direct:vec-extent']),
-    **_rows('no-premise', 'The only requires of staged_collection_loop '
-            '(tools/memory-proof/edit-loops.verus.rs:161-164) is call_requires of its two callbacks, '
-            'which holds for every safe Rust closure; it has no numeric premise. The numeric requires '
-            'of the driver it models is established under staged_collection_extent',
-            ['staged_collection_loop']),
     **_rows('no-premise', 'Actual-Rust Kani harness over every machine word without an assumption: '
             'src/span.rs:116 (Span::full), src/init/collection_proofs.rs:5',
             ['kani:full_constructor_establishes_order',
@@ -102,34 +95,6 @@ ESTABLISHED = {
             'and len 0 (field check, scripts/caller_bindings.py:455-457); the utf8-native Kani harness '
             'src/boxed/text_proofs.rs:5-22 runs try_next on every valid state and an arbitrary char',
             ['utf8_byte_cursor']),
-    **_rows('state-invariant', 'Extent wf(): len <= cap <= limit.bound(), and Capacity wf(): a sized '
-            'element spans at most isize::MAX bytes (src/extent.rs:44-57, src/capacity.rs:62-73). The '
-            'fields are private; every constructor establishes and every transition preserves both for '
-            'arbitrary arguments, verified on the product methods for every element type and length '
-            'policy (verify_direct_verus.py target vec-extent) and closed by verify_owner_extent.py '
-            '(verify_source.py group owner-extent). Every row bound to these contracts is in a Vec '
-            'method, its Drop or a free function that receives the Vec or its Extent, and reads the '
-            'words through the getters (src/extent.rs:152-190). The requires of each contract is '
-            'exactly that invariant of each owner it takes; resized_owner also requires the new '
-            'capacity between the length and the limit, which is the invariant of the Extent that '
-            'holding/resized return. staged_collection_extent takes the capacity of a fresh Vec built '
-            'with the staging limit (src/vec/edit.rs, stage_excess), so its premise is that Vec\'s '
-            'invariant. The staging fill (src/vec/edit.rs, stage_batch) starts at the staging Vec\'s '
-            'length and ends at its capacity getter on that Vec\'s pointer, checked as text by '
-            'scripts/caller_bindings.py, so it is bound to spare_view_before_slice. A call_requires clause states that a callback accepts every argument, which '
-            'holds for every safe Rust closure and trait method',
-            ['append_owner', 'checked_owner_length', 'commit_reserved_owner', 'split_owner',
-             'vectored_owner', 'complete_splice', 'drain_constructor', 'extend_operation',
-             'initialized_operation', 'owner_to_array', 'shortened_owner', 'resized_owner',
-             'checked_index_before_access', 'insertion_before_moves', 'internal_copy_before_append',
-             'memory_reserve', 'removal_before_moves', 'swap_remove_before_moves',
-             'spare_view_before_slice', 'clone_within_operation', 'owned_resize_operation',
-             'retained_loop', 'dedup_loop', 'owner_remaining_limit', 'owner_spare_capacity',
-             'staged_collection_extent']),
-    **_rows('state-invariant', 'Kani harnesses that assume only the Extent invariant len <= cap <= limit, '
-            'closed as above (src/vec/staging_proofs.rs:10, src/vec/cursor_proofs.rs:35)',
-            ['kani:staging_push_preserves_every_admitted_word_owner',
-             'kani:within_capacity_push_preserves_every_numeric_owner']),
     **_rows('direct-source', 'The bound site is inside a product function with its own verus_spec, '
             'verified by the named target of verify_direct_verus.py',
             ['direct:budget-admit', 'direct:shared-numeric', 'direct:fixed-bplus',
@@ -142,37 +107,45 @@ def _stated(reason, names):
 
 
 STATED = {
-    **_stated(f'Buffer owner premises, the Drain/hole invariants, the range validator result, the '
-              f'reservation result, the cursor and guard states tied to the owner and the adoption of '
-              f'std storage are requires of the maintained function; {MIGRATION}:1882-1886, 1949-1951',
-              ['adopted_owner', 'boxed_to_owner', 'buffer_collect', 'buffer_finish', 'buffer_push',
-               'buffer_reserve', 'buffer_span', 'compaction_before_move', 'compaction_before_element',
-               'cursor_before_read', 'extract_next_loop', 'extraction_before_move', 'hole_move',
-               'hole_restore', 'prefix_storage_connection', 'reservation_before_bulk_write',
-               'splice_fill_loop', 'splice_operation', 'stage_operation', 'admitted_cursor',
-               'drain_before_tail_restore', 'span_clear_caller', 'span_next_caller',
-               'span_next_back_caller', 'span_remaining_caller']),
+    **_stated(f'Vec/Buffer owner premises (len <= cap <= limit, owner_valid, byte_valid, the Drain/hole '
+              f'invariants, the range validator result, the reservation result) are requires of the '
+              f'maintained function; {MIGRATION}:1882-1886, 1949-1951',
+              ['adopted_owner', 'append_owner', 'boxed_to_owner', 'buffer_collect', 'buffer_finish',
+               'buffer_push', 'buffer_reserve', 'buffer_span', 'checked_index_before_access',
+               'checked_owner_length', 'clone_within_operation', 'commit_reserved_owner',
+               'compaction_before_move', 'compaction_before_element', 'complete_splice',
+               'cursor_before_read', 'dedup_loop', 'drain_constructor', 'extend_operation',
+               'extract_next_loop', 'extraction_before_move', 'hole_move', 'hole_restore',
+               'initialized_operation', 'insertion_before_moves', 'internal_copy_before_append',
+               'memory_reserve', 'owned_resize_operation', 'owner_to_array', 'prefix_storage_connection',
+               'removal_before_moves', 'reservation_before_bulk_write', 'resized_owner',
+               'retained_loop', 'shortened_owner', 'spare_view_before_slice', 'splice_fill_loop',
+               'splice_operation', 'split_owner', 'stage_operation',
+               'swap_remove_before_moves', 'vectored_owner', 'admitted_cursor', 'owner_remaining_limit',
+               'owner_spare_capacity', 'drain_before_tail_restore', 'staged_collection_extent',
+               'span_clear_caller', 'span_next_caller', 'span_next_back_caller', 'span_remaining_caller']),
     **_stated('len <= cap <= limit and the byte bound are the public unsafe contract of '
-              'Vec::from_raw_parts (src/vec/ownership.rs), passed unchecked to the trusted entries '
-              'Extent::from_raw_parts and Capacity::from_validated_raw. For an external caller it is a '
-              'promise no library proof establishes (trust boundary). The library also calls it itself '
-              '(src/deque.rs into_vec and try_from_std_in, src/vec/convenience.rs, '
-              'src/string/convert.rs) and those calls are not verified to meet it',
+              'Vec::from_raw_parts (src/vec/ownership.rs). For an external caller it is a promise no '
+              'library proof establishes (trust boundary). The library also calls it itself '
+              '(src/deque.rs, src/vec/convenience.rs, src/string/convert.rs) and those calls are not '
+              'verified to meet it',
               ['raw_parts_owner']),
+    **_stated('Requires wf and read < original. compact_one (src/vec/compaction_driver.rs) is verified '
+              'and establishes it, but VecDeque::try_retain_mut (src/deque/edit.rs) also calls '
+              'keep_live/remove_live and is unverified Rust; caller_bindings.py does not see that '
+              'caller because deque files are filtered out',
+              ['c_keep_live', 'c_remove_live']),
     **_stated('Capacity cap * size <= isize::MAX: Capacity::from_validated_raw is an unsafe constructor '
               'whose bound is a caller obligation (src/capacity.rs), not a verified invariant',
               ['capacity_bytes']),
-    **_stated('Requires wf and read < original. compact_one (src/vec/compaction_driver.rs:54-83) is '
-              'verified and establishes it, but VecDeque::try_retain_mut (src/deque/edit.rs:259, :265) '
-              'also calls keep_live/remove_live and is unverified Rust; caller_bindings.py does not see '
-              'that caller because deque files are filtered out',
-              ['c_keep_live', 'c_remove_live']),
     **_stated('write > 0 is required (tools/direct-verus/state-adapters.rs:27); the try_dedup_by '
               'closure that calls previous_kept is unverified Rust',
               ['c_previous_kept']),
-    **_stated('The Kani harness assumes original <= initialized besides the owner invariant '
-              '(src/vec/cursor_proofs.rs:46); the guard state is not closed',
-              ['kani:suffix_guard_restores_every_admitted_original_length']),
+    **_stated('The Kani harness assumes the owner premise len <= cap <= limit '
+              '(src/vec/staging_proofs.rs:10, src/vec/cursor_proofs.rs:35, :46)',
+              ['kani:staging_push_preserves_every_admitted_word_owner',
+               'kani:suffix_guard_restores_every_admitted_original_length',
+               'kani:within_capacity_push_preserves_every_numeric_owner']),
     **_stated('Ghost ledger premises (wf, key membership, owns(l, c)) and the local budget invariant '
               'occupied + available <= limit with charge ownership for release are stated; the '
               'correspondence of MemoryBudget to the ghost ledger is not proved '

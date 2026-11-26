@@ -50,15 +50,10 @@ def audit_operations(rows,out):
         'crate::error::InitError::Storage','crate::arithmetic::bounded::wrapping_sub',
         'crate::init::prefix::initialize','prefix::initialize','initialize_one','write_next','crate::init::collection::fill',
         'grow_for_push',
-        # The trusted entries of the closed owner state (src/extent.rs,
-        # src/capacity.rs); verify_owner_extent.py pins their callers.
-        'Capacity::from_validated_raw','Self::from_validated_raw','crate::extent::Extent::from_raw_parts',
     }
     allowed_methods={'as_ptr','as_mut_ptr','as_ref','as_mut','cast','add','read','write','drop_in_place','get_unchecked','get_unchecked_mut',
         'get','len','front','read','written','remaining','unvisited_len','is_aligned','mark_initialized','disarm_field','into_bytes','into_std_vec',
-        'as_slice','as_str','budget','layout','size','assume_init',
-        # Safe getters and the shortening transition of the owner extent.
-        'cap','shorten_to'}
+        'as_slice','as_str','budget','layout','size','assume_init'}
     assert calls<=allowed_calls,('unbound unsafe operation',sorted(calls-allowed_calls))
     assert methods<=allowed_methods,('unbound unsafe operation',sorted(methods-allowed_methods))
     assert macros<={'core::ptr::addr_of_mut'},('unbound unsafe operation',sorted(macros-{'core::ptr::addr_of_mut'}))
@@ -87,59 +82,39 @@ WRITES={
  ('src/span.rs','clear'):('kani:both_transitions_preserve_order_and_exact_length',['self.front=self.back']),
  ('src/span.rs','next'):('kani:both_transitions_preserve_order_and_exact_length',['self.front=next']),
  ('src/span.rs','next_back'):('kani:both_transitions_preserve_order_and_exact_length',['self.back=next']),
- # Vec holds its length, capacity and limit in the closed owner extent. The
- # storage transitions publish an admitted state as a whole value.
- ('src/vec.rs','resize_storage'):('resized_owner',['self.ptr=ptr.cast()','self.extent=extent']),
- ('src/vec.rs','try_push'):('resized_owner',['self.ptr=ptr','self.extent=grown','self.extent=extent']),
- ('src/vec.rs','grow_for_push'):('resized_owner',['*ptr=new.cast()','*extent=grown']),
- ('src/vec/convenience.rs','try_write_vectored'):('vectored_owner',['total=(total+Checked::new(part.len())).map_err(|_|Error::Capacity)?','destination=unsafe{destination.add(part.len())}']),
- ('src/vec/edit.rs','restore_tail'):('hole_restore',['self.tail_len=0']),
+ ('src/vec.rs','resize_storage'):('resized_owner',['self.ptr=ptr.cast()','self.cap=capacity']),
+ ('src/vec.rs','try_push'):('resized_owner',['self.ptr=ptr','self.cap=cap']),
+ ('src/vec.rs','grow_for_push'):('resized_owner',['*ptr=new.cast()','*cap=capacity']),
+ ('src/vec.rs','try_insert'):('insertion_before_moves',['self.len=Checked::new(needed)']),
+ ('src/vec.rs','pop'):('shortened_owner',['self.len=next']),
+ ('src/vec.rs','remove'):('removal_before_moves',['self.len=next']),
+ ('src/vec.rs','swap_remove'):('swap_remove_before_moves',['self.len=next']),
+ ('src/vec.rs','truncate'):('shortened_owner',['self.len=next']),
+ ('src/vec.rs','try_extend_copy'):('commit_reserved_owner',['self.len=Checked::new(needed)']),
+ ('src/vec.rs','try_extend_cloned'):('commit_reserved_owner',['self.len=Checked::new(needed)']),
+ ('src/vec.rs','try_append'):('append_owner',['self.len=Checked::new(needed)','other.len=Checked::new(0)']),
+ ('src/vec.rs','try_split_off'):('split_owner',['tail.len=Checked::new(len)','self.len=Checked::new(at)']),
+ ('src/vec.rs','try_resize_with_init'):('initialized_operation',['guard.owner.len=next']),
+ ('src/vec.rs','try_clone'):('empty_owner',['copy.len=Checked::new(0)']),
+ ('src/vec/convenience.rs','push_within_capacity'):('kani:within_capacity_push_preserves_every_numeric_owner',['self.len=next']),
+ ('src/vec/convenience.rs','try_set_len'):('checked_owner_length',['self.len=Checked::new(new_len)']),
+ ('src/vec/convenience.rs','try_extend_from_within'):('clone_within_operation',['guard.owner.len=next']),
+ ('src/vec/convenience.rs','try_extend_copy_from_within'):('internal_copy_before_append',['self.len=Checked::new(needed)']),
+ ('src/vec/convenience.rs','try_resize_owned'):('owned_resize_operation',['guard.owner.len=next','guard.owner.len=next']),
+ ('src/vec/convenience.rs','try_into_array'):('owner_to_array',['self.len=Checked::new(0)']),
+ ('src/vec/convenience.rs','try_from_array_in'):('array_import',['result.len=Checked::new(N)']),
+ ('src/vec/convenience.rs','try_write_vectored'):('vectored_owner',['total=(total+Checked::new(part.len())).map_err(|_|Error::Capacity)?','destination=unsafe{destination.add(part.len())}','self.len=Checked::new(needed)']),
+ ('src/vec/edit.rs','try_retain_mut'):('retained_loop',['g.owner.len=Checked::new(g.state.written())']),
+ ('src/vec/edit.rs','try_dedup_by'):('dedup_loop',['g.owner.len=Checked::new(g.state.written())']),
+ ('src/vec/edit.rs','try_drain'):('drain_constructor',['self.len=Checked::new(start)']),
+ ('src/vec/edit.rs','try_extract_if'):('e_try_range',['self.len=Checked::new(0)']),
+ ('src/vec/edit.rs','restore_tail'):('hole_restore',['self.owner.len=Checked::new(crate::arithmetic::bounded::wrapping_add(self.owner.len.get(),self.tail_len,))','self.tail_len=0']),
  ('src/vec/edit.rs','move_tail'):('hole_move',['self.drain.tail_start=next_tail.get()']),
+ ('src/vec/edit.rs','try_finish'):('splice_operation',['self.drain.owner.len=next']),
+ ('src/vec/edit.rs','stage_push'):('kani:staging_push_preserves_every_admitted_word_owner',['extra.len=next']),
  ('src/vec/staging_driver.rs','run'):('staged_collection_loop',['len=new_len','cap=new_cap','pending=value']),
- ('src/vec/edit.rs','stage_excess'):('stage_operation',['self.drain.tail_start=next_tail.get()']),
-}
-
-# Every other change of a Vec's length, capacity or limit is a call of a
-# transition of the owner extent (src/extent.rs). Each row lists the calls of
-# one function in source order and names the contract of that operation, as
-# the assignment rows above did before the words moved into the closed state.
-TRANSITIONS={
- ('src/vec.rs','grow_to'):('memory_reserve',['self.extent.holding(needed,exact)']),
- ('src/vec.rs','try_shrink_to'):('resized_owner',['self.extent.holding(cap,true)']),
- ('src/vec.rs','try_push'):('resized_owner',['self.extent.resized(extent.capacity())']),
- ('src/vec.rs','grow_for_push'):('resized_owner',['extent.holding(needed,false)']),
- ('src/vec.rs','try_insert'):('insertion_before_moves',['self.extent.set_len_within(needed)']),
- ('src/vec.rs','pop'):('shortened_owner',['self.extent.shorten_to(next.get())']),
- ('src/vec.rs','remove'):('removal_before_moves',['self.extent.shorten_to(next.get())']),
- ('src/vec.rs','swap_remove'):('swap_remove_before_moves',['self.extent.shorten_to(next.get())']),
- ('src/vec.rs','truncate'):('shortened_owner',['self.extent.shorten_to(next.get())']),
- ('src/vec.rs','try_extend_copy'):('commit_reserved_owner',['self.extent.set_len_within(needed)']),
- ('src/vec.rs','try_extend_cloned'):('commit_reserved_owner',['self.extent.set_len_within(needed)']),
- ('src/vec.rs','try_append'):('append_owner',['self.extent.set_len_within(needed)','other.extent.shorten_to(0)']),
- ('src/vec.rs','try_split_off'):('split_owner',['tail.extent.set_len_within(len)','self.extent.shorten_to(at)']),
- ('src/vec.rs','try_resize_with_init'):('initialized_operation',['guard.owner.extent.set_len_within(next.get())']),
- ('src/vec.rs','try_clone'):('empty_owner',['copy.extent.shorten_to(0)']),
- ('src/vec/convenience.rs','push_within_capacity'):('kani:within_capacity_push_preserves_every_numeric_owner',['self.extent.set_len_within(next.get())']),
- ('src/vec/convenience.rs','try_set_len'):('checked_owner_length',['self.extent.set_len_within(new_len)']),
- ('src/vec/convenience.rs','try_extend_from_within'):('clone_within_operation',['guard.owner.extent.set_len_within(next.get())']),
- ('src/vec/convenience.rs','try_extend_copy_from_within'):('internal_copy_before_append',['self.extent.set_len_within(needed)']),
- ('src/vec/convenience.rs','try_resize_owned'):('owned_resize_operation',['guard.owner.extent.set_len_within(next.get())','guard.owner.extent.set_len_within(next.get())']),
- ('src/vec/convenience.rs','try_into_array'):('owner_to_array',['self.extent.shorten_to(0)']),
- ('src/vec/convenience.rs','try_from_array_in'):('array_import',['result.extent.set_len_within(N)']),
- ('src/vec/convenience.rs','try_write_vectored'):('vectored_owner',['self.extent.set_len_within(needed)']),
- ('src/vec/edit.rs','try_retain_mut'):('retained_loop',['g.owner.extent.shorten_to(g.state.written())']),
- ('src/vec/edit.rs','try_dedup_by'):('dedup_loop',['g.owner.extent.shorten_to(g.state.written())']),
- ('src/vec/edit.rs','try_drain'):('drain_constructor',['self.extent.shorten_to(start)']),
- ('src/vec/edit.rs','try_extract_if'):('e_try_range',['self.extent.shorten_to(0)']),
- ('src/vec/edit.rs','restore_tail'):('hole_restore',['self.owner.extent.set_len_clamped(crate::arithmetic::bounded::wrapping_add(self.owner.extent.len(),self.tail_len,))']),
- ('src/vec/edit.rs','try_finish'):('splice_operation',['self.drain.owner.extent.set_len_within(next.get())']),
- ('src/vec/edit.rs','stage_push'):('kani:staging_push_preserves_every_admitted_word_owner',['extra.extent.set_len_within(next.get())']),
- ('src/vec/edit.rs','stage_excess'):('stage_operation',['self.drain.owner.extent.set_len_within(next_len.get())','extra.extent.shorten_to(0)']),
- ('src/vec/edit.rs','drop','Compact'):('c_restored_len',['self.owner.extent.shorten_to(self.state.restored_len())']),
- ('src/vec/edit.rs','drop','ExtractIf'):('kani:extraction_drop_restores_every_numeric_cursor_exactly',['self.owner.extent.set_len_clamped(self.state.restored_len())']),
- # The length lent to the initialization cursor of Splice and of the staging batch.
- ('src/vec/edit.rs','drop','LentLength'):('splice_fill_loop',['self.extent.set_len_clamped(self.cursor.get())']),
- ('src/vec/ownership.rs','into_iter'):('cursor_before_read',['self.extent.shorten_to(0)']),
+ ('src/vec/edit.rs','stage_excess'):('stage_operation',['self.drain.tail_start=next_tail.get()','self.drain.owner.len=next_len','extra.len=Checked::new(0)']),
+ ('src/vec/ownership.rs','into_iter'):('cursor_before_read',['self.len=Checked::new(0)']),
 }
 
 
@@ -175,13 +150,13 @@ def compaction_leaves(root, unsafe_rows, state_rows):
         if dedup:
             scan='|read,write|{let previous=crate::arithmetic::bounded::wrapping_sub(write,1);same(unsafe{&mut*pointer.as_ptr().add(read)},unsafe{&mut*pointer.as_ptr().add(previous)}).map(|duplicate|!duplicate)}'
         action='|read,write,retain|{'+transfer+'}'
-        shape=['let original=self.extent.len();']
+        shape=['let original=self.len.get();']
         if dedup:shape+=['if original<2{return Ok(());}']
         constructor='first_kept' if dedup else 'full'
         shape+=['let mut g=Compact{owner:self,state:Compaction::'+constructor+'(original)};',
                 'let pointer=g.owner.ptr;',
                 'super::compaction_driver::run::<'+paired+',E,_,_>(&mut g.state,original,'+scan+','+action+')?;',
-                'g.owner.extent.shorten_to(g.state.written());','mem::forget(g);','Ok(())']
+                'g.owner.len=Checked::new(g.state.written());','mem::forget(g);','Ok(())']
         assert list(map(normalize,bodies[0]['detail']['statements']))==list(map(normalize,shape)), ('compaction adapter statements',name)
     extraction=source[source.index('for ExtractIf'):]
     adapter=canonical(block(extraction,'fn next('))
@@ -200,12 +175,12 @@ def compaction_leaves(root, unsafe_rows, state_rows):
     stage_bodies=[r for r in state_rows if r['file']=='src/vec/edit.rs' and r['function']=='stage_excess' and r['kind']=='body']
     assert len(stage_bodies)==1, 'staging controller AST body'
     stage=canonical(stage_bodies[0]['expression'])[1:-1].split('lettotal',1)[0]
-    prefix='let available = ((Checked::new(self.drain.owner.max_len()) - self.drain.owner.extent.length()).map_err(|_| Error::Capacity)? - Checked::new(self.drain.tail_len)).map_err(|_| Error::Capacity)?.get();\nlet mut extra = Vec::<T, P>::with_limit_in(available, self.drain.owner.policy.try_clone()?);\nlet (staged, _, _) = super::staging_driver::run(first, available, mem::size_of::<T>(), extra.capacity(), |_index, _cap, value| { let reply = stage_batch(&mut extra, &mut self.replacement, value); (reply, extra.extent.len(), extra.capacity()) },);\nif !staged? { return Err(InitError::Storage(Error::Capacity)); }'
+    prefix='let available = ((Checked::new(self.drain.owner.max_len()) - self.drain.owner.len).map_err(|_| Error::Capacity)? - Checked::new(self.drain.tail_len)).map_err(|_| Error::Capacity)?.get();\nlet mut extra = Vec::<T, P>::with_limit_in(available, self.drain.owner.policy.try_clone()?);\nlet (staged, _, _) = super::staging_driver::run(first, available, mem::size_of::<T>(), extra.capacity(), |_index, _cap, value| { let reply = stage_batch(&mut extra, &mut self.replacement, value); (reply, extra.len.get(), extra.capacity()) },);\nif !staged? { return Err(InitError::Storage(Error::Capacity)); }'
     assert stage==canonical(prefix), 'staging controller arguments and error routing'
     leaf_bodies=[r for r in state_rows if r['file']=='src/vec/edit.rs' and r['function']=='stage_push' and r['kind']=='body']
     assert len(leaf_bodies)==1, 'owning staging leaf AST body'
     leaf=canonical(leaf_bodies[0]['expression'])[1:-1]
-    expected='let next = (extra.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;\nextra.try_reserve(1)?;\nlet index = extra.extent.len();\nextra.extent.set_len_within(next.get())?;\nunsafe { extra.ptr.as_ptr().add(index).write(value) };\nOk(extra.capacity())'
+    expected='let next = (extra.len + Checked::new(1)).map_err(|_| Error::Capacity)?;\nextra.try_reserve(1)?;\nunsafe { extra.ptr.as_ptr().add(extra.len.get()).write(value) };\nextra.len = next;\nOk(extra.capacity())'
     assert leaf==canonical(expected), 'owning staging leaf and publication'
     guard=canonical(block(source[source.index('Drop for Compact'):],'fn drop('))
     assert guard.startswith('ifself.state.read()==self.state.written(){return;}')
@@ -233,12 +208,6 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     check_hash_set(root)
     # The B+ audit verifies the source-bound initialized prefix and snapshot separately.
     check_bplus(root)
-    # The owner extent's own writes and constructions are closed by its
-    # declaration check and the direct Verus target vec-extent. Require that
-    # domain before leaving its rows to that check.
-    from verify_owner_extent import declarations as check_owner_extent
-    check_owner_extent(root)
-    rows=[r for r in rows if not (r['file']=='src/extent.rs' and r['kind'] in ('write','field'))]
     rows=[r for r in rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     unsafe_rows=[r for r in unsafe_rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     compaction_leaves(root,unsafe_rows,rows)
@@ -253,19 +222,8 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             theorems |= verified_function_names(adapter.read_text())
     assert not [r for r in rows if r['kind']=='explicit_exit'],('explicit product exit', [r for r in rows if r['kind']=='explicit_exit'])
     seen={};bindings=[]
-    direct_names=set()
-    def direct(site,target):
-        # The enclosing product function itself carries the Verus
-        # specification that the named direct target verifies.
-        from verify_direct_verus import TARGETS
-        assert target in TARGETS,target
-        source=(root/site['file']).read_text();head=re.search(r'\bfn\s+'+site['function']+r'\b',source)
-        assert head and 'verus_spec(' in source[source.rfind('\n\n',0,head.start()):head.start()],('direct contract without a verus_spec on the enclosing function',site)
-        direct_names.add('direct:'+target)
-        return 'direct:'+target
     def proof(name):
         if name.startswith('kani:'):assert name[5:] in kani_harnesses,name
-        elif name.startswith('direct:'):assert name in direct_names,name
         else:assert name in theorems,('missing verified contract',name)
         return name
     for row in rows:
@@ -277,6 +235,11 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             contract,expected=WRITES[key];position=seen.get(key,0)
             assert position<len(expected) and e==expected[position],('unbound publication',row,expected)
             seen[key]=position+1
+        elif f=='src/vec/edit.rs' and fn=='drop':
+            assert ctx.startswith(('ExtractIf','Compact')), ('unbound edit guard publication',row)
+            contract='kani:extraction_drop_restores_every_numeric_cursor_exactly' if ctx.startswith('ExtractIf') else 'c_restored_len'
+            expected='self.owner.len=Checked::new(self.state.restored_len())'
+            assert e==expected,('unbound guard publication',row)
         elif f=='src/init.rs' and fn in ('write','finish','mark_initialized','disarm_field'):
             expected='self.initialized='+('true' if fn in ('write','mark_initialized') else 'false')
             assert e==expected,('unbound initialization state',row)
@@ -289,7 +252,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             # No unsafe code and no storage state: the defaults and Take count
             # down a checked counter and move values. No caller premise exists.
             assert e in ('remaining=next','self.remaining=next','value=f(value,item).map_err(TryFoldError::Operation)?'),row
-            assert 'unsafe' not in (root/f).read_text(),'unsafe code in src/iter.rs'
+            assert 'unsafe' not in (Path(root)/f).read_text(),'unsafe code in src/iter.rs'
             contract='safe_iterator_state'
         elif ctx.startswith('Writer'):
             assert e=='self.error=Some(e)',row
@@ -297,18 +260,6 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         else:raise AssertionError(('unbound state write',row))
         bindings.append(dict(site=row,contract=proof(contract),role='state-publication'))
     for key,(contract,expected) in WRITES.items():assert seen.get(key)==len(expected),('missing expected publication',key)
-    moved={};names={'set_len_within','set_len_clamped','shorten_to','holding','resized'}
-    for row in rows:
-        if row['kind']!='extent_transition':continue
-        f,fn,ctx=row['file'],row['function'],row['context'];e=compact(row['expression'])
-        key=(f,fn,ctx.split('<')[0].strip())
-        if key not in TRANSITIONS:key=(f,fn)
-        assert key in TRANSITIONS and row['detail']['method'] in names,('unbound owner extent transition',row)
-        contract,expected=TRANSITIONS[key];position=moved.get(key,0)
-        assert position<len(expected) and e==expected[position],('unbound owner extent transition',row,expected)
-        moved[key]=position+1
-        bindings.append(dict(site=row,contract=proof(contract),role='state-publication'))
-    for key,(contract,expected) in TRANSITIONS.items():assert moved.get(key)==len(expected),('missing owner extent transition',key)
     assert not [r for r in rows if r['kind']=='compaction_driver_import'], 'unbound compaction driver import'
     entries=[r for r in rows if r['kind']=='compaction_driver_reference']
     expected_entries={
@@ -386,7 +337,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
       ('src/boxed/slice.rs','try_from_std_vec_in'):['storage::reallocate(ptr.cast(),old,new,crate::budget::Accounting::Unmetered)'],
       ('src/storage.rs','reallocate'):['allocate(new,budget)','deallocate(ptr,old,budget)'],
       ('src/vec.rs','resize_storage'):['storage::allocate(new_layout,self.policy.budget())','storage::reallocate(self.ptr.cast(),self.layout(),new_layout,self.policy.budget())'],
-      ('src/vec.rs','grow_for_push'):['storage::allocate(new_layout,budget)','storage::reallocate(ptr.cast(),layout,new_layout,budget)'],
+      ('src/vec.rs','grow_for_push'):['storage::allocate(new_layout,budget)','storage::reallocate(ptr.cast(),cap.layout(),new_layout,budget)'],
       ('src/vec.rs','drop'):['storage::deallocate(self.0,self.1,self.2)'],
     }
     storage_seen={}
@@ -455,32 +406,25 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             elif fn=='try_from_std_in':contract='adopted_owner'
             elif fn=='from_boxed_slice':contract='boxed_to_owner'
             else:raise AssertionError(('unbound Vec factory',items))
-            # The numeric words are one closed extent, built by one of its
-            # constructors: the limit is the constructor's argument or type.
-            assert set(actual)=={'ptr','extent','policy','marker'},items
+            assert set(actual)=={'ptr','len','cap','policy','limit','marker'},items
             assert actual['marker']=='PhantomData',items
             assert actual['policy']==('Unmetered' if fn=='new' else 'policy'),items
+            assert actual['limit']==('Unlimited' if fn in ('new','from_boxed_slice') else 'limit'),items
             if fn in ('new','empty'):
-                assert actual['ptr']=='NonNull::dangling()',items
-                assert actual['extent']==('crate::extent::Extent::unlimited()' if fn=='new' else 'crate::extent::Extent::empty(limit)'),items
+                assert actual['ptr']=='NonNull::dangling()' and actual['len']=='Checked::new(0)',items
             else:
                 assert actual['ptr']==('ptr.cast()' if fn=='from_boxed_slice' else 'ptr'),items
-                assert actual['extent']=={
-                    'from_raw_parts':'unsafe{crate::extent::Extent::from_raw_parts(len,crate::capacity::Capacity::from_validated_raw(capacity),limit,)}',
-                    'try_from_std_in':'extent',
-                    'from_boxed_slice':'crate::extent::Extent::unlimited_clamped(len,capacity)'}[fn],items
+                assert actual['len']=='Checked::new(len)',items
+                assert actual['cap']==('unsafe{crate::capacity::Capacity::from_validated_raw(capacity)}' if fn=='from_raw_parts' else 'capacity'),items
         elif ctx=='Box' and ctor=='Self':
             assert fn in ('try_new_in','try_init_in','try_clone','from_raw_parts') and actual==dict(ptr='ptr',policy='policy',marker='PhantomData'),items
             contract='allocation_credit' if fn!='from_raw_parts' else 'transferred_credit'
         elif ctx=='Capacity' and ctor=='Self':
-            # try_new and for_slice build through `admitted` and the trusted entry.
-            assert fn in ('empty','admitted','from_validated_raw'),items
+            assert fn in ('empty','try_new','for_slice','from_validated_raw'),items
             assert set(actual)=={'count','element'} and actual['element']=='PhantomData',items
             expected='Checked::new(logical_capacity(mem::size_of::<T>(),0,limit))' if fn=='empty' else 'Checked::new(count)'
             assert actual['count']==expected,items
-            # `admitted` checks the byte bound itself under its own verus_spec;
-            # the trusted entry leaves it to its callers.
-            contract='empty_owner' if fn=='empty' else direct(items[0],'vec-extent') if fn=='admitted' else 'capacity_bytes'
+            contract='empty_owner' if fn=='empty' else 'boxed_to_owner' if fn=='for_slice' else 'capacity_bytes'
         elif ctor == 'Prefix':
             assert f=='src/init/prefix.rs' and fn=='initialize', items
             assert actual==dict(ptr='ptr',state='Checked::new(0)'), items
@@ -489,11 +433,6 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             assert f=='src/init/collection.rs' and fn=='fill' and not ctx, items
             assert actual==dict(output='state',current='&mutcurrent'), items
             contract='kani:local_cursor_publication_preserves_every_word'
-        elif ctor=='Self' and ctx=='LentLength':
-            # The lent length: a copy of the owner's length beside the extent
-            # that receives it back through the clamping transition.
-            assert f=='src/vec/edit.rs' and fn=='new' and actual==dict(extent='extent',cursor='cursor'),items
-            contract='splice_fill_loop'
         elif ctor=='SuffixGuard':
             assert actual==dict(owner='self',original='original'),items
             assert fn in ('try_resize_with_init','try_extend_fallible','try_extend_from_within','try_resize_owned','try_write_fmt'),items
@@ -525,7 +464,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         elif ctor in ('Take','FromStd','FromResults'):
             assert set(actual)<= {'iter','remaining'},items
             if ctor=='Take':assert actual['remaining']=='Checked::new(count)',items
-            assert {r['file'] for r in items}=={'src/iter.rs'} and 'unsafe' not in (root/'src/iter.rs').read_text(),items
+            assert {r['file'] for r in items}=={'src/iter.rs'} and 'unsafe' not in (Path(root)/'src/iter.rs').read_text(),items
             contract='safe_iterator_state'
         elif ctor in ('Pinned','Self') and ctx in ('Box','Pinned'):
             assert set(actual)=={'inner'},items
@@ -537,8 +476,8 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     helper_expected={
       ('src/vec.rs','grow'):['self.grow_to(needed,exact)'],
       ('src/vec.rs','reserve_length'):['self.grow_to(needed,false)'],
-      ('src/vec.rs','grow_to'):['self.resize_storage(extent)'],
-      ('src/vec.rs','try_shrink_to'):['self.resize_storage(extent)'],
+      ('src/vec.rs','grow_to'):['self.resize_storage(cap)'],
+      ('src/vec.rs','try_shrink_to'):['self.resize_storage(cap)'],
     }
     helper_seen={}
     for row in rows:
@@ -555,9 +494,9 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     from verify_edit_loops import block
     def body(file,marker):return compact(re.sub(r'//[^\n]*','',block((root/file).read_text(),marker)))
     v=(root/'src/vec.rs').read_text()
-    assert body('src/vec.rs','fn grow(')=='letneeded=required_len(self.extent.len(),additional,self.max_len())?;self.grow_to(needed,exact)'
+    assert body('src/vec.rs','fn grow(')=='letneeded=required_len(self.len.get(),additional,self.max_len())?;self.grow_to(needed,exact)'
     shrink=body('src/vec.rs','pub fn try_shrink_to(')
-    assert 'letcap=self.extent.len().max(minimum_capacity);ifcap<self.extent.cap(){letextent=self.extent.holding(cap,true)?;self.resize_storage(extent)?;}' in shrink
+    assert 'letcap=self.len.get().max(minimum_capacity);ifcap<self.cap.get(){self.resize_storage(cap)?;}' in shrink
     array=body('src/vec/convenience.rs','pub fn try_from_array_in')
     assert 'letmutresult=Self::empty(policy,limit);' in array and 'result.try_reserve_exact(N)' in array,'unbound array reservation'
     imported=body('src/vec/ownership.rs','pub fn from_boxed_slice(')
@@ -591,12 +530,12 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     unmetered_policy=budget[budget.index('impl AllocationPolicy for Unmetered'):]
     assert compact(block(limited_policy,'fn budget('))=='match*self{Budget::Limited(b)=>Accounting::Local(b),Budget::Unmetered=>Accounting::Unmetered,}','allocation policy identity changed'
     assert compact(block(unmetered_policy,'fn budget('))=='Accounting::Unmetered','unmetered policy changed'
-    assert compact(re.sub(r'//[^\n]*','',block(v,'mod sealed')))=='#[cfg(verus_keep_ghost)]usevstd::prelude::*;#[cfg(not(verus_keep_ghost))]pubtraitSealed{}#[cfg(not(verus_keep_ghost))]implSealedforsuper::Unlimited{}#[cfg(not(verus_keep_ghost))]implSealedforsuper::LengthLimit{}#[cfg(verus_keep_ghost)]verus!{pubtraitSealed:Sized{specfnbound(self)->usize;}implSealedforsuper::Unlimited{openspecfnbound(self)->usize{usize::MAX}}implSealedforsuper::LengthLimit{openspecfnbound(self)->usize{self@}}}'
+    assert compact(block(v,'mod sealed'))=='#[cfg(verus_keep_ghost)]usevstd::prelude::*;#[cfg_attr(verus_keep_ghost,verus_verify)]pubtraitSealed{}#[cfg_attr(verus_keep_ghost,verus_verify)]implSealedforsuper::Unlimited{}#[cfg_attr(verus_keep_ghost,verus_verify)]implSealedforsuper::LengthLimit{}'
     unlimited_impl=v[v.index('impl LengthPolicy for Unlimited'):]
     assert compact(block(unlimited_impl,'fn max_len(self)'))=='usize::MAX'
     length_impl=v[v.index('impl LengthPolicy for LengthLimit'):]
     assert compact(block(length_impl,'fn max_len(self)'))=='self.0'
-    for getter,value in [('len','self.extent.len()'),('capacity','self.extent.cap()'),('max_len','self.extent.max_len()')]:
+    for getter,value in [('len','self.len.get()'),('capacity','self.cap.get()'),('max_len','self.limit.max_len()')]:
         assert body('src/vec.rs','pub fn '+getter+'(&self)')==value,('unbound Vec getter',getter)
     # Primitive bulk cloning delegates to the already proved Copy append. No
     # callback success can publish an uninitialized prefix. Other user TryClone
@@ -607,7 +546,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     hook_bodies=[compact(block(cloning[m.start():],'fn try_extend_vec')) for m in hooks]
     assert hook_bodies==['None','Some(destination.try_extend_copy(source))','Some(destination.try_extend_copy(source))'], 'bulk clone hook changed'
     dispatch=body('src/vec.rs','pub fn try_extend_cloned')
-    assert dispatch.startswith('letend=required_len(self.extent.len(),source.len(),self.max_len())?;ifletSome(result)=T::try_extend_vec(source,self){returnresult;}'), 'bulk clone dispatch changed'
+    assert dispatch.startswith('letend=required_len(self.len.get(),source.len(),self.max_len())?;ifletSome(result)=T::try_extend_vec(source,self){returnresult;}'), 'bulk clone dispatch changed'
     bindings.append(dict(site=dict(file='src/clone.rs',function='try_extend_vec'),
         contract=proof('commit_reserved_owner'),role='safe-bulk-clone-dispatch'))
     capacity=(root/'src/capacity.rs').read_text()
@@ -631,19 +570,11 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
             assert len(re.findall(r'let(?:i|index)=',source))==1,('shadowed span index',row)
         if f=='src/vec/edit.rs' and fn=='fmt':
             assert 'ifself.state.read()<self.state.end(){' in source,('missing extraction peek guard',row)
-        if f=='src/vec/edit.rs' and fn=='stage_batch':
-            # The fill starts at the staging owner's length and ends at its
-            # capacity getter, on that owner's own pointer.
-            for text in ('letend=extra.capacity();','letpointer=extra.ptr;','letmutlength=LentLength::new(&mutextra.extent);',
-                         'crate::init::collection::fill(pointer,&mutlength.cursor,end,replacement)'):
-                assert source.count(text)==1,('unbound staging fill',text,row)
-            lent=compact(block((root/f).read_text(),'fn new(extent: &\'a mut crate::extent::Extent<T, L>) -> Self'))
-            assert lent=='letcursor=extent.length();Self{extent,cursor}',('LentLength::new changed',lent)
         if f=='src/vec/convenience.rs' and fn=='try_push_mut':
-            assert 'letindex=self.extent.len();self.try_push(value)?;' in source and source.count('letindex=')==1
+            assert 'letindex=self.len.get();self.try_push(value)?;' in source and source.count('letindex=')==1
         if f=='src/vec/convenience.rs' and fn=='try_insert_mut':assert 'self.try_insert(index,value)?;' in source
         if fn=='try_into_array':
-            expected='self.extent.len()!=N' if f=='src/vec/convenience.rs' else 'self.len()!=N'
+            expected='self.len.get()!=N' if f=='src/vec/convenience.rs' else 'self.len()!=N'
             assert 'if'+expected+'{' in source,('missing checked array length',row)
     # Every unsafe site must be routed. Numeric sites select the actual scalar
     # proof; representation-only sites use the typed-layout/ownership boundary.
@@ -651,20 +582,13 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         if row['kind'] not in ('unsafe_block','macro_unsafe_block'):continue
         f,fn=row['file'],row['function'];group=row.get('group','')
         if (f,fn) in WRITES:contract=WRITES[(f,fn)][0]
-        elif (f,fn) in TRANSITIONS:contract=TRANSITIONS[(f,fn)][0]
         elif group in ('G10','G11','G12','G09','G05'):contract='transferred_credit'
         elif f=='src/vec/edit.rs' and fn=='fill':contract='splice_fill_loop'
-        elif f=='src/vec/edit.rs' and fn=='stage_batch':contract='spare_view_before_slice'
         elif f=='src/vec/edit.rs':
             contract='extraction_before_move' if row['context'].startswith('ExtractIf') else 'compaction_before_move' if row['context'].startswith('Compact') else 'cursor_before_read'
         elif f in ('src/vec/ownership.rs','src/boxed/slice.rs') and fn in ('next','next_back','drop','as_slice','as_mut_slice'):contract='cursor_before_read'
         elif f=='src/vec/ownership.rs' and fn=='try_clone_in':contract='prefix_storage_connection'
         elif f=='src/storage.rs':contract='allocation_credit' if fn=='allocate_impl' else 'released_credit' if fn=='deallocate' else 'reallocation_credit'
-        # The extent's one block passes a count bounded by the growth rule.
-        elif f=='src/extent.rs':
-            # Verus proves the byte bound of the trusted entry inside `holding`.
-            assert fn=='holding' and 'Capacity::from_validated_raw(count)' in compact(row['expression']),row
-            contract=direct(row,'vec-extent')
         elif f=='src/capacity.rs':contract='capacity_bytes'
         elif f=='src/init/collection.rs':contract='buffer_span'
         elif f in ('src/clone.rs','src/init.rs','src/init/prefix.rs'):contract='prefix_storage_connection'

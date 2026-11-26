@@ -15,9 +15,9 @@ mutations += [
  ('vec_rollback','src/vec.rs','self.owner.truncate(self.original);','self.owner.truncate(0);','clone_and_resize_partial_failure_drop_suffix_and_preserve_prefix','vec'),
 ]
 mutations += [
- ('vec_drain_tail','src/vec/edit.rs','                self.owner.extent.len(),\n                self.tail_len,\n            ));','                self.owner.extent.len(),\n                0,\n            ));','complete::drain_every_range_and_consumption_matches_std','vec'),
+ ('vec_drain_tail','src/vec/edit.rs','wrapping_add(self.owner.len.get(), self.tail_len)','wrapping_add(self.owner.len.get(), 0)','complete::drain_every_range_and_consumption_matches_std','vec'),
  ('vec_extract_stop','src/compaction.rs','self.end = self.read;','self.end = self.total;','complete::callback_errors_preserve_unvisited_suffix_and_mutations','vec'),
- ('vec_spare_limit','src/vec/convenience.rs','        self.extent.set_len_within(new_len)\n    }\n    /// Explicitly leak storage','        let _ = self.extent.set_len_within(new_len);\n        Ok(())\n    }\n    /// Explicitly leak storage','complete::spare_storage_checked_length_and_reference_returning_edits','vec'),
+ ('vec_spare_limit','src/vec/convenience.rs','required_len(0, new_len, self.cap.get())?;','required_len(0, new_len, usize::MAX)?;','complete::spare_storage_checked_length_and_reference_returning_edits','vec'),
  ('try_take_attempts','src/iter.rs','self.remaining = next;','self.remaining = Checked::new(0);','take_zero_does_not_call_source_and_errors_consume_one_attempt','iteration'),
  ('try_source_error','src/vec.rs','crate::TryIterator::try_next(&mut iter).map_err(InitError::Initialize)?','crate::TryIterator::try_next(&mut iter).unwrap_or(None)','source_failure_rolls_back_suffix_and_leaves_borrowed_source_resumable','iteration'),
 ]

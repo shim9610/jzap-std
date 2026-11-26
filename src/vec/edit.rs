@@ -50,30 +50,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Drop for Compact<'_, T, P, L> {
                 remaining,
             );
         }
-        // The owner still has its original length; the restored length is
-        // at most that, and the transition never lengthens.
-        self.owner.extent.shorten_to(self.state.restored_len());
-    }
-}
-
-// The owner's length lent to an initialization cursor. Whatever the cursor
-// holds when the borrower returns or unwinds is published, clamped to the
-// capacity, so the borrower cannot leave a length the capacity does not hold.
-struct LentLength<'a, T, L: LengthPolicy> {
-    extent: &'a mut crate::extent::Extent<T, L>,
-    cursor: Checked<usize>,
-}
-impl<'a, T, L: LengthPolicy> LentLength<'a, T, L> {
-    #[inline(always)]
-    fn new(extent: &'a mut crate::extent::Extent<T, L>) -> Self {
-        let cursor = extent.length();
-        Self { extent, cursor }
-    }
-}
-impl<T, L: LengthPolicy> Drop for LentLength<'_, T, L> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.extent.set_len_clamped(self.cursor.get());
+        self.owner.len = Checked::new(self.state.restored_len());
     }
 }
 
@@ -84,7 +61,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         &mut self,
         mut keep: impl FnMut(&mut T) -> Result<bool, E>,
     ) -> Result<(), E> {
-        let original = self.extent.len();
+        let original = self.len.get();
         let mut g = Compact {
             owner: self,
             state: Compaction::full(original),
@@ -113,7 +90,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 }
             },
         )?;
-        g.owner.extent.shorten_to(g.state.written());
+        g.owner.len = Checked::new(g.state.written());
         mem::forget(g);
         Ok(())
     }
@@ -133,7 +110,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         &mut self,
         mut same: impl FnMut(&mut T, &mut T) -> Result<bool, E>,
     ) -> Result<(), E> {
-        let original = self.extent.len();
+        let original = self.len.get();
         if original < 2 {
             return Ok(());
         }
@@ -169,7 +146,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
                 }
             },
         )?;
-        g.owner.extent.shorten_to(g.state.written());
+        g.owner.len = Checked::new(g.state.written());
         mem::forget(g);
         Ok(())
     }
@@ -199,12 +176,12 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         &mut self,
         range: impl RangeBounds<usize>,
     ) -> Result<Drain<'_, T, P, L>, Error> {
-        let (start, end) = checked_range(range, self.extent.len())?;
+        let (start, end) = checked_range(range, self.len.get())?;
         let span = crate::span::Span::try_new(start, end)?;
-        let tail_len = (self.extent.length() - Checked::new(end))
+        let tail_len = (self.len - Checked::new(end))
             .map_err(|_| Error::Bounds)?
             .get();
-        self.extent.shorten_to(start);
+        self.len = Checked::new(start);
         Ok(Drain {
             owner: self,
             span,
@@ -221,9 +198,9 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
         range: impl RangeBounds<usize>,
         filter: F,
     ) -> Result<ExtractIf<'_, T, F, P, L>, Error> {
-        let (start, end) = checked_range(range, self.extent.len())?;
-        let state = Extraction::try_range(start, end, self.extent.len())?;
-        self.extent.shorten_to(0);
+        let (start, end) = checked_range(range, self.len.get())?;
+        let state = Extraction::try_range(start, end, self.len.get())?;
+        self.len = Checked::new(0);
         Ok(ExtractIf {
             owner: self,
             filter,
@@ -296,17 +273,14 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Drain<'_, T, P, L> {
         unsafe {
             core::ptr::copy(
                 self.owner.ptr.as_ptr().add(self.tail_start),
-                self.owner.ptr.as_ptr().add(self.owner.extent.len()),
+                self.owner.ptr.as_ptr().add(self.owner.len.get()),
                 self.tail_len,
             );
         }
-        // A drop cannot return a refusal: the transition clamps to the capacity.
-        self.owner
-            .extent
-            .set_len_clamped(crate::arithmetic::bounded::wrapping_add(
-                self.owner.extent.len(),
-                self.tail_len,
-            ));
+        self.owner.len = Checked::new(crate::arithmetic::bounded::wrapping_add(
+            self.owner.len.get(),
+            self.tail_len,
+        ));
         self.tail_len = 0;
     }
 }
@@ -429,8 +403,7 @@ impl<T, F, P: AllocationPolicy, L: LengthPolicy> Drop for ExtractIf<'_, T, F, P,
                 );
             }
         }
-        // A drop cannot return a refusal: the transition clamps to the capacity.
-        self.owner.extent.set_len_clamped(self.state.restored_len());
+        self.owner.len = Checked::new(self.state.restored_len());
     }
 }
 
@@ -468,15 +441,13 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
     }
     #[inline]
     fn fill(&mut self) -> Result<bool, InitError<I::Error>> {
-        let start = self.drain.owner.extent.length();
+        let start = self.drain.owner.len;
         let _ = (Checked::new(self.drain.tail_start) - start).map_err(|_| Error::Bounds)?;
-        let pointer = self.drain.owner.ptr;
-        let mut length = LentLength::new(&mut self.drain.owner.extent);
         // SAFETY: the checked hole is uniquely owned and lies before the retained tail.
         unsafe {
             crate::init::collection::fill(
-                pointer,
-                &mut length.cursor,
+                self.drain.owner.ptr,
+                &mut self.drain.owner.len,
                 self.drain.tail_start,
                 &mut self.replacement,
             )
@@ -489,7 +460,7 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
     /// excess is staged once; each reserved batch moves the retained tail once.
     #[inline]
     pub fn try_finish(mut self) -> Result<(), InitError<I::Error>> {
-        let initial_capacity = self.drain.owner.extent.cap();
+        let initial_capacity = self.drain.owner.cap.get();
         self.drain.clear_remaining();
         if self.drain.tail_len == 0 {
             // Each push is committed; guard still owns the (empty) retained tail.
@@ -505,9 +476,8 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
         let Some(first) = self.replacement.try_next().map_err(InitError::Initialize)? else {
             return Ok(());
         };
-        let available = ((Checked::new(self.drain.owner.max_len())
-            - self.drain.owner.extent.length())
-        .map_err(|_| Error::Capacity)?
+        let available = ((Checked::new(self.drain.owner.max_len()) - self.drain.owner.len)
+            .map_err(|_| Error::Capacity)?
             - Checked::new(self.drain.tail_len))
         .map_err(|_| Error::Capacity)?
         .get();
@@ -527,8 +497,7 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
             let reserve = (Checked::new(self.drain.tail_len) + Checked::new(1))
                 .map_err(|_| Error::Capacity)?;
             self.drain.owner.try_reserve(reserve.get())?;
-            ((self.drain.owner.extent.capacity() - self.drain.owner.extent.length())
-                .map_err(|_| Error::Capacity)?
+            ((self.drain.owner.cap - self.drain.owner.len).map_err(|_| Error::Capacity)?
                 - Checked::new(self.drain.tail_len))
             .map_err(|_| Error::Capacity)?
             .get()
@@ -536,17 +505,17 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
             lower.saturating_add(1).min(available)
         };
         self.move_tail(additional)?;
-        let next =
-            (self.drain.owner.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;
-        // The length is admitted before the value moves; a refusal drops it
-        // like the refusals above. Nothing can unwind before the write.
-        let index = self.drain.owner.extent.len();
-        self.drain.owner.extent.set_len_within(next.get())?;
-        // SAFETY: move_tail created at least one uninitialized slot, which
-        // the admitted length now holds.
+        let next = (self.drain.owner.len + Checked::new(1)).map_err(|_| Error::Capacity)?;
+        // SAFETY: move_tail created at least one uninitialized slot.
         unsafe {
-            self.drain.owner.ptr.as_ptr().add(index).write(first);
+            self.drain
+                .owner
+                .ptr
+                .as_ptr()
+                .add(self.drain.owner.len.get())
+                .write(first);
         }
+        self.drain.owner.len = next;
         if !self.fill()? {
             return Ok(());
         }
@@ -564,9 +533,8 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
     ) -> Result<(), InitError<I::Error>> {
         // Stage only excess beyond the drained hole. The staging limit accounts
         // for the original tail, even while it is outside owner.len.
-        let available = ((Checked::new(self.drain.owner.max_len())
-            - self.drain.owner.extent.length())
-        .map_err(|_| Error::Capacity)?
+        let available = ((Checked::new(self.drain.owner.max_len()) - self.drain.owner.len)
+            .map_err(|_| Error::Capacity)?
             - Checked::new(self.drain.tail_len))
         .map_err(|_| Error::Capacity)?
         .get();
@@ -578,35 +546,30 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
             extra.capacity(),
             |_index, _cap, value| {
                 let reply = stage_batch(&mut extra, &mut self.replacement, value);
-                (reply, extra.extent.len(), extra.capacity())
+                (reply, extra.len.get(), extra.capacity())
             },
         );
         if !staged? {
             return Err(InitError::Storage(Error::Capacity));
         }
         let total = required_len(
-            self.drain.owner.extent.len(),
+            self.drain.owner.len.get(),
             self.drain.tail_len,
             self.drain.owner.max_len(),
         )?;
-        let needed = required_len(total, extra.extent.len(), self.drain.owner.max_len())?;
+        let needed = required_len(total, extra.len.get(), self.drain.owner.max_len())?;
         // Reserve with the hidden tail included, without pretending holes are initialized.
-        if needed > self.drain.owner.extent.cap() {
+        if needed > self.drain.owner.cap.get() {
             self.drain.owner.grow(
-                (Checked::new(needed) - self.drain.owner.extent.length())
+                (Checked::new(needed) - self.drain.owner.len)
                     .map_err(|_| Error::Capacity)?
                     .get(),
-                self.drain.owner.extent.cap() != initial_capacity,
+                self.drain.owner.cap.get() != initial_capacity,
             )?;
         }
-        let next_tail = (Checked::new(self.drain.tail_start) + extra.extent.length())
-            .map_err(|_| Error::Capacity)?;
-        let next_len = (self.drain.owner.extent.length() + extra.extent.length())
-            .map_err(|_| Error::Capacity)?;
-        // Admitted before the moves: a refusal leaves the tail in place and the
-        // staged values owned by `extra`.
-        let gap = self.drain.owner.extent.len();
-        self.drain.owner.extent.set_len_within(next_len.get())?;
+        let next_tail =
+            (Checked::new(self.drain.tail_start) + extra.len).map_err(|_| Error::Capacity)?;
+        let next_len = (self.drain.owner.len + extra.len).map_err(|_| Error::Capacity)?;
         // SAFETY: storage includes tail and extra; shift tail right once, then move
         // staging ownership into the gap. No user code between the state updates.
         unsafe {
@@ -617,12 +580,17 @@ impl<T, I: TryIterator<Item = T>, P: AllocationPolicy, L: LengthPolicy> Splice<'
             );
             core::ptr::copy_nonoverlapping(
                 extra.ptr.as_ptr(),
-                self.drain.owner.ptr.as_ptr().add(gap),
-                extra.extent.len(),
+                self.drain
+                    .owner
+                    .ptr
+                    .as_ptr()
+                    .add(self.drain.owner.len.get()),
+                extra.len.get(),
             );
         }
         self.drain.tail_start = next_tail.get();
-        extra.extent.shorten_to(0);
+        self.drain.owner.len = next_len;
+        extra.len = Checked::new(0);
         Ok(())
     }
 }
@@ -707,12 +675,9 @@ fn stage_batch<T, I: TryIterator<Item = T>, P: AllocationPolicy>(
     let end = extra.capacity();
     // SAFETY: the temporary owns the initialized prefix and exclusive spare
     // storage through its admitted capacity, including for zero-sized values.
-    let pointer = extra.ptr;
-    let mut length = LentLength::new(&mut extra.extent);
-    let filled =
-        unsafe { crate::init::collection::fill(pointer, &mut length.cursor, end, replacement) };
-    drop(length);
-    if !filled.map_err(InitError::Initialize)? {
+    if !unsafe { crate::init::collection::fill(extra.ptr, &mut extra.len, end, replacement) }
+        .map_err(InitError::Initialize)?
+    {
         return Ok(None);
     }
     replacement.try_next().map_err(InitError::Initialize)
@@ -723,13 +688,10 @@ fn stage_push<T, P: AllocationPolicy>(
     extra: &mut Vec<T, P, LengthLimit>,
     value: T,
 ) -> Result<usize, Error> {
-    let next = (extra.extent.length() + Checked::new(1)).map_err(|_| Error::Capacity)?;
+    let next = (extra.len + Checked::new(1)).map_err(|_| Error::Capacity)?;
     extra.try_reserve(1)?;
-    // The length is admitted before the value moves; a refusal drops it like
-    // the refusals above. Nothing can unwind before the write.
-    let index = extra.extent.len();
-    extra.extent.set_len_within(next.get())?;
-    // SAFETY: the admitted length holds the owner's unwritten next slot.
-    unsafe { extra.ptr.as_ptr().add(index).write(value) };
+    // SAFETY: reservation admits the owner's unwritten next slot.
+    unsafe { extra.ptr.as_ptr().add(extra.len.get()).write(value) };
+    extra.len = next;
     Ok(extra.capacity())
 }

@@ -784,8 +784,8 @@ proof fn sorted_order(rank: Rank, n: int, i: int, j: int)
 #[cfg_attr(verus_keep_ghost, verus_spec(out =>
     requires
         recorded(*old(progress), rank_of::<R>(), n as int, minimum, ceiling),
-        forall|i: usize| i + 1 < n ==> pair.requires((i,)),
-        forall|i: usize, d: Decision| #[trigger] pair.ensures((i,), d)
+        forall|i: usize| i + 1 < n ==> pair.requires((i, (i + 1) as usize)),
+        forall|i: usize, d: Decision| #[trigger] pair.ensures((i, (i + 1) as usize), d)
             ==> pair_decides(rank_of::<R>(), attached_of::<R>(), i, d),
         minimum && n > 0 ==> first.requires(()),
         forall|d: Decision| #[trigger] first.ensures((), d)
@@ -822,13 +822,13 @@ fn pass_over<R: Completions, P, M, C, Q>(
     minimum: bool,
     ceiling: bool,
     progress: &mut Progress,
-    pair: &P,
-    first: &M,
-    last: &C,
-    query: &Q,
+    pair: P,
+    first: M,
+    last: C,
+    query: Q,
 ) -> Result<Answer, Error>
 where
-    P: Fn(usize) -> Decision,
+    P: Fn(usize, usize) -> Decision,
     M: Fn() -> Decision,
     C: Fn(usize) -> Decision,
     Q: Fn(usize) -> Decision,
@@ -851,14 +851,15 @@ where
             left as int <= if n > 0 { n - 1 } else { 0 },
             forall|i: int| 0 <= i < left ==> #[trigger] ordered_at(rank_of::<R>(), i),
             minimum ==> progress.minimum != Check::Unchecked,
-            forall|i: usize| i + 1 < n ==> pair.requires((i,)),
-            forall|i: usize, d: Decision| #[trigger] pair.ensures((i,), d)
+            forall|i: usize| i + 1 < n ==> pair.requires((i, (i + 1) as usize)),
+            forall|i: usize, d: Decision| #[trigger] pair.ensures((i, (i + 1) as usize), d)
                 ==> pair_decides(rank_of::<R>(), attached_of::<R>(), i, d),
         decreases n - left,
     ))]
     // `left < n` keeps `left + 1` within `usize`.
     while left < n && wrapping_add(left, 1) < n {
-        match pair(left) {
+        let right = wrapping_add(left, 1);
+        match pair(left, right) {
             Decision::Order(Ordering::Less) => {}
             Decision::Order(_) | Decision::Fence => {
                 #[cfg(verus_keep_ghost)]
@@ -872,7 +873,7 @@ where
                 return Ok(Answer::NeedKey(index));
             }
         }
-        left = wrapping_add(left, 1);
+        left = right;
     }
     progress.pairs = left;
     if ceiling && n > 0 && !progress.ceiling.passed() {
@@ -1173,22 +1174,19 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                 _ => {}
             }
         }
-        let pair = |left: usize| match left.checked_add(1) {
-            Some(right) => match (keys.get(left), keys.get(right)) {
-                (Some(a), Some(b)) => order_keys(a, left, b, right),
-                _ => Decision::Fence,
-            },
-            None => Decision::Fence,
+        let pair = move |left: usize, right: usize| match (keys.get(left), keys.get(right)) {
+            (Some(a), Some(b)) => order_keys(a, left, b, right),
+            _ => Decision::Fence,
         };
-        let first = || match (keys.first(), &self.minimum) {
+        let first = move || match (keys.first(), &self.minimum) {
             (Some(key), Some(fence)) => order_fence(key, 0, &fence.key, minimum),
             _ => Decision::Fence,
         };
-        let last = |index: usize| match (keys.get(index), &self.ceiling) {
+        let last = move |index: usize| match (keys.get(index), &self.ceiling) {
             (Some(key), Some(fence)) => order_fence(key, index, &fence.key, ceiling),
             _ => Decision::Fence,
         };
-        let query = |index: usize| match keys.get(index) {
+        let query = move |index: usize| match keys.get(index) {
             Some(key) => order_query(key, index, self.query),
             None => Decision::Fence,
         };
@@ -1200,10 +1198,10 @@ impl<'q, F: ?Sized + Ord, T: Copy, I: Copy + Eq> PartialLookup<'q, F, T, I> {
                 self.minimum.is_some(),
                 self.ceiling.is_some(),
                 progress,
-                &pair,
-                &first,
-                &last,
-                &query,
+                pair,
+                first,
+                last,
+                query,
             )? {
                 Answer::NeedKey(index) => Outcome::NeedKey(index),
                 Answer::NeedFence => Outcome::NeedFence,

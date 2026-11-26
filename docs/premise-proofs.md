@@ -36,8 +36,10 @@ the product is not to be changed for the sake of a proof.
   under `cfg_attr(verus_keep_ghost, ...)`, ghost and proof blocks, harnesses
   under `cfg(kani)`, maintained proof functions, binding tables and scripts.
 - Acceptance for a step that touches a product file: the machine code of every
-  benchmark executable is identical to the commit before
-  (`tools/perf-audit/codegen_diff.py` reports no differing function).
+  benchmark executable is identical to the commit before: every function
+  body compares equal (`tools/perf-audit/codegen_diff.py` on builds with
+  `-C symbol-mangling-version=v0`, so that each monomorphization has its own
+  name).
 - A premise that cannot be proved under this constraint stays
   `premise-stated-not-proved` and is reported; it is not closed by changing
   the product.
@@ -106,13 +108,17 @@ There is no single setter.
 Commits `36d250d` to `7f2e75c` moved the three words into a new type
 (`Extent`) whose transitions checked their arguments and refused or clamped,
 so that the invariant held for every caller. That changed the product: about
-850 added and 280 removed source lines, 5 to 11 functions with different
-machine code in each of the four benchmark executables measured, two more
-comparisons per `grow_to` call, up to 4.33% more executed instructions
-(Scratch `push_pop_256`) and an unreachable error branch in `try_push`. The
-change broke the constraint above and was reverted in full on 2026-11-26; the
-product files and the scripts that pin their text are those of `5dadd51`
-again. The 26 contracts it had moved to `state-invariant` are
+850 added and 280 removed source lines; 153, 96, 37 and 10 function bodies
+that differ from `5dadd51` in the Vec, String, BinaryHeap and Scratch
+benchmark executables; two more comparisons per `grow_to` call; up to 4.33%
+more executed instructions (Scratch `push_pop_256`); and an unreachable error
+branch in `try_push`. The change broke the constraint above and was reverted
+in full on 2026-11-26 (`b7c4ab0`); the product files and the scripts that pin
+their text are those of `5dadd51` again. After the revert every function body
+of the four executables equals the `5dadd51` build (851, 728, 668 and 594
+bodies, compared as normalized instruction lists; these builds use legacy
+symbol names, which merge monomorphizations, so a comparison by name is not
+usable on them). The 26 contracts it had moved to `state-invariant` are
 `premise-stated-not-proved` again.
 
 Corrections from that work that do not depend on the product change are

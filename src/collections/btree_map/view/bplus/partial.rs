@@ -1889,9 +1889,39 @@ mod proofs {
         resumed_leaf_pass_equals_fresh_pass([true, true]);
     }
 
+    /// Where the completed query lies against the completed separators of a
+    /// two-separator branch. The four regions are disjoint and cover every
+    /// input, so harnesses that assume one region each together cover the
+    /// whole input space.
+    #[derive(Clone, Copy)]
+    enum Region {
+        /// The separators are not strictly increasing.
+        Unordered,
+        /// Ordered separators, the query below the first.
+        Below,
+        /// Ordered separators, the query at or above the first and below
+        /// the second.
+        Between,
+        /// Ordered separators, the query at or above the second.
+        Above,
+    }
+
+    impl Region {
+        fn holds(self, separators: [&[u8]; 2], query: &[u8]) -> bool {
+            let ordered = separators[0] < separators[1];
+            match self {
+                Region::Unordered => !ordered,
+                Region::Below => ordered && query < separators[0],
+                Region::Between => ordered && separators[0] <= query && query < separators[1],
+                Region::Above => ordered && separators[1] <= query,
+            }
+        }
+    }
+
     /// The resumption lemma over a branch of two separators, with the
-    /// initial attachments fixed by `attached`.
-    fn resumed_branch_pass_equals_fresh_pass(attached: [bool; 2]) {
+    /// initial attachments fixed by `attached` and the inputs restricted to
+    /// `region`.
+    fn resumed_branch_pass_equals_fresh_pass(attached: [bool; 2], region: Region) {
         let raw: [([u8; SMALL], usize); 2] = [bytes(), bytes()];
         let completed: [&[u8]; 2] = [&raw[0].0[..raw[0].1], &raw[1].0[..raw[1].1]];
         let mut keys: [PrefixKey<'_, SMALL_P>; 2] = [stored(completed[0]), stored(completed[1])];
@@ -1904,7 +1934,9 @@ mod proofs {
         }
         let children = [1usize, 2];
         let (query, query_len) = bytes::<SMALL>();
-        let Ok(lookup) = PartialLookup::new(0usize, 1, &query[..query_len]) else {
+        let query = &query[..query_len];
+        kani::assume(region.holds(completed, query));
+        let Ok(lookup) = PartialLookup::new(0usize, 1, query) else {
             panic!("partial lookup not created")
         };
         resumed_pass_equals_fresh_pass(
@@ -1919,39 +1951,136 @@ mod proofs {
         );
     }
 
-    // As for the branch routing harnesses, the initial attachments are fixed
-    // per harness to keep each one within memory; together they cover every
-    // choice.
+    // The initial attachments and the region of the inputs are fixed per
+    // harness to keep each one within memory (a harness per attachment choice
+    // over all inputs ran out of memory at 15 GB); the sixteen harnesses
+    // together cover every attachment choice and every input.
     #[kani::proof]
     #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
     #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
-    fn resumed_branch_pass_with_no_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, false]);
+    fn resumed_branch_pass_unordered_with_no_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, false], Region::Unordered);
     }
 
     #[kani::proof]
     #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
     #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
-    fn resumed_branch_pass_with_the_first_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, false]);
+    fn resumed_branch_pass_below_with_no_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, false], Region::Below);
     }
 
     #[kani::proof]
     #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
     #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
-    fn resumed_branch_pass_with_the_second_separator_attached() {
-        resumed_branch_pass_equals_fresh_pass([false, true]);
+    fn resumed_branch_pass_between_with_no_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, false], Region::Between);
     }
 
     #[kani::proof]
     #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
     #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
     #[kani::unwind(5)]
-    fn resumed_branch_pass_with_both_separators_attached() {
-        resumed_branch_pass_equals_fresh_pass([true, true]);
+    fn resumed_branch_pass_above_with_no_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, false], Region::Above);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_unordered_with_the_first_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, false], Region::Unordered);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_below_with_the_first_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, false], Region::Below);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_between_with_the_first_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, false], Region::Between);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_above_with_the_first_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, false], Region::Above);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_unordered_with_the_second_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, true], Region::Unordered);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_below_with_the_second_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, true], Region::Below);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_between_with_the_second_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, true], Region::Between);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_above_with_the_second_separator_attached() {
+        resumed_branch_pass_equals_fresh_pass([false, true], Region::Above);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_unordered_with_both_separators_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, true], Region::Unordered);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_below_with_both_separators_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, true], Region::Below);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_between_with_both_separators_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, true], Region::Between);
+    }
+
+    #[kani::proof]
+    #[kani::stub(super::cmp_short, cmp_short_by_bytes)]
+    #[kani::stub(super::cmp_prefixes, cmp_prefixes_by_bytes)]
+    #[kani::unwind(5)]
+    fn resumed_branch_pass_above_with_both_separators_attached() {
+        resumed_branch_pass_equals_fresh_pass([true, true], Region::Above);
     }
 
     /// A visit of a one-key child, from the state after a descent, with the

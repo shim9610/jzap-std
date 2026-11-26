@@ -467,7 +467,7 @@ def main():
             assert run(name)==0
         assert 'Complete - 27 successfully verified harnesses, 0 failures, 27 total.' in evidence(out/'bplus-partial-kani.log').read_text()
         for name in ('bplus-partial-miri','bplus-partial-miri-32'):
-            assert re.search(r'test result: ok\. 6 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
+            assert re.search(r'test result: ok\. 10 passed; 0 failed;',evidence(out/(name+'.log')).read_text())
         bplus={}
         for name in ('bplus-release','bplus-strided-release','bplus-partial-release'):
             summary=json.loads(evidence(out/name/'summary.json').read_text())

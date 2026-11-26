@@ -391,67 +391,87 @@ method against `std::collections::BTreeMap` before timing. Methods:
 - `complete`: `bplus::Lookup` over prebuilt `Node` views of the full keys;
 - `complete_validate`: the same, constructing (and so validating) each node
   per step, as the partial lookup validates each node per pass;
-- `partial_attached`: `PartialLookup` over keys with their full bytes
-  attached in advance, fence keys passed in advance;
+- `partial_attached`: `PartialLookup::provide` over keys with their full
+  bytes attached in advance, fence keys passed in advance;
 - `partial_requests`: prefix-only keys copied into a stack buffer per node,
-  each requested key attached, fence keys passed on request;
+  each requested key attached and the node provided again, fence keys
+  passed on request;
+- `partial_listed`: as `partial_requests`, but the keys
+  `unresolved_keys` lists are attached in one round first;
+- `partial_visit`, `partial_visit_listed`: the same two strategies through
+  `PartialLookup::visit`, which resumes the pass instead of starting again;
 - `std`: `BTreeMap<Vec<u8>, u64>::get`.
 
 Linux x86-64 cloud VM, Intel Xeon at 2.30 GHz, one CPU via `taskset`, no
 frequency control; Rust 1.95.0 release build. Seeds 1, 2 and 3, method
-order alternating by seed, every interval at least 1.12 s. Call-weighted
-nanoseconds per lookup:
+order alternating by seed, the call counts pinned with
+`BPLUS_PARTIAL_BATCHES_<family>_<size>` (3,600, 1,000, 2,800 and 700
+batches of 4,096 lookups), every interval at least 1.21 s. Call-weighted
+nanoseconds per lookup, source `a56fceb` (the build of the last paired
+comparison below):
 
-| Keys | Entries | `complete` | `complete_validate` | `partial_attached` | `partial_requests` | `std` |
+| Keys | Entries | `complete` | `complete_validate` | `partial_attached` | `partial_listed` | `partial_requests` | `partial_visit` | `partial_visit_listed` | `std` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| distinct | 2,048 | 168.2 | 374.9 | 369.8 | 1,022.0 | 728.7 | 511.2 | 865.6 | 116.0 |
+| distinct | 181,267 | 1,053.8 | 1,454.4 | 1,007.4 | 2,430.4 | 1,863.2 | 1,293.9 | 2,068.7 | 420.2 |
+| shared | 2,048 | 191.1 | 438.7 | 632.3 | 1,723.5 | 12,229.6 | 2,051.8 | 1,458.0 | 126.3 |
+| shared | 181,267 | 930.1 | 1,280.2 | 1,750.7 | 4,206.7 | 30,275.5 | 4,640.3 | 3,605.3 | 447.7 |
+
+Keys attached and key rounds (calls that ended in `NeedKey`) per lookup,
+equal across seeds to within 0.02:
+
+| Keys | Entries | Height | Keys attached | Rounds, per request | Rounds, listed | Fence requests |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| distinct | 2,048 | 142.5 | 331.7 | 333.7 | 677.4 | 93.4 |
-| distinct | 181,267 | 832.4 | 1,195.3 | 839.8 | 1,719.2 | 373.0 |
-| shared | 2,048 | 159.5 | 394.5 | 586.3 | 10,765.2 | 112.4 |
-| shared | 181,267 | 857.6 | 1,167.1 | 1,504.5 | 29,217.4 | 437.9 |
+| distinct | 2,048 | 1 | 1.50 | 1.50 | 1.01 | 1.00 |
+| distinct | 181,267 | 2 | 2.50 | 2.50 | 2.00 | 2.00 |
+| shared | 2,048 | 1 | 90.95 | 90.95 | 2.00 | 1.00 |
+| shared | 181,267 | 2 | 174.52–174.56 | 174.52–174.56 | 3.00 | 2.00 |
 
-Ratios to `complete_validate`, with the range of the per-seed ratios:
-
-| Keys | Entries | `partial_attached` | `partial_requests` |
-| --- | ---: | --- | --- |
-| distinct | 2,048 | 1.006 (0.953–1.074) | 2.042 (2.031–2.060) |
-| distinct | 181,267 | 0.703 (0.668–0.750) | 1.438 (1.386–1.482) |
-| shared | 2,048 | 1.486 (1.436–1.557) | 27.287 (26.034–28.127) |
-| shared | 181,267 | 1.289 (1.227–1.343) | 25.033 (23.178–25.835) |
-
-Requests per lookup in `partial_requests`, identical across seeds to the
-third decimal:
-
-| Keys | Entries | Height | Key requests | Fence requests |
-| --- | ---: | ---: | ---: | ---: |
-| distinct | 2,048 | 1 | 1.50–1.52 | 1.00 |
-| distinct | 181,267 | 2 | 2.50–2.52 | 2.00 |
-| shared | 2,048 | 1 | 90.95 | 1.00 |
-| shared | 181,267 | 2 | 174.52–174.56 | 2.00 |
-
-What the request counts show:
+What the counts show:
 
 - With distinct prefixes, each level requests the child's first key and its
   fence, because equality of two incomplete keys with equal prefixes needs
-  the full bytes; a found key adds one request. That is one key request and
-  one fence request per level plus 0.5 for the half of the queries that are
-  present.
-- With a shared prefix, every key of every visited node is requested.
-  Each request returns from the pass and the next call validates the node
-  again, so a node of `n` keys that needs `r` requests costs `r + 1` passes
-  of `O(n)` comparisons. This is the stated cost of keeping no resolution
-  state between calls; attaching keys that share a prefix in advance avoids
-  it (`partial_attached`).
+  the full bytes; a found key adds one request.
+- With a shared prefix, every key of every visited node is needed. Per
+  request, `provide` validates the node again for each of them, so a node of
+  `n` keys that needs `r` requests costs `r + 1` passes (`partial_requests`);
+  `visit` resumes instead, one pass plus `r` resumptions
+  (`partial_visit`, 0.15 to 0.17 of `partial_requests`).
+- Listing reduces the rounds to about one per level but attaches every
+  listed key. With distinct prefixes the listing compares every key against
+  the query and its neighbours, so `partial_listed` is slower than
+  `partial_requests` there; with a shared prefix it is faster.
 
-The differences between `partial_attached` and `complete_validate` (faster
-with distinct prefixes at 181,267 entries, slower with the shared prefix)
-have not been analyzed at the instruction level, so no cause is claimed.
+### Changes and their paired comparisons
+
+Each change was compared against the build it replaced, with the same
+seeds, pinned call counts and alternating order; `complete` and `std` are
+unchanged controls. Executed instructions come from Callgrind over the timed
+region only (4,096 lookups, `BPLUS_PARTIAL_INSTRUCTIONS=1`).
+
+| Change | Partial methods, new/previous time | Controls | Instructions | Finding |
+| --- | --- | --- | --- | --- |
+| Word-wise prefix comparison (`cmp_short`, `cmp_prefixes`) | 0.626–0.958 in all 12 partial conditions | not recorded here | 193 fewer `memcmp` calls per lookup | kept |
+| `PrefixKey` fields in `repr(C)` order, prefix first | 0.927–1.087 | 0.85–1.06 | equal or 0.2–2.2% fewer in all 12 conditions | kept; the largest ratio (1.087, shared 181,267 `partial_attached`) has identical instruction counts and is within the controls' movement |
+| `pass` split into `pass_over` and closures (Verus) | 0.904–1.033 | 0.958–1.098 | `pass` 3.2% fewer instructions, 21.8% more data reads per lookup | kept; no partial ratio is outside the controls' movement |
+
+The split first passed the closures by reference with captures by
+reference; `pass` then reloaded the key slice through the closure
+environment (1,071 stack-operand instructions per lookup against 553).
+Passing the closures by value with moved captures restored the static stack
+loads of `pass` to the previous 52; three stack reads per pair-loop
+iteration remain (the loop end and two values kept across `memcmp`), which
+the timings above include.
 
 Raw records stay under `target/verification/`. Reproduce:
 
 ```sh
 cargo build --release --manifest-path tools/throughput-analysis/Cargo.toml \
   --target-dir target/verification/partial-bench --bin bplus_partial
+export BPLUS_PARTIAL_BATCHES_distinct_2048=3600 BPLUS_PARTIAL_BATCHES_distinct_181267=1000 \
+  BPLUS_PARTIAL_BATCHES_shared_2048=2800 BPLUS_PARTIAL_BATCHES_shared_181267=700
 for seed in 1 2 3; do
   taskset -c 2 target/verification/partial-bench/release/bplus_partial "$seed"
 done
+python3 tools/perf-audit/paired_ab.py --base BASE-seed*.csv --new NEW-seed*.csv --controls complete,std
 ```

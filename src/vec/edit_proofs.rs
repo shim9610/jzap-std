@@ -197,3 +197,47 @@ fn splice_fill_preserves_every_admitted_word_hole_and_tail() {
     drop(splice);
     assert!(owner.len() == committed + (original - end));
 }
+
+// The empty-tail branch of `Splice::try_finish` pushes through the owner and
+// never moves `tail_start`. The Drain drop then runs `restore_tail` with the
+// length above `tail_start` and an empty tail. Every admitted word length and
+// zero, one or two replacement values; the cover shows the state is reached.
+#[kani::proof]
+#[kani::unwind(5)]
+fn empty_tail_splice_publishes_past_the_tail_start() {
+    struct Source(u8);
+    impl crate::TryIterator for Source {
+        type Item = ();
+        type Error = u8;
+        fn try_next(&mut self) -> Result<Option<()>, u8> {
+            if self.0 == 0 {
+                return Ok(None);
+            }
+            self.0 -= 1;
+            Ok(Some(()))
+        }
+    }
+    let len: usize = kani::any();
+    let count: u8 = kani::any();
+    kani::assume(count <= 2);
+    let mut owner = units(len);
+    let Ok(drain) = owner.try_drain(len..len) else {
+        unreachable!()
+    };
+    let splice = Splice {
+        drain,
+        replacement: Source(count),
+    };
+    let (tail_start, tail_len) = (splice.drain.tail_start, splice.drain.tail_len);
+    assert!(tail_start == len && tail_len == 0);
+    let result = splice.try_finish();
+    let published = owner.len.get();
+    assert!(owner.cap.get() == usize::MAX);
+    assert!(tail_start <= published);
+    match result {
+        Ok(()) => assert!(published - tail_start == count as usize),
+        Err(_) => assert!(published == usize::MAX && published - tail_start < count as usize),
+    }
+    kani::cover!(result.is_ok() && published > tail_start);
+    kani::cover!(result.is_err());
+}

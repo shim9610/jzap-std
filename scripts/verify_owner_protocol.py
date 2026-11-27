@@ -181,6 +181,13 @@ def main():
             ('extract_drop_to_end_only','        let count=state.unvisited_len();','        let count=state.unvisited_len()+1;'),
             ('move_tail_without_gap_fill','    requires raw_valid(a),len==tail_start,tail_start as int+tail_len as int<=before as int,','    requires raw_valid(a),tail_start as int+tail_len as int<=before as int,'),
             ('owner_spare_count','    let _=slice_caller(a,len,spare);','    let _=slice_caller(a,len,a.cap);'),
+            # The restated Drain words: a length above tail_start is admitted
+            # only with an empty tail and inside the storage; the fill takes the
+            # product's rejection branch; an empty-tail push leaves tail_start.
+            ('drain_restore_without_length_bound','        len<=tail_start || (tail_len==0 && len<=a.cap),\n{\n    let _=offset_storage(a,tail_start);','        len<=tail_start || tail_len==0,\n{\n    let _=offset_storage(a,tail_start);'),
+            ('hole_without_length_bound','        && (h.len<=h.tail || (h.tail_len==0 && h.len<=h.cap))','        && (h.len<=h.tail || h.tail_len==0)'),
+            ('hole_fill_without_admission','    if h.tail.checked_sub(h.len).is_none() {return 2;}\n',''),
+            ('hole_push_moves_tail','    h.len=next;\n    true','    h.len=next;h.tail=next;\n    true'),
         ]:
             assert text.count(old)==1,name
             row,log=verify('mutation-'+name,text.replace(old,new))

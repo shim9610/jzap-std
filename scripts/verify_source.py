@@ -27,9 +27,10 @@ GROUPS = {
     ], loop_contracts=False, verus=['vec-staging'], scope='Executable staging controller in both Verus word domains; actual owning Vec push over every admitted native-word unit owner and bounded-source executions with all-word limits/capacities. Unabstracted byte-prefix leaf checks and existing Vec Miri/ASan cover nonzero storage separately.'),
     'vec-splice-fill': dict(harnesses=[
         'vec::edit::panic_proofs::splice_fill_preserves_every_admitted_word_hole_and_tail',
+        'vec::edit::panic_proofs::empty_tail_splice_publishes_past_the_tail_start',
         'init::collection::proofs::local_cursor_publication_preserves_every_word',
         'init::collection::proofs::local_fill_publishes_every_admitted_word_prefix',
-    ], cfgs=['jzap_init_loop_contracts'], verus=['init-prefix'], scope='Actual Splice fill delegates to the original initialization cursor. Both Verus word domains retain exact successful history and progress; actual Rust covers every valid native-word hole/tail coordinate and arbitrary source end/error/success, exact length publication and tail restoration. Existing unabstracted typed initialization checks and Vec memory scenarios are reused.'),
+    ], cfgs=['jzap_init_loop_contracts'], verus=['init-prefix'], scope='Actual Splice fill delegates to the original initialization cursor. Both Verus word domains retain exact successful history and progress; actual Rust covers every valid native-word hole/tail coordinate and arbitrary source end/error/success, exact length publication and tail restoration. The empty-tail branch of try_finish runs on every native-word length with up to two replacement values: the length is published past an unchanged tail_start. Existing unabstracted typed initialization checks and Vec memory scenarios are reused.'),
     'vec-extraction': dict(harnesses=[
         'vec::edit::panic_proofs::extraction_preserves_every_valid_cursor_state',
     ], verus=['vec-extraction'], scope='Original executable selected-first ExtractIf scan and conditional compaction over every admitted machine-word cursor state and arbitrary callback replies in both Verus widths. Native Rust checks the actual iterator and cold error transition; typed contents and provenance are checked separately.'),
@@ -158,6 +159,10 @@ CONTROLS = [
      '                self.drain.tail_start,\n                &mut self.replacement,',
      '                self.drain.owner.cap.get(),\n                &mut self.replacement,',
      'vec::edit::panic_proofs::splice_fill_preserves_every_admitted_word_hole_and_tail'),
+    ('vec-splice-empty-tail-push', 'vec-splice-fill', 'src/vec/edit.rs',
+     '                self.drain.owner.try_push(value).map_err(|e| e.error)?;',
+     '                drop(value);',
+     'vec::edit::panic_proofs::empty_tail_splice_publishes_past_the_tail_start'),
     ('vec-splice-fill-error', 'vec-splice-fill', 'src/vec/edit.rs',
      '        .map_err(InitError::Initialize)\n    }\n    /// Complete replacement',
      '        .map_err(|_| InitError::Storage(Error::Bounds))\n    }\n    /// Complete replacement',

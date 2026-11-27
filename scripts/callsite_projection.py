@@ -178,7 +178,7 @@ STATE_CONDITIONS={DRIVER:['raw_valid(a)','n<=a.cap'],'collection_driver_caller':
     'compact_drop_caller':['raw_valid(a)','state.wf()','state@.original<=a.cap'],
     'extract_drop_caller':['raw_valid(a)','state.wf()','state@.total<=a.cap'],
     'extract_peek_caller':['raw_valid(a)','state.wf()','state@.total<=a.cap'],
-    'drain_restore_tail_caller':['raw_valid(a)','len<=tail_start','tail_start+tail_len<=a.cap'],
+    'drain_restore_tail_caller':['raw_valid(a)','tail_start+tail_len<=a.cap','len<=tail_start || (tail_len==0 && len<=a.cap)'],
     'splice_move_tail_caller':['raw_valid(a)','len==tail_start','tail_start+tail_len<=cap before']}
 # Functions between those callers and the driver. Their bodies are compared
 # whole: the element count and the index reach the callback unchanged.
@@ -341,7 +341,7 @@ def generate(rows,operations,census):
                     assumptions+=['len==tail_start','len as int+tail_len as int+source_len as int<=a.cap as int','next_tail as int==tail_start as int+source_len as int']
                     replacements['extra.len.get()']='source_len'
             else:
-                assumptions+=['front<=back<=tail_start','tail_start as int+tail_len as int<=a.cap as int','len<=tail_start']
+                assumptions+=['front<=back<=tail_start','tail_start as int+tail_len as int<=a.cap as int','len<=tail_start || (tail_len==0 && len<=a.cap)']
                 if fn in ('next','next_back'):assumptions+=['index<a.cap']
                 if fn=='clear_remaining':replacements['start']='front';replacements['count']='back-front'
         if f in ('src/vec/ownership.rs','src/boxed/slice.rs') and fn in ('as_slice','as_mut_slice','next','next_back','drop') and ('span.' in text or '.add(i)' in text or '.add(index)' in text):

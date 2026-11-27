@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 58 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product); approach under the constraint not designed |
+| 1 | Vec and Buffer owner | 58 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); steps 2 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -164,11 +164,10 @@ The full report is kept locally under `target/verification/i16/designs/`.
 - **Scanner.** `state_sites` records assignments and struct literals. It must
   also record mutable borrows of the three fields (including arguments of
   `mem::swap`), so that the writer set is pinned and a new write fails.
-- **A premise that is false as written.** `hole_valid` requires
+- **A premise that was false as written.** `hole_valid` required
   `len <= tail`. After `Splice::try_finish` takes the `tail_len == 0` branch
   and pushes, `len > tail_start` is reachable and `restore_tail` still runs
-  (with `tail_len == 0`). Read in the source, not yet run. `hole_restore` and
-  `drain_before_tail_restore` are restated before they are proved.
+  (with `tail_len == 0`). Confirmed by a run and restated in step 1 (below).
 - **Known not to close this way:** `try_write_vectored` exists only for `u8`,
   so it has no zero-sized instantiation; the `Vec` that `VecDeque::into_vec`
   builds from the deque's words depends on unit 4; external callers of
@@ -199,3 +198,51 @@ The full report is kept locally under `target/verification/i16/designs/`.
 
 Each step is committed and pushed. Row counts are reported from a certificate
 run, not from this plan.
+
+### Step 1: the Drain/hole contracts state the words the product keeps
+
+Done on 2026-11-26. No product file changed and no contract changed status.
+
+**The claim, run.** The harness
+`vec::edit::panic_proofs::empty_tail_splice_publishes_past_the_tail_start`
+(`src/vec/edit_proofs.rs`) runs the real `try_drain(len..len)` and
+`Splice::try_finish` on a zero-sized owner for every word `len` and zero, one
+or two replacement values, with no assumption on `len`. Kani 0.68 verifies
+that the length ends at `tail_start + count` (or the push is refused at
+`usize::MAX`) and satisfies the cover `published > tail_start`. In a
+disposable copy of the source, a `kani::cover!` and an `assert!` placed in
+`Drain::restore_tail` showed, on the same harness: `len > tail_start` is
+reached at `restore_tail` (cover satisfied, `assert!(len <= tail_start)`
+fails), and `len > tail_start` with `tail_len != 0` is not reached. The
+maintained model `hole_push` had assigned `tail = next`, a write the product
+does not make.
+
+**Restated.** The words a Drain keeps are
+
+```
+tail + tail_len <= cap  &&  (len <= tail || (tail_len == 0 && len <= cap))
+```
+
+| Contract | File | Change |
+| --- | --- | --- |
+| `hole_valid` (spec) | `tools/memory-proof/operation-closure.verus.rs` | The invariant above, with `cap <= limit` and the byte bound as before |
+| `hole_push` | same | The model-only write of `tail` is removed; `ensures` now also states `tail` unchanged |
+| `hole_fill` | same | Takes the product's branch: `Splice::fill` returns `Error::Bounds` when `tail_start - len` underflows (generated from the pinned text by `scripts/closure_projection.py`). `ensures` weakened to what holds: `len` does not decrease, and stays at most `tail` when it started so |
+| `drain_before_tail_restore` | `tools/memory-proof/wrapping-memory.verus.rs` | `requires` is the invariant above |
+| `drain_restore_tail_caller` | `tools/memory-proof/raw-owner.verus.rs` | `requires` is the invariant above with `raw_valid` |
+| `adopted_owner` | `tools/memory-proof/owner-state.verus.rs` | `byte_valid(source_cap, size)` dropped from `requires`: the function checks it as the product does (`Capacity::try_new`) |
+
+`hole_available`, `hole_reserve`, `hole_move`, `hole_restore`, `stage_commit`,
+`stage_operation`, `splice_operation`, `drain_constructor` and
+`complete_splice` are unchanged in text and verify under the restated
+`hole_valid`. `hole_move`, `stage_commit` and `stage_operation` still require
+the phase fact `len == tail`.
+
+The restated contracts are still `premise-stated-not-proved`: the invariant is
+a `requires`, and no proof yet shows that the product establishes it at
+`restore_tail`, `fill` and `move_tail` (steps 5 and 7).
+
+Not exercised by any run: the fallback branch of
+`scripts/callsite_projection.py` for other `Drain` methods carries the same
+restated assumption, but every `Drain` block is routed to a maintained
+function today, so that branch generates no text.

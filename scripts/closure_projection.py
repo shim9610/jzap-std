@@ -47,6 +47,15 @@ def generate(root):
     move=replace_once(move,'Ok(())','true')
     values['HOLE_MOVE']=move;bind('hole_move','src/vec/edit.rs','move_tail',move)
 
+    # The product rejects a length above `tail_start` before the cursor runs.
+    # The model takes the same checked subtraction as its branch; the whole
+    # body of `fill` is pinned by init_bindings.check below.
+    filling=clean(block(edit,'fn fill('))
+    check=re.search(r'let start = (.*?);\s*let _ = (.*?);',filling,re.S)
+    assert check and compact(check.group(1))=='self.drain.owner.len' and compact(check.group(2))=='(Checked::new(self.drain.tail_start)-start).map_err(|_|Error::Bounds)?','splice fill admission requires review'
+    values['HOLE_FILL_REJECT']='h.tail.checked_sub(h.len).is_none()'
+    bind('hole_fill','src/vec/edit.rs','fill',check.group(0))
+
     restore=block(edit,'fn restore_tail(')
     formula=re.search(r'self.owner.len = Checked::new\((.*?)\);',restore,re.S).group(1)
     values['HOLE_RESTORE']=bounded_projection(formula).replace('self.owner.len.get()','h.len').replace('self.tail_len','h.tail_len')

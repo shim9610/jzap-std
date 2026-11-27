@@ -291,8 +291,12 @@ fn extraction_before_move(s: E, cap: usize, size: usize)
     assert(restored as int == s@.scan.write as int + remaining as int);
 }
 
+// The Drain words at `restore_tail`. With an empty tail the length may lie
+// above `tail_start`: `Splice::try_finish` then publishes through the owner
+// and never moves `tail_start`.
 fn drain_before_tail_restore(len: usize, tail_start: usize, tail_len: usize, cap: usize, size: usize)
-    requires len <= tail_start, tail_start as int + tail_len as int <= cap as int,
+    requires tail_start as int + tail_len as int <= cap as int,
+        len <= tail_start || (tail_len == 0 && len <= cap),
         byte_valid(cap, size),
 {
     let restored = DRAIN_RESTORED;

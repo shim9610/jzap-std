@@ -4,8 +4,13 @@
 verus! {
 #[derive(Clone,Copy)]
 struct Hole { len:usize, tail:usize, tail_len:usize, cap:usize, limit:usize }
+// The words a Drain keeps. The retained tail lies inside the storage. The
+// length is at most `tail` while a tail is retained. With an empty tail the
+// product publishes through the owner without moving `tail_start`
+// (`Splice::try_finish`), so the length is then bounded by the capacity only.
 spec fn hole_valid(h:Hole,size:usize)->bool {
-    h.len<=h.tail && h.tail as int+h.tail_len as int<=h.cap as int
+    h.tail as int+h.tail_len as int<=h.cap as int
+        && (h.len<=h.tail || (h.tail_len==0 && h.len<=h.cap))
         && h.cap<=h.limit && byte_valid(h.cap,size)
 }
 
@@ -42,11 +47,15 @@ fn hole_move(h:&mut Hole,size:usize,additional:usize,accepted:bool)->(ok:bool)
 
 fn hole_fill<F:Fn(usize)->Result<bool,()>>(h:&mut Hole,size:usize,cb:&F)->(r:u8)
     requires hole_valid(*old(h),size),forall|i:usize| call_requires(*cb,(i,)),
-    ensures hole_valid(*final(h),size),old(h).len<=final(h).len<=old(h).tail,
+    ensures hole_valid(*final(h),size),old(h).len<=final(h).len,
+        old(h).len<=old(h).tail ==> final(h).len<=old(h).tail,
         final(h).tail==old(h).tail,final(h).tail_len==old(h).tail_len,
         final(h).cap==old(h).cap,final(h).limit==old(h).limit,
         r==0 ==> final(h).len==final(h).tail,
 {
+    // `Splice::fill` checks `tail_start - len` and returns `Error::Bounds`
+    // before the cursor runs; the reply is the error code of this model.
+    if HOLE_FILL_REJECT {return 2;}
     let (code,len)=splice_fill_loop(h.len,h.tail,h.cap,size,|i:usize| cb(i));
     h.len=len;code
 }
@@ -54,13 +63,15 @@ fn hole_fill<F:Fn(usize)->Result<bool,()>>(h:&mut Hole,size:usize,cb:&F)->(r:u8)
 fn hole_push(h:&mut Hole,size:usize,accepted:bool)->(ok:bool)
     requires hole_valid(*old(h),size),old(h).tail_len==0,
     ensures hole_valid(*final(h),size),final(h).tail_len==0,
+        final(h).tail==old(h).tail,
         final(h).limit==old(h).limit,final(h).len>=old(h).len,
         ok ==> final(h).len as int==old(h).len as int+1,
 {
     let Some(next)=h.len.checked_add(1) else{return false;};
     if !hole_reserve(h,size,1,false,accepted){return false;}
     let _=observed_element(h.cap,size,h.len);
-    h.len=next;h.tail=next;
+    // `Vec::try_push` publishes the length only; `tail_start` is not written.
+    h.len=next;
     true
 }
 

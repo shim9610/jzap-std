@@ -103,10 +103,12 @@ fn split_owner(original:OwnerState,size:usize,at:usize,accepted:bool)
     Some((OwnerState{len:SPLIT_PREFIX_COMMIT,..original},tail))
 }
 
+// The byte bound of the adopted capacity is not a premise: the product checks
+// it (`Capacity::try_new` in `Vec::try_from_std_in`), as this function does.
 fn adopted_owner(source_len:usize,source_cap:usize,limit:usize,size:usize,
     budget_limit:usize,occupied:usize,available:usize,metered:bool)
     ->(r:Option<(OwnerState,usize,usize)>)
-    requires source_len<=source_cap,byte_valid(source_cap,size),
+    requires source_len<=source_cap,
         occupied as int+available as int<=budget_limit as int,
     ensures match r {Some((owner,o,a))=>owner_valid(owner,size) && owner.len==source_len
         && owner.limit==limit && o as int+a as int<=budget_limit as int

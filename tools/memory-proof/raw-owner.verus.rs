@@ -354,9 +354,12 @@ fn extract_peek_caller(a:RawStorage,state:crate::compaction::Extraction)
 }
 
 // Drain::restore_tail: the retained tail moves down to the current length.
-// The Drain invariant is stated: the gap precedes a tail inside the storage.
+// The Drain invariant is stated: the tail lies inside the storage and the gap
+// precedes it, or the tail is empty and the length is inside the storage
+// (`Splice::try_finish` publishes past `tail_start` when no tail is retained).
 fn drain_restore_tail_caller(a:RawStorage,len:usize,tail_start:usize,tail_len:usize)
-    requires raw_valid(a),len<=tail_start,tail_start as int+tail_len as int<=a.cap as int,
+    requires raw_valid(a),tail_start as int+tail_len as int<=a.cap as int,
+        len<=tail_start || (tail_len==0 && len<=a.cap),
 {
     let _=offset_storage(a,tail_start);
     let _=offset_storage(a,len);

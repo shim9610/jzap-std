@@ -288,18 +288,26 @@ source. `scripts/premise_status.py` now records this reason for each of the two
 contracts in place of the general owner reason, and
 `scripts/test_verify.py` keeps them stated.
 
-Open for the owner: whether a store whose own precondition is shown to follow
-from a guard, independently of the enclosing function's `requires`, may count
-as connected. If so, it needs a maintained check of that independence, not the
-one-off run above.
+Follow-up, the two modular-call rows of those stores. The row in
+`init::driver::run` had been bound to `initialized_box_prefix`, a maintained
+function without a `requires` that calls `run` from 0, and so counted as
+established although `run` has other callers; its twin in
+`vec::staging_driver::run` counted as stated. Both are now bound to
+`guarded_increment` (`tools/direct-verus/init-adapters.rs`): it has no
+`requires`, takes the guard as its own branch and calls the product
+`wrapping_add` below the bound, so the increment cannot wrap whatever the
+caller passed. `verify_wrapping_memory.guarded_stores` pins each guard next to
+its increment in the product text (`while state.get() < end`,
+`if len >= limit { return }`). Basis `no-premise`; the ledger now has 26
+established and 27 stated rows of 53 (25 and 28 before). The numeric
+`requires` of the two functions is a different premise and stays stated under
+`admitted_cursor` and `staged_collection_extent`.
 
-Found while checking, not changed: the modular-call row of the same store in
-`init::driver::run` is bound to `initialized_box_prefix`
-(`scripts/verify_wrapping_memory.py`), a maintained function without a
-`requires` that calls `run` from 0, and is therefore counted as established.
-Its twin in `vec::staging_driver::run` is bound to an adapter that restates the
-function's `requires` and is counted as stated. The two rows have the same
-structure and are reported differently.
+Run: `scripts/verify_wrapping_memory.py --mutations` passes (388 verified,
+0 errors; 9 controls detected, of which three are new: the increment without
+its guard is refused by Verus with 1 error, and each moved guard fails the
+source pin); `scripts/test_verify.py` 50 OK. The owner protocol was not rerun
+after this change.
 
 `c_previous_kept` was not touched: it rests on a zero-sized Kani instantiation
 and belongs to `instantiated-kani`.

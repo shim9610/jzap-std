@@ -70,6 +70,14 @@ ESTABLISHED = {
             '(scripts/caller_bindings.py asserts both): checked countdowns of Take and the default '
             'methods, a moved fold value and the fields of Take, FromStd and FromResults',
             ['safe_iterator_state']),
+    **_rows('no-premise', 'guarded_increment has no requires (tools/direct-verus/init-adapters.rs) and '
+            'calls the product wrapping_add under the same guard. Its two rows are the increments '
+            'of init::driver::run (after `while state.get() < end`) and vec::staging_driver::run '
+            '(after `if len >= limit { return }`); verify_wrapping_memory.guarded_stores pins each '
+            'guard next to its increment, so neither can wrap whatever the caller passed. The '
+            'numeric requires of the two functions is a separate premise (admitted_cursor, '
+            'staged_collection_extent) and stays stated',
+            ['guarded_increment']),
     **_rows('no-premise', 'Actual-Rust Kani harness over every machine word without an assumption: '
             'src/span.rs:116 (Span::full), src/init/collection_proofs.rs:5',
             ['kani:full_constructor_establishes_order',

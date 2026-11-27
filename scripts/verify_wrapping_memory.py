@@ -199,10 +199,11 @@ def generate(source_root, census):
 # in premise_status.py and reported with each ledger row. Counts are per
 # function, not per call.
 FAMILIES = {
-    ("src/init/driver.rs", "", "run"): (1, ["initialized_box_prefix"]),
-    # len < limit is checked before the increment; proved on the original
-    # loop by the direct vec-staging Verus group and composed below.
-    ("src/vec/staging_driver.rs", "", "run"): (1, ["staged_collection_extent"]),
+    # Each increment follows a guard on the same word, so it cannot wrap for
+    # any caller: guarded_stores() pins the guard next to the increment and
+    # guarded_increment has no requires.
+    ("src/init/driver.rs", "", "run"): (1, ["guarded_increment"]),
+    ("src/vec/staging_driver.rs", "", "run"): (1, ["guarded_increment"]),
     ("src/shared/count.rs", "LocalCount", "release"): (1, ["shared_release_credit"]),
     ("src/shared/count.rs", "AtomicCount", "buffered_clone_strong"): (1, ["shared_buffered_reservation_extent"]),
     ("src/boxed/text.rs", "CharBytes", "try_next"): (1, ["utf8_byte_cursor"]),
@@ -246,8 +247,28 @@ FAMILIES = {
 }
 
 
+def guarded_stores(texts):
+    """Each of the two driver increments directly follows its guard on the same word.
+
+    `texts` maps the two driver files to their source. The loop word is read
+    once into the incremented local and is not rebound before the increment.
+    """
+    compact = lambda text: re.sub(r"\s+", "", re.sub(r"(?m)^\s*#\[cfg[^\n]*\n(?:\s*(?:let|proof!)[^\n]*\n)?", "", text))
+    driver = compact(texts["src/init/driver.rs"])
+    assert "whilestate.get()<end{" in driver, "init driver guard moved"
+    loop = driver[driver.index("whilestate.get()<end{"):]
+    assert loop.startswith("whilestate.get()<end{letindex=state.get();"), "init driver guard moved"
+    assert loop.count("letindex=") == 1 and "index=" not in loop.replace("letindex=", "", 1).split("wrapping_add(index,1)")[0], \
+        "init driver index rebound before the increment"
+    assert driver.count("wrapping_add(") == 1 and "*state=Checked::new(wrapping_add(index,1));" in loop, "init driver increment changed"
+    staging = compact(texts["src/vec/staging_driver.rs"])
+    assert staging.count("wrapping_add(") == 1 and \
+        "iflen>=limit{return(Ok(false),len,cap);}letnext=wrapping_add(len,1);" in staging, "staging driver guard moved"
+
+
 def coverage(census):
     families = FAMILIES
+    guarded_stores({name: (ROOT / name).read_text() for name in ("src/init/driver.rs", "src/vec/staging_driver.rs")})
     found, ledger = {}, []
     for row in census:
         kind = row["kind"]
@@ -386,6 +407,23 @@ def verify_mutations(env, census, combined, generated):
     text = result.stdout + result.stderr; (OUT / "mutation-destination.log").write_text(text)
     assert result.returncode and re.search(r"verification results:: \d+ verified, [1-9]\d* errors", text) and "error[E" not in text
     results.append(dict(name="destination_span", detected=True, exit_code=result.returncode))
+    # The guarded increment: without its guard the solver must refuse the
+    # product's wrapping_add, and a moved guard must fail the source pin.
+    mutated = combined + "\nverus! { fn unguarded_increment(current: usize) -> usize { crate::arithmetic::bounded::wrapping_add(current, 1) } }\n"
+    path = OUT / "mutation-unguarded.generated.rs"; path.write_text(mutated)
+    _, result = compose(VERUS, ROOT, path, "unguarded_increment", env)
+    text = result.stdout + result.stderr; (OUT / "mutation-unguarded.log").write_text(text)
+    assert result.returncode and re.search(r"verification results:: \d+ verified, 1 errors", text) and "error[E" not in text \
+        and "unguarded_increment" in text, text[-3000:]
+    results.append(dict(name="unguarded_increment", detected=True, exit_code=result.returncode))
+    drivers = {name: (ROOT / name).read_text() for name in ("src/init/driver.rs", "src/vec/staging_driver.rs")}
+    for name, file, before, after in [
+        ("init_guard_moved", "src/init/driver.rs", "while state.get() < end {", "while state.get() <= end {"),
+        ("staging_guard_moved", "src/vec/staging_driver.rs", "if len >= limit {", "if len > limit {"),
+    ]:
+        try: guarded_stores({**drivers, file: replace_once(drivers[file], before, after)})
+        except AssertionError: results.append(dict(name=name, detected=True))
+        else: raise AssertionError("moved guard accepted: " + name)
     # Direct calls, aliased imports and macro bodies cannot evade this census.
     for name, extra in [
         ("unbound_modular_call", "fn unbound(value:usize)->usize { value.wrapping_add(1) }"),

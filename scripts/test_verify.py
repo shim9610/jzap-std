@@ -486,6 +486,27 @@ class PremiseTests(unittest.TestCase):
         }"""
         self.assertEqual(verified_function_names(text), {'e', 'f', 'g', 'h', 'i'})
 
+    def test_guarded_increments_are_pinned_next_to_their_guards(self):
+        from premise_status import premise
+        from verify_wrapping_memory import FAMILIES, guarded_stores
+        files = ('src/init/driver.rs', 'src/vec/staging_driver.rs')
+        texts = {name: (ROOT / name).read_text() for name in files}
+        guarded_stores(texts)
+        self.assertEqual(premise('guarded_increment')['basis'], 'no-premise')
+        for name in files:
+            self.assertEqual(FAMILIES[(name, '', 'run')], (1, ['guarded_increment']))
+        # The functions' own numeric requires stays a stated premise.
+        self.assertEqual(premise('admitted_cursor')['status'], 'stated-not-proved')
+        self.assertEqual(premise('staged_collection_extent')['status'], 'stated-not-proved')
+        for name, old, new in [
+                (files[0], 'while state.get() < end {', 'while state.get() <= end {'),
+                (files[0], 'let index = state.get();', 'let index = state.get(); let index = end;'),
+                (files[1], 'if len >= limit {', 'if len > limit {'),
+                (files[1], 'let next = wrapping_add(len, 1);', 'let len = limit; let next = wrapping_add(len, 1);')]:
+            self.assertIn(old, texts[name])
+            with self.assertRaises(AssertionError):
+                guarded_stores({**texts, name: texts[name].replace(old, new)})
+
     def test_disposition_requires_a_verified_contract_and_an_established_premise(self):
         from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition
         verified = {'c_keep_next', 'c_keep_live', 'resized_owner', 'direct:bplus-partial', 'lookup_path_read', 'unknown_contract'}

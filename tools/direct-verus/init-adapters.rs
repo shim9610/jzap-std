@@ -11,6 +11,17 @@ fn initialized_box_prefix(target: usize, fail_at: usize, callback_ok: bool, slot
     });
     (result.is_ok(), state.get())
 }
+// The increments of `init::driver::run` and `vec::staging_driver::run` follow a
+// guard on the same word (`while state.get() < end`, `if len >= limit {
+// return }`). Below the bound the increment cannot wrap and stays within the
+// bound, whatever the caller passed; verify_wrapping_memory.py pins both
+// guards next to their increments.
+fn guarded_increment(current: usize, bound: usize) -> (next: Option<usize>)
+    ensures current < bound ==> next == Some((current + 1) as usize) && current + 1 <= bound,
+        current >= bound ==> next.is_none(),
+{
+    if current < bound { Some(crate::arithmetic::bounded::wrapping_add(current, 1)) } else { None }
+}
 fn admitted_cursor<E, F: FnMut(usize) -> Result<(), E>>(
     state: &mut crate::Checked<usize>, end: usize, step: F,
 ) -> (out: Result<(), E>)

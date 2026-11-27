@@ -609,3 +609,41 @@ fn closure_bounded_extend_from_within_returns_preserve_the_invariant() {
     closure_flaky_extend_from_within_case(LengthLimit::new(kani::any()));
     closure_flaky_extend_from_within_case(Unlimited);
 }
+
+// Writer L11 (issue #16, unit 1 step 7): the element loop of
+// `try_resize_with_init` under its loop contract, so the request has no bound.
+// The callback fails, returns without a write or writes, chosen on every call.
+#[cfg(jzap_loop_contracts)]
+fn closure_resize_with_init_case<L: LengthPolicy>(limit: L) -> Result<(), InitError<()>> {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, cap, max) = (owner.len(), owner.capacity(), owner.max_len());
+    let pointer = owner.ptr;
+    let new_len: usize = kani::any();
+    let result = owner.try_resize_with_init(new_len, |_, slot| {
+        if kani::any() {
+            return Err(());
+        }
+        if kani::any() {
+            let _ = slot.write(());
+        }
+        Ok(())
+    });
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { new_len } else { len });
+    assert!(owner.ptr == pointer && owner.capacity() >= cap);
+    kani::cover!(result.is_ok() && new_len > len);
+    kani::cover!(matches!(result, Err(InitError::Initialize(()))));
+    kani::cover!(matches!(
+        result,
+        Err(InitError::Storage(Error::Uninitialized))
+    ));
+    result
+}
+#[cfg(jzap_loop_contracts)]
+#[kani::proof]
+fn closure_resize_with_init_preserves_the_invariant() {
+    let limited = closure_resize_with_init_case(LengthLimit::new(kani::any()));
+    // Only a limit refuses a count of zero-sized elements.
+    kani::cover!(matches!(limited, Err(InitError::Storage(Error::Capacity))));
+    let _ = closure_resize_with_init_case(Unlimited);
+}

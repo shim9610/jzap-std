@@ -528,7 +528,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             owner: self,
             original,
         };
-        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len.get() && guard.owner.len.get() <= new_len && guard.original == original && guard.owner.ptr == on_entry(guard.owner.ptr) && guard.owner.cap.get() == on_entry(guard.owner.cap.get())))]
+        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= new_len))]
         while guard.owner.len.get() < new_len {
             let index = guard.owner.len.get();
             let next = (guard.owner.len + Checked::new(1))

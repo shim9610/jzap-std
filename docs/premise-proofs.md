@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); steps 7 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 task A done (the loop contract of `try_resize_with_init` restated, L11 has its closure harness); steps 7 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -773,3 +773,115 @@ Not run: `scripts/verify_panic_paths.py`, `scripts/source_certificate.py`,
 | The same, and at four sized elements with the storage functions stubbed | C1 and C2 through `try_reserve`, `try_reserve_exact`, `grow`, `reserve_length`, `try_shrink_to`, `grow_for_push`; the capacity constructors; Buffer `reserve` and `finish` |
 | Harness with an extra assumption (a bound on the request), not closure evidence | L11, L16, L18, L19 (at most two new elements); Buffer `collect` and `collect_rest` (a source of at most two values) |
 | No harness | L22, L30, L31, L32; the iterator-driven extenders; the two whole-owner replacements; `try_write_fmt`; the `Vec::from_raw_parts` calls outside `src/vec` |
+
+### Step 7, task A: the loop contract of `try_resize_with_init`
+
+Done on 2026-11-27. One product line changed, inside a `cfg(kani)` attribute;
+no contract changed status.
+
+**The failure, isolated.** Kani gives CBMC no write set for a loop, so CBMC
+infers one. For every place the loop writes through a pointer (`(*p).len`,
+and in the callees it inlines for this analysis `(*q).initialized` of the
+`InitSlot`), it takes every local pointer its alias analysis puts in the same
+class, casts it to the pointer type of that write and adds the field at that
+offset. The analysis does not look at types. The closure that Kani builds from
+the loop invariant borrows each place the invariant names, and those borrows
+are local pointers of that class. The write set is taken once, at loop entry.
+
+With the invariant as it was (`guard.owner.len.get()`,
+`guard.original == original`, `guard.owner.ptr == on_entry(..)`,
+`guard.owner.cap.get() == on_entry(..)`), the instrumented program of
+`panic_proofs::vec_resize_covers_every_length_and_callback_result` lists 26
+targets (`goto-instrument --show-goto-functions` on the kept program). A trace
+of the failing check (`cbmc --trace --property
+__CPROVER_contracts_car_set_insert.assertion.1`) gives:
+
+| Target (index) | From the borrow | Address at loop entry | Effect |
+| --- | --- | --- | --- |
+| `(*guard.owner).len` (0 to 4) | the owner pointer | `&v.len`, 8 bytes | the write the loop makes |
+| `((InitSlot*)p).initialized`, `((Vec*)p).len` (5, 6) | `p = &v.len` | `&v.cap`, 1 and 8 bytes | the loop may change `cap`; the invariant restated it with `on_entry` |
+| the same two (11, 12) | `p = &v.cap` | `&v.limit`, 1 and 8 bytes | the loop may change `limit`; nothing restated it |
+| `((InitSlot*)p).initialized` (18) | `p = &guard.original` | `&guard + 16`, one byte past the 16-byte guard | `car_set_insert` asserts that a target is writable: **"ptr NULL or writable up to size" fails**; the two "pointer outside object bounds" failures are reads of this target and of index 19 |
+
+So the instrumentation failure came from `guard.original == original` in the
+invariant, and the unframed `limit` came from `guard.owner.cap.get()`. Neither
+is a defect of the product loop.
+
+**Minimal reproduction** (a disposable crate outside the repository; kept
+locally under `target/verification/i16/step7/repro/`): an owner of four words,
+a guard holding `&mut Owner` and a word, a slot with a flag, the same loop.
+Kani 0.68.0, CBMC 6.11.0, Z3 4.16.0, one run per variant of the invariant:
+
+| Variant | Result |
+| --- | --- |
+| the product's form | the same three failed checks, and the harness's frame assertion on `cap` and `limit` |
+| without `guard.original` | `car_set_insert` still fails, at the target built from the `on_entry` copy of the pointer word: that copy is a pointer of the class, and offset 8 from the one-byte object it points to is outside it (trace) |
+| the length only, by field | no instrumentation failure; the frame assertion fails (the word after `len` is in the write set) |
+| the product's form with `kani::loop_modifies(&guard.owner.len)` | "Check that var_N is assignable" fails for the compiler temporaries of the loop body and for `slot`: an explicit write set has to name every local the body assigns, and temporaries have no name |
+| the length only, read through a `&self` getter of the owner | no instrumentation failure. The targets built from the invariant's borrow are `(*owner).len` and the byte at offset 8 of the owner. The model's body also gives whole-object targets (the owner and its storage, through pointers the body loads inside the loop), so the model's frame assertion still fails; the product's write set has no such target (below) |
+
+**The fix** (`src/vec.rs:531`, the whole edit):
+
+```
+#[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= new_len))]
+```
+
+`guard.owner.len()` borrows the owner whole, so the only pointer of the class
+is the owner's address. The reproduction shows the mechanism, not the fix: the
+fix is checked on the product. The write set of the same harness is then 10
+entries, all of them listed by `goto-instrument`:
+`(*guard.owner).len` (twice), the byte at offset 8 of the owner (twice; it is
+the low byte of `len`, the trace above has `&v.len` at offset 8) and six
+locals of the body. `ptr`, `cap`, `limit` and the guard are outside it and
+need no clause. This depends on the layout of `Vec<(), Unmetered, L>` and of
+`InitSlot<()>` under this toolchain; if byte 8 were another word, the closure
+harness below would fail, not pass.
+
+**Pins changed.**
+
+| Pin | Change |
+| --- | --- |
+| `scripts/callsite_projection.py`, `RESIZE_WITH_INIT` | the attribute text inside the pinned function body |
+| `tools/panic-audit/src/main.rs`, the loop-predicate grammar | `.get()` on `guard.owner.len` and `guard.owner.cap` is no longer accepted, and `src/vec.rs::try_resize_with_init` left the list of loops with metadata getters. The new predicate is accepted as this exact text at this loop only (`OWNER_LENGTH_INVARIANTS`), and only when `Vec::len` is the reviewed one-expression getter (`reviewed_owner_length`). Two unit tests are new (the predicate at another file, function or with a changed text is refused; a changed getter is refused), one is extended |
+
+**Harnesses.**
+
+| Harness | Assumes | Result | Solver time |
+| --- | --- | --- | ---: |
+| `panic_proofs::vec_resize_covers_every_length_and_callback_result` (existing; `RUSTFLAGS="--cfg jzap_loop_contracts" cargo kani --lib -Z loop-contracts --exact --harness ..`, Z3 on `PATH`) | `len <= limit` on a `cap == limit` owner | verified | 11 s |
+| `vec::metadata_proofs::closure_resize_with_init_preserves_the_invariant` (new; L11) | `closure_owner` only | verified, in the `owner-metadata` group (CaDiCaL) | 25 s |
+
+The closure harness runs the method on every length and capacity word under
+`LengthLimit` with any limit and under `Unlimited`, for every requested
+length; the callback fails, returns without a write or writes, chosen on every
+call. It asserts the invariant, the unchanged limit and pointer, a capacity
+that did not shrink and the exact length on every return (the error returns
+go through the `SuffixGuard`). Covers satisfied: growth, a callback error, a
+missing write, and a limit refusal (limited case). Two controls are new and
+detected: `closure-vec-resize-init-length` (the store publishes
+`usize::MAX`) and `closure-vec-resize-init-reservation` (the reservation asks
+for nothing).
+
+**Run.**
+
+- `python3 scripts/verify_source.py --group owner-metadata --mutations`: pass
+  in 1,050 s; 27 of 27 harnesses verified, 31 of 31 controls detected.
+- Machine code. The four benchmark executables built from an export of
+  `4e0158a` and from an export of this tree, in two directories of equal path
+  length: 851, 728, 668 and 594 function bodies, all identical (only first 0,
+  only second 0, each). Built one after the other in the same directory, the
+  four files are byte-identical.
+- `cargo fmt --check`: clean. `cargo test --locked --offline --features std`:
+  460 passed, 0 failed. `cargo clippy --locked --offline --lib` with
+  `--all-features` and with `--no-default-features`, `-D warnings`: clean.
+- `cargo test` of `tools/panic-audit`: 5 passed. `scripts/test_verify.py`:
+  50 OK. `scripts/verify_owner_protocol.py` (without mutations): pass, 385 s.
+
+Not run in this task: `scripts/verify_panic_paths.py` (its entry for the
+existing harness is expected to report "pass" now), the other loop-contract
+harnesses of `src/panic_proofs.rs`, `scripts/source_certificate.py`.
+
+`try_resize`, `try_resize_with`, the per-element branch of
+`try_extend_cloned` and the two `try_clone_in` functions call this loop with
+other callbacks. They write no owner word themselves; they were not run under
+the loop contract in this task.

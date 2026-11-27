@@ -178,6 +178,8 @@ CLOSURE = {
         'extend_copy_from_within_preserves_the_invariant',
         'into_array_preserves_the_invariant_of_a_returned_owner',
         'flatten_establishes_the_invariant_of_the_element_owner',
+        # Under the loop contract of try_resize_with_init: no bound on the request.
+        'resize_with_init_preserves_the_invariant',
     )] + ['vec::ownership::panic_proofs::closure_into_iter_preserves_the_invariant'],
     'vec-layout-growth': ['vec::growth_proofs::closure_' + name for name in (
         'reserve_preserves_the_invariant',
@@ -654,6 +656,14 @@ CONTROLS = [
      '        let back = self.len.get();\n        self.len = Checked::new(0);',
      '        let back = self.len.get();\n        self.len = Checked::new(usize::MAX);',
      'vec::ownership::panic_proofs::closure_into_iter_preserves_the_invariant'),
+    ('closure-vec-resize-init-length', 'owner-metadata', 'src/vec.rs',
+     '            slot.finish().map_err(InitError::Storage)?;\n            guard.owner.len = next;',
+     '            slot.finish().map_err(InitError::Storage)?;\n            guard.owner.len = Checked::new(usize::MAX);',
+     'vec::metadata_proofs::closure_resize_with_init_preserves_the_invariant'),
+    ('closure-vec-resize-init-reservation', 'owner-metadata', 'src/vec.rs',
+     '        self.try_reserve(additional.get())\n            .map_err(InitError::Storage)?;\n        let original = self.len.get();',
+     '        self.try_reserve(0)\n            .map_err(InitError::Storage)?;\n        let original = self.len.get();',
+     'vec::metadata_proofs::closure_resize_with_init_preserves_the_invariant'),
     ('closure-vec-resize-capacity', 'vec-layout-growth', 'src/vec.rs',
      'crate::capacity::Capacity::try_new(cap)?;',
      'crate::capacity::Capacity::try_new(cap.wrapping_add(1))?;',

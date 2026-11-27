@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); steps 4 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); steps 5 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -391,3 +391,106 @@ a sample file.
   (an unparsed macro body; every use today is inside an unsafe block), and a
   borrow of an element or of a dereference of a field (`&mut self.x[i]`,
   `&mut *self.x`).
+
+### Step 4: Buffer closure harnesses
+
+Done on 2026-11-27. No product file changed and no contract changed status:
+`scripts/premise_status.py` is untouched and the basis `instantiated-kani` is
+still not implemented. This step adds verified harnesses and registers them.
+
+Before the step, `python3 scripts/verify_owner_protocol.py --mutations` was run
+on `bc757eb` (the run that step 2 left open): pass, 1,246 s, 65 results,
+`source_closure_complete`, no reused prerequisite.
+
+**Fixture** (`src/boxed/buffer_proofs.rs`). `closure_invariant` is the Buffer
+invariant in the owner's own words:
+`len <= cap && layout::array::<T>(cap) == Ok(layout)`. The second part is the
+byte bound `cap * size <= isize::MAX` and the stored layout; for a zero-sized
+element every capacity has the same zero-byte layout, so it constrains nothing
+but the layout word. `closure_owner::<T>()` builds an owner from arbitrary
+length and capacity words, assumes `closure_invariant` and nothing else, and is
+the only place where a closure harness assumes anything about the owner. Each
+harness asserts `closure_invariant` on every return.
+
+| Harness (`boxed::buffer::proofs::`) | Method | Element | Inputs besides the owner |
+| --- | --- | --- | --- |
+| `closure_new_establishes_the_invariant` | `new` | `()`, `u8`, `u64`, `[u64; 200]`, a 64-aligned 64-byte type | none |
+| `closure_reserve_preserves_the_invariant_for_every_unit_owner` | `reserve` | `()` | every `additional` and `hint` |
+| `closure_push_preserves_the_invariant_for_every_unit_owner` | `push` (and `reserve`) | `()` | every `hint` |
+| `closure_append_preserves_the_invariant_for_every_unit_owner` | `append` (and `reserve`) | `()` | a slice of every length |
+| `closure_collect_preserves_the_invariant_for_every_unit_owner_and_two_value_source` | `collect`, `collect_rest` | `()` | a source that yields at most two values; every call may fail, every size hint is an arbitrary word or an error |
+| `closure_finish_transfers_exactly_the_length_of_every_unit_owner` | `finish` | `()` | none |
+| `sized::closure_reserve_preserves_the_invariant_for_every_sized_owner` | `reserve` | `u8`, `u64`, `[u64; 200]`, the aligned type | every `additional` and `hint`; `storage::reallocate` stubbed |
+| `sized::closure_finish_transfers_exactly_the_length_of_every_sized_owner` | `finish` | the same four | `storage::reallocate` and `storage::deallocate` stubbed |
+
+`finish` consumes the owner, so its harnesses assert the words of the returned
+Box (length equal to the owner's length, same address) instead of the invariant.
+
+**Stubbing works here.** `-Z stubbing` replaces `storage::reallocate` (an
+`#[inline(always)] unsafe fn`) and `storage::deallocate` in this crate: Kani
+0.68 lists both stubs for the harness and verifies it. The stub of `reallocate`
+returns the same pointer or `Error::Allocation`, chosen freshly, and touches no
+byte, so the capacity word of a sized owner ranges over every count with a
+valid array layout. The cover statements of the sized reserve harness are
+satisfied for each of the four types: a grown capacity, an allocator refusal
+and a layout refusal. A harness with a stub attribute does not compile in a
+Kani run without `-Z stubbing` (`error: Using the stub attribute requires
+activating the unstable stubbing feature`), and `scripts/verify.py` selects
+`boxed::buffer::proofs::` by prefix without that option, so the two sized
+harnesses are in a module under `cfg(jzap_closure_stubs)`. That name is not in
+the manifest's `check-cfg` list (the manifest was not edited): every Kani build
+now prints one `unexpected cfg` warning for it.
+
+**`collect_rest` without a loop invariant.** The source of the collect harness
+yields at most two values, so the cursor loop of `init::collection::fill` and
+the `loop` of `collect_rest` are unwound (`kani::unwind(5)`) and no product loop
+needs an invariant. The length and capacity words are arbitrary; the bound is
+on the number of values only. The covers show a run that takes two values and
+returns `Ok`, a storage error and a source error. An unbounded source was not
+run: with `--cfg jzap_init_loop_contracts` the fill loop would be abstracted,
+but the `loop` of `collect_rest` has no invariant and a source that never ends
+does not unwind.
+
+**Registration** (`scripts/verify_source.py`). `CLOSURE` appends the six
+unit-element harnesses to the `buffer` group (10 harnesses in its Kani
+invocation, 4 before). `EXTRA` is new: a second Kani invocation of the same
+group for harnesses that need options the group does not use, here
+`-Z stubbing` and `--cfg jzap_closure_stubs` for the two sized harnesses. A
+control takes the options of the invocation that owns its harness. Nine
+controls are new; each mutates `src/boxed/buffer.rs` in a disposable copy so
+that one writer breaks the invariant, and must end in a solver counterexample:
+
+| Control | Mutation | Harness that must fail |
+| --- | --- | --- |
+| `closure-buffer-new-length` | `new` starts with length 1 | `closure_new_...` |
+| `closure-buffer-reserve-capacity` | `reserve` publishes `additional` as the capacity | `closure_reserve_..._unit_owner` |
+| `closure-buffer-push-length` | `push` publishes `needed + 1` | `closure_push_...` |
+| `closure-buffer-append-length` | `append` publishes `needed + 1` | `closure_append_...` |
+| `closure-buffer-collect-initial-bound` | the first span ends one past the reserved end | `closure_collect_...` |
+| `closure-buffer-collect-growth-bound` | the later spans end one past the capacity | `closure_collect_...` |
+| `closure-buffer-finish-length` | `finish` hands over `cap` elements | `closure_finish_..._unit_owner` |
+| `closure-buffer-sized-reserve-layout` | `reserve` stores the layout of `needed`, not of the new capacity | `sized::closure_reserve_...` |
+| `closure-buffer-sized-finish-length` | as `closure-buffer-finish-length` | `sized::closure_finish_...` |
+
+**Run.** `python3 scripts/verify_source.py --group buffer --mutations`: pass in
+397 s. Direct Verus target `buffer` with its mutations; Kani 0.68.0 (CBMC
+6.11.0, CaDiCaL, `--object-bits 10`): 10 of 10 and 2 of 2 harnesses verified;
+16 of 16 controls detected (7 existing, 9 new). Solver times: the collect
+harness 42 s, the sized reserve harness 17 s, the sized finish harness 5 s,
+every other new harness under 2 s. Peak memory was not measured.
+`python3 scripts/test_verify.py`: 50 OK. No pinned count changed.
+
+**Not covered.**
+
+- `Buffer::drop` writes no word and was not given a harness; its
+  `needs_drop` branch cannot run for an arbitrary length.
+- `push`, `append` and `collect` at a sized element: they write through the
+  pointer, so a harness would need storage of arbitrary size.
+- A source that yields more than two values (above).
+- The harnesses use `Unmetered`. A metered policy changes only what
+  `storage::reallocate` does with the budget, which the unit-element paths
+  (equal sizes return early) and the stub do not execute.
+- The closure check that maps every pinned Buffer site to these harnesses and
+  the status change of `buffer_reserve`, `buffer_push`, `buffer_finish`,
+  `buffer_collect`, `buffer_span` and `reservation_before_bulk_write` are
+  step 9.

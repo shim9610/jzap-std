@@ -143,6 +143,44 @@ GROUPS = {
         'clone::proofs::nested_array_adapter_checks_arbitrary_word_lengths',
     ], verus=['clone','array-caller'], scope='Actual count admission for every usize length and width and typed-array extent composition in both Verus word domains; actual nested-array adapter for arbitrary word lengths at widths 0, 1, 3 and usize::MAX and nonzero u8 payload equality/mismatch preservation (Kani).'),
 }
+# Closure harnesses (issue #16, docs/premise-proofs.md): each builds its owner
+# with the one fixture helper of its module, whose only assumption is the shared
+# invariant, runs an actual owner method and asserts the invariant on every
+# return. They run in the Kani invocation of their module's group.
+CLOSURE = {
+    'buffer': ['boxed::buffer::proofs::closure_' + name for name in (
+        'new_establishes_the_invariant',
+        'reserve_preserves_the_invariant_for_every_unit_owner',
+        'push_preserves_the_invariant_for_every_unit_owner',
+        'append_preserves_the_invariant_for_every_unit_owner',
+        'collect_preserves_the_invariant_for_every_unit_owner_and_two_value_source',
+        'finish_transfers_exactly_the_length_of_every_unit_owner',
+    )],
+}
+for _group, _names in CLOSURE.items():
+    GROUPS[_group]['harnesses'] = GROUPS[_group]['harnesses'] + _names
+# Closure harnesses that need Kani options their group does not use run in
+# their own invocation of that group: `stubbing` replaces the storage functions
+# named by the harness attributes (-Z stubbing); `cfgs` are added to the group's.
+EXTRA = {
+    'buffer': [dict(harnesses=['boxed::buffer::proofs::sized::closure_' + name for name in (
+        'reserve_preserves_the_invariant_for_every_sized_owner',
+        'finish_transfers_exactly_the_length_of_every_sized_owner',
+    )], cfgs=['jzap_closure_stubs'], stubbing=True)],
+}
+
+
+def options(group, harness=None):
+    """Kani options of a group, or of the extra invocation that owns a harness."""
+    row = GROUPS[group]
+    result = dict(solver=row.get('solver', 'cadical'), loop_contracts=row.get('loop_contracts', True),
+                  object_bits=row.get('object_bits', 10), cfgs=tuple(row.get('cfgs', ())), stubbing=False)
+    for extra in EXTRA.get(group, ()):
+        if harness in extra['harnesses']:
+            result.update(cfgs=result['cfgs'] + tuple(extra.get('cfgs', ())), stubbing=extra.get('stubbing', False))
+    return result
+
+
 CONTROLS = [
     ('staging-publication','vec-staging','src/vec/edit.rs',
      '    extra.len = next;', '    extra.len = extra.len;',
@@ -408,7 +446,43 @@ CONTROLS = [
      'geometry::flatten_count(source.len(), destination.len(), N)',
      'geometry::flatten_count(source.len(), destination.len(), 0)',
      'proofs::nested_array_reuse_preserves_values_and_mismatch_destination'),
+    # Closure controls: each makes one writer break the shared invariant.
+    ('closure-buffer-new-length', 'buffer', 'src/boxed/buffer.rs',
+     '            len: Checked::new(0),\n            cap: Checked::new(0),',
+     '            len: Checked::new(1),\n            cap: Checked::new(0),',
+     'boxed::buffer::proofs::closure_new_establishes_the_invariant'),
+    ('closure-buffer-reserve-capacity', 'buffer', 'src/boxed/buffer.rs',
+     'self.cap = Checked::new(proposed);', 'self.cap = Checked::new(additional);',
+     'boxed::buffer::proofs::closure_reserve_preserves_the_invariant_for_every_unit_owner'),
+    ('closure-buffer-push-length', 'buffer', 'src/boxed/buffer.rs',
+     'unsafe { self.ptr.as_ptr().add(self.len.get()).write(value) };\n        self.len = Checked::new(needed);',
+     'unsafe { self.ptr.as_ptr().add(self.len.get()).write(value) };\n        self.len = Checked::new(needed.wrapping_add(1));',
+     'boxed::buffer::proofs::closure_push_preserves_the_invariant_for_every_unit_owner'),
+    ('closure-buffer-append-length', 'buffer', 'src/boxed/buffer.rs',
+     '                values.len(),\n            )\n        };\n        self.len = Checked::new(needed);',
+     '                values.len(),\n            )\n        };\n        self.len = Checked::new(needed.wrapping_add(1));',
+     'boxed::buffer::proofs::closure_append_preserves_the_invariant_for_every_unit_owner'),
+    ('closure-buffer-collect-initial-bound', 'buffer', 'src/boxed/buffer.rs',
+     'fill(self.ptr, &mut self.len, reserved_end, &mut iter)',
+     'fill(self.ptr, &mut self.len, reserved_end.wrapping_add(1), &mut iter)',
+     'boxed::buffer::proofs::closure_collect_preserves_the_invariant_for_every_unit_owner_and_two_value_source'),
+    ('closure-buffer-collect-growth-bound', 'buffer', 'src/boxed/buffer.rs',
+     'fill(self.ptr, &mut self.len, self.cap.get(), &mut iter)',
+     'fill(self.ptr, &mut self.len, self.cap.get().wrapping_add(1), &mut iter)',
+     'boxed::buffer::proofs::closure_collect_preserves_the_invariant_for_every_unit_owner_and_two_value_source'),
+    ('closure-buffer-finish-length', 'buffer', 'src/boxed/buffer.rs',
+     'NonNull::slice_from_raw_parts(self.ptr, self.len.get())',
+     'NonNull::slice_from_raw_parts(self.ptr, self.cap.get())',
+     'boxed::buffer::proofs::closure_finish_transfers_exactly_the_length_of_every_unit_owner'),
+    ('closure-buffer-sized-reserve-layout', 'buffer', 'src/boxed/buffer.rs',
+     'let layout = crate::layout::array::<T>(proposed)?;', 'let layout = crate::layout::array::<T>(needed)?;',
+     'boxed::buffer::proofs::sized::closure_reserve_preserves_the_invariant_for_every_sized_owner'),
+    ('closure-buffer-sized-finish-length', 'buffer', 'src/boxed/buffer.rs',
+     'NonNull::slice_from_raw_parts(self.ptr, self.len.get())',
+     'NonNull::slice_from_raw_parts(self.ptr, self.cap.get())',
+     'boxed::buffer::proofs::sized::closure_finish_transfers_exactly_the_length_of_every_sized_owner'),
 ]
+CONTROLS_HARNESS = {name: harness for name, _group, _file, _old, _new, harness in CONTROLS}
 # Only negative controls use these small concrete counterexamples. Positive
 # arithmetic proofs still cover every bit pattern of all twelve integer types.
 WITNESSES = {
@@ -427,7 +501,7 @@ WITNESSES = {
 }
 
 
-def kani(root, out, harnesses, *, failure=False, target=None, solver='cadical', loop_contracts=True, object_bits=10, cfgs=()):
+def kani(root, out, harnesses, *, failure=False, target=None, solver='cadical', loop_contracts=True, object_bits=10, cfgs=(), stubbing=False):
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env.pop('RUSTFLAGS', None)
@@ -447,6 +521,8 @@ def kani(root, out, harnesses, *, failure=False, target=None, solver='cadical', 
     command = ['cargo', 'kani', '--lib', '--exact', '--solver', solver]
     if loop_contracts:
         command += ['-Z', 'loop-contracts']
+    if stubbing:
+        command += ['-Z', 'stubbing']
     for name in harnesses:
         command += ['--harness', name]
     # Match the established whole-memory campaign's CBMC backend settings.
@@ -505,7 +581,10 @@ def verify(groups, out, mutations=False):
                 raise RuntimeError('Missing compiled state scope controls')
         if group.get('verus'):
             row['verus'] = verus(out=out / name / 'verus', targets=group['verus'], mutations=mutations)
-        row['kani'] = kani(ROOT, out / name, group['harnesses'], solver=group.get('solver', 'cadical'), loop_contracts=group.get('loop_contracts', True), object_bits=group.get('object_bits', 10), cfgs=group.get('cfgs', ()))
+        row['kani'] = kani(ROOT, out / name, group['harnesses'], **options(name))
+        row['kani_extra'] = [kani(ROOT, out / name / ('extra-' + str(index)), extra['harnesses'],
+                                  **options(name, extra['harnesses'][0]))
+                             for index, extra in enumerate(EXTRA.get(name, ()))]
         results.append(row)
         print(name + ': PASS (original Rust)', flush=True)
     if mutations:
@@ -532,8 +611,7 @@ def verify(groups, out, mutations=False):
                     harness = 'source_mutation_control'
                 result = kani(work, out / name, [harness], failure=True,
                               target=ROOT / 'target/verification/direct-source-mutants',
-                              solver=GROUPS[group].get('solver', 'cadical'),
-                              loop_contracts=GROUPS[group].get('loop_contracts', True), object_bits=GROUPS[group].get('object_bits', 10), cfgs=GROUPS[group].get('cfgs', ()))
+                              **options(group, None if name in WITNESSES else CONTROLS_HARNESS[name]))
                 controls.append(dict(name=name, group=group, file=file, detected=True,
                                      method='actual Rust solver counterexample',
                                      witness=WITNESSES.get(name), result=result))

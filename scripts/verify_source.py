@@ -142,6 +142,7 @@ GROUPS = {
         'proofs::nested_array_reuse_preserves_values_and_mismatch_destination',
         'clone::proofs::nested_array_adapter_checks_arbitrary_word_lengths',
     ], verus=['clone','array-caller'], scope='Actual count admission for every usize length and width and typed-array extent composition in both Verus word domains; actual nested-array adapter for arbitrary word lengths at widths 0, 1, 3 and usize::MAX and nonzero u8 payload equality/mismatch preservation (Kani).'),
+    'vec-element-loops': dict(harnesses=[], scope='Closure harnesses of the Vec loops that run under a loop contract added for them (issue #16, unit 1 step 8): try_resize_owned, try_extend_from_within and try_extend_fallible with its iterator entry points. Actual Rust at a zero-sized element, every length, capacity and limit word under both length policies, requests and sources without a bound, clone and source results chosen on every call. The for loop runs as the Kani model of the range. Not a proof for sized elements.'),
 }
 # Closure harnesses (issue #16, docs/premise-proofs.md): each builds its owner
 # with the one fixture helper of its module, whose only assumption is the shared
@@ -229,6 +230,12 @@ CLOSURE = {
     'clone': ['vec::metadata_proofs::closure_extend_cloned_witness_preserves_the_invariant',
               'vec::metadata_proofs::closure_resize_callers_preserve_the_invariant'],
     'layout': ['layout::proofs::closure_slice_capacity_matches_the_slice_layout'],
+    'vec-element-loops': ['vec::metadata_proofs::closure_' + name for name in (
+        'resize_owned_preserves_the_invariant',
+        'extend_from_within_preserves_the_invariant',
+        'extend_fallible_preserves_the_invariant',
+        'iterator_entry_points_preserve_the_invariant',
+    )],
 }
 for _group, _names in CLOSURE.items():
     GROUPS[_group]['harnesses'] = GROUPS[_group]['harnesses'] + _names
@@ -841,6 +848,30 @@ CONTROLS = [
      '        mem::forget(guard);\n        Ok(())\n    }\n    pub fn try_resize_with<E>',
      '        Ok(())\n    }\n    pub fn try_resize_with<E>',
      'vec::metadata_proofs::closure_resize_callers_preserve_the_invariant'),
+    ('closure-vec-resize-owned-loop-length', 'vec-element-loops', 'src/vec/convenience.rs',
+     '            guard.owner.len = next;\n        }\n        let next = match guard.owner.len + Checked::new(1) {',
+     '            guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        }\n        let next = match guard.owner.len + Checked::new(1) {',
+     'vec::metadata_proofs::closure_resize_owned_preserves_the_invariant'),
+    ('closure-vec-resize-owned-last-length', 'vec-element-loops', 'src/vec/convenience.rs',
+     '        guard.owner.len = next;\n        mem::forget(guard);',
+     '        guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        mem::forget(guard);',
+     'vec::metadata_proofs::closure_resize_owned_preserves_the_invariant'),
+    ('closure-vec-extend-within-loop-length', 'vec-element-loops', 'src/vec/convenience.rs',
+     '            guard.owner.len = next;\n        }\n        mem::forget(guard);',
+     '            guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        }\n        mem::forget(guard);',
+     'vec::metadata_proofs::closure_extend_from_within_preserves_the_invariant'),
+    ('closure-vec-extend-within-reservation', 'vec-element-loops', 'src/vec/convenience.rs',
+     '        self.try_reserve(count.get())?;\n        let original = self.len.get();\n        let guard = SuffixGuard {',
+     '        self.try_reserve(0)?;\n        let original = self.len.get();\n        let guard = SuffixGuard {',
+     'vec::metadata_proofs::closure_extend_from_within_preserves_the_invariant'),
+    ('closure-vec-extend-fallible-length', 'vec-element-loops', 'src/vec.rs',
+     '                .map_err(|e| InitError::Storage(e.error))?;\n        }\n        mem::forget(guard);',
+     '                .map_err(|e| InitError::Storage(e.error))?;\n            guard.owner.len = Checked::new(usize::MAX);\n        }\n        mem::forget(guard);',
+     'vec::metadata_proofs::closure_extend_fallible_preserves_the_invariant'),
+    ('closure-vec-iterator-constructor-length', 'vec-element-loops', 'src/vec/convenience.rs',
+     '        result.try_extend_fallible(iter)?;\n        Ok(result)',
+     '        result.try_extend_fallible(iter)?;\n        result.len = Checked::new(usize::MAX);\n        Ok(result)',
+     'vec::metadata_proofs::closure_iterator_entry_points_preserve_the_invariant'),
     ('closure-vec-bounded-resize-owned-loop-length', 'clone', 'src/vec/convenience.rs',
      '            guard.owner.len = next;\n        }\n        let next = match guard.owner.len + Checked::new(1) {',
      '            guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        }\n        let next = match guard.owner.len + Checked::new(1) {',

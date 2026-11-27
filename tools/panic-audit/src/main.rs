@@ -145,24 +145,49 @@ fn reviewed_extraction_observer(method: &syn::ImplItemFn) -> bool {
 
 // A loop predicate that names a field of the owner makes the verifier's
 // inferred loop write set cover the words next to that field
-// (docs/premise-proofs.md, unit 1 step 7). These predicates read the owner
-// whole through the reviewed length getter; each is accepted only as this
-// exact text at this loop.
-const OWNER_LENGTH_INVARIANTS: [(&str, &str, &str); 1] = [(
-    "src/vec.rs",
-    "try_resize_with_init",
-    "original<=guard.owner.len()&&guard.owner.len()<=new_len",
-)];
-fn reviewed_owner_length(method: &syn::ImplItemFn) -> bool {
-    let expected = quote::quote! {
-        #[inline]
-        pub fn len(&self) -> usize {
-            self.len.get()
-        }
-    };
-    method.to_token_stream().to_string() == expected.to_string()
+// (docs/premise-proofs.md, unit 1 steps 7 and 8). These predicates read the
+// owner whole through the reviewed getters; each is accepted only as this
+// exact text at this loop. `kani::index` is the verifier's counter of a `for`
+// loop and `on_entry` its value before the loop.
+const OWNER_INVARIANTS: [(&str, &str, &str); 4] = [
+    (
+        "src/vec.rs",
+        "try_resize_with_init",
+        "original<=guard.owner.len()&&guard.owner.len()<=new_len",
+    ),
+    (
+        "src/vec.rs",
+        "try_extend_fallible",
+        "original<=guard.owner.len()&&guard.owner.len()<=guard.owner.capacity()&&guard.owner.capacity()<=guard.owner.max_len()&&guard.owner.max_len()==on_entry(guard.owner.max_len())&&!guard.owner.as_ptr().is_null()",
+    ),
+    (
+        "src/vec/convenience.rs",
+        "try_resize_owned",
+        "original<=guard.owner.len()&&guard.owner.len()<=last",
+    ),
+    (
+        "src/vec/convenience.rs",
+        "try_extend_from_within",
+        "original<=guard.owner.len()&&guard.owner.len()-original==kani::index",
+    ),
+];
+// The getters those predicates call, as their whole reviewed definitions.
+const OWNER_GETTERS: [(&str, &str, &str); 4] = [
+    ("len", "usize", "self.len.get()"),
+    ("capacity", "usize", "self.cap.get()"),
+    ("max_len", "usize", "self.limit.max_len()"),
+    ("as_ptr", "*const T", "self.ptr.as_ptr()"),
+];
+fn reviewed_owner_getter(method: &syn::ImplItemFn) -> bool {
+    OWNER_GETTERS.iter().any(|(name, output, body)| {
+        let expected: syn::ImplItemFn = syn::parse_str(&format!(
+            "#[inline] pub fn {name}(&self) -> {output} {{ {body} }}"
+        ))
+        .expect("reviewed getter text");
+        method.to_token_stream().to_string() == expected.to_token_stream().to_string()
+    })
 }
-fn owner_length_getters(text: &str) -> Result<usize, Box<dyn std::error::Error>> {
+fn owner_getters(text: &str) -> Result<usize, Box<dyn std::error::Error>> {
     let mut reviewed = 0;
     for item in syn::parse_file(text)?.items {
         if let syn::Item::Impl(block) = item {
@@ -170,8 +195,12 @@ fn owner_length_getters(text: &str) -> Result<usize, Box<dyn std::error::Error>>
                 && block.self_ty.to_token_stream().to_string().replace(' ', "") == "Vec<T,P,L>";
             for item in block.items {
                 if let syn::ImplItem::Fn(method) = item {
-                    if owner && method.sig.ident == "len" {
-                        assert!(reviewed_owner_length(&method), "Vec::len requires review");
+                    let name = method.sig.ident.to_string();
+                    if owner && OWNER_GETTERS.iter().any(|(getter, _, _)| *getter == name) {
+                        assert!(
+                            reviewed_owner_getter(&method),
+                            "Vec::{name} requires review"
+                        );
                         reviewed += 1;
                     }
                 }
@@ -229,9 +258,9 @@ fn validate_metadata_getters() -> Result<bool, Box<dyn std::error::Error>> {
         return Ok(false);
     }
     assert_eq!(
-        owner_length_getters(&std::fs::read_to_string("src/vec.rs")?)?,
-        1,
-        "expected one reviewed Vec::len"
+        owner_getters(&std::fs::read_to_string("src/vec.rs")?)?,
+        OWNER_GETTERS.len(),
+        "expected each reviewed Vec getter once"
     );
     let mut checked = 0;
     let mut extraction_observers = 0;
@@ -398,11 +427,11 @@ impl<'ast> Visit<'ast> for Inventory<'_> {
                                 && self.function == "run"
                                 && expr.to_token_stream().to_string().replace(' ', "")
                                     == "begin<=state.get()&&state.get()<=end";
-                            let owner_length = self.metadata_getters
+                            let owner_invariant = self.metadata_getters
                                 && extraction_cfg
                                 && list.path.to_token_stream().to_string().replace(' ', "")
                                     == "kani::loop_invariant"
-                                && OWNER_LENGTH_INVARIANTS.contains(&(
+                                && OWNER_INVARIANTS.contains(&(
                                     self.file,
                                     self.function.as_str(),
                                     expr.to_token_stream().to_string().replace(' ', "").as_str(),
@@ -410,7 +439,7 @@ impl<'ast> Visit<'ast> for Inventory<'_> {
                             assert!(
                                 initialization_cursor
                                     || extraction_invariant
-                                    || owner_length
+                                    || owner_invariant
                                     || pure_invariant(&expr)
                                     || pure_expression(
                                         &expr,
@@ -665,56 +694,61 @@ mod tests {
     }
 
     #[test]
-    fn accepts_the_reviewed_owner_length_predicate_only_at_its_loop() {
-        let predicate = "original <= guard.owner.len() && guard.owner.len() <= new_len";
-        assert_eq!(
-            invariant_rows(
-                "src/vec.rs",
-                &resize_loop(predicate, "try_resize_with_init")
-            ),
-            1
-        );
-        for (file, function, predicate) in [
-            ("src/vec/edit.rs", "try_resize_with_init", predicate),
-            ("src/vec.rs", "try_resize", predicate),
-            (
-                "src/vec.rs",
-                "try_resize_with_init",
-                "original <= guard.owner.len() && guard.owner.len() <= new_len && guard.owner.clear()",
-            ),
-            (
-                "src/vec.rs",
-                "try_resize_with_init",
-                "original <= guard.owner.len.get() && guard.owner.len.get() <= new_len",
-            ),
-        ] {
-            let source = resize_loop(predicate, function);
-            assert!(
-                std::panic::catch_unwind(|| invariant_rows(file, &source)).is_err(),
-                "{file}::{function}: {predicate}"
+    fn accepts_each_reviewed_owner_predicate_only_at_its_loop() {
+        let spaced = |text: &str| text.replace("&&", " && ");
+        for (file, function, predicate) in OWNER_INVARIANTS {
+            assert_eq!(
+                invariant_rows(file, &resize_loop(&spaced(predicate), function)),
+                1,
+                "{file}::{function}"
             );
+            // The same text at another function or file, or with one more
+            // conjunct, is refused.
+            for (file, function, predicate) in [
+                ("src/vec/edit.rs", function, spaced(predicate)),
+                (file, "other", spaced(predicate)),
+                (
+                    file,
+                    function,
+                    spaced(predicate) + " && guard.owner.clear()",
+                ),
+            ] {
+                let source = resize_loop(&predicate, function);
+                assert!(
+                    std::panic::catch_unwind(|| invariant_rows(file, &source)).is_err(),
+                    "{file}::{function}: {predicate}"
+                );
+            }
         }
+        let by_field = resize_loop(
+            "original <= guard.owner.len.get() && guard.owner.len.get() <= new_len",
+            "try_resize_with_init",
+        );
+        assert!(std::panic::catch_unwind(|| invariant_rows("src/vec.rs", &by_field)).is_err());
     }
 
     #[test]
-    fn reviews_the_definition_of_the_owner_length_getter() {
+    fn reviews_the_definitions_of_the_owner_getters() {
         let owner = |body: &str| {
             format!("impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {{ {body} }}")
         };
-        let reviewed = "#[inline] pub fn len(&self) -> usize { self.len.get() }";
-        assert_eq!(owner_length_getters(&owner(reviewed)).unwrap(), 1);
-        assert_eq!(
-            owner_length_getters(&owner("fn other(&self) {}")).unwrap(),
-            0
-        );
+        let reviewed = "#[inline] pub fn len(&self) -> usize { self.len.get() } \
+            #[inline] pub fn capacity(&self) -> usize { self.cap.get() } \
+            #[inline] pub fn max_len(&self) -> usize { self.limit.max_len() } \
+            #[inline] pub fn as_ptr(&self) -> *const T { self.ptr.as_ptr() }";
+        assert_eq!(owner_getters(&owner(reviewed)).unwrap(), 4);
+        assert_eq!(owner_getters(&owner("fn other(&self) {}")).unwrap(), 0);
         for changed in [
             "#[inline] pub fn len(&self) -> usize { self.cap.get() }",
             "#[inline] pub fn len(&mut self) -> usize { self.len.get() }",
             "#[inline] pub fn len(&self) -> usize { self.touch(); self.len.get() }",
+            "#[inline] pub fn capacity(&self) -> usize { self.len.get() }",
+            "#[inline] pub fn max_len(&self) -> usize { usize::MAX }",
+            "#[inline] pub fn as_ptr(&self) -> *const T { core::ptr::null() }",
         ] {
             let source = owner(changed);
             assert!(
-                std::panic::catch_unwind(|| owner_length_getters(&source)).is_err(),
+                std::panic::catch_unwind(|| owner_getters(&source)).is_err(),
                 "{changed}"
             );
         }

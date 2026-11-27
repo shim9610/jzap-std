@@ -116,6 +116,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             owner: self,
             original,
         };
+        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() - original == kani::index))]
         for i in start..end {
             let next = (guard.owner.len + Checked::new(1)).map_err(|_| Error::Capacity)?;
             // SAFETY: old prefix and new suffix disjoint; reservation already finished.
@@ -189,6 +190,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             owner: self,
             original,
         };
+        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= last))]
         while guard.owner.len.get() < last {
             let next = match guard.owner.len + Checked::new(1) {
                 Ok(next) => next,

@@ -720,3 +720,133 @@ fn closure_resize_callers_preserve_the_invariant() {
     closure_resize_callers_case(LengthLimit::new(kani::any()));
     closure_resize_callers_case(Unlimited);
 }
+
+// Closure harnesses of the loops that got a loop contract in step 8 (issue
+// #16, unit 1): no bound on the request or on the source. The clone of
+// `ClosureFlaky` and every source reply are chosen on each call.
+#[cfg(jzap_loop_contracts)]
+fn closure_resize_owned_case<L: LengthPolicy>(limit: L) -> Result<(), Rejected<ClosureFlaky>> {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let new_len: usize = kani::any();
+    let result = owner.try_resize_owned(new_len, ClosureFlaky);
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { new_len } else { len });
+    kani::cover!(result.is_ok() && new_len > len);
+    kani::cover!(matches!(&result, Err(rejected) if rejected.error == Error::InvalidStructure));
+    result
+}
+#[cfg(jzap_loop_contracts)]
+#[kani::proof]
+fn closure_resize_owned_preserves_the_invariant() {
+    let limited = closure_resize_owned_case(LengthLimit::new(kani::any()));
+    kani::cover!(matches!(&limited, Err(rejected) if rejected.error == Error::Capacity));
+    let _ = closure_resize_owned_case(Unlimited);
+}
+
+#[cfg(jzap_loop_contracts)]
+fn closure_extend_from_within_case<L: LengthPolicy>(limit: L) -> Result<(), Error> {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let range = (closure_bound(), closure_bound());
+    let result = owner.try_extend_from_within(range);
+    closure_exit(&owner, max);
+    match result {
+        // The appended count is the count of the normalized range.
+        Ok(()) => match crate::vec::edit::checked_range(range, len) {
+            Ok((start, end)) => assert!(owner.len() - len == end - start),
+            Err(_) => unreachable!(),
+        },
+        Err(_) => assert!(owner.len() == len),
+    }
+    kani::cover!(result.is_ok() && owner.len() > len);
+    kani::cover!(result == Err(Error::InvalidStructure));
+    result
+}
+#[cfg(jzap_loop_contracts)]
+#[kani::proof]
+fn closure_extend_from_within_preserves_the_invariant() {
+    let limited = closure_extend_from_within_case(LengthLimit::new(kani::any()));
+    kani::cover!(limited == Err(Error::Capacity));
+    let _ = closure_extend_from_within_case(Unlimited);
+}
+
+/// A source without a bound: every call ends, fails or yields a value.
+struct ClosureFeed;
+impl crate::TryIterator for ClosureFeed {
+    type Item = ();
+    type Error = u8;
+    fn try_next(&mut self) -> Result<Option<()>, u8> {
+        if kani::any() {
+            Err(23)
+        } else {
+            Ok(if kani::any() { Some(()) } else { None })
+        }
+    }
+}
+#[cfg(jzap_loop_contracts)]
+fn closure_extend_fallible_case<L: LengthPolicy>(limit: L) -> Result<(), InitError<u8>> {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let result = owner.try_extend_fallible(ClosureFeed);
+    closure_exit(&owner, max);
+    assert!(if result.is_ok() {
+        owner.len() >= len
+    } else {
+        owner.len() == len
+    });
+    kani::cover!(result.is_ok() && owner.len() > len);
+    kani::cover!(matches!(result, Err(InitError::Initialize(23))));
+    result
+}
+#[cfg(jzap_loop_contracts)]
+#[kani::proof]
+fn closure_extend_fallible_preserves_the_invariant() {
+    let limited = closure_extend_fallible_case(LengthLimit::new(kani::any()));
+    kani::cover!(matches!(limited, Err(InitError::Storage(Error::Capacity))));
+    let _ = closure_extend_fallible_case(Unlimited);
+}
+
+/// A `core` iterator without a bound: every call ends or yields a value.
+#[cfg(jzap_loop_contracts)]
+struct ClosureStdFeed;
+#[cfg(jzap_loop_contracts)]
+impl Iterator for ClosureStdFeed {
+    type Item = ();
+    fn next(&mut self) -> Option<()> {
+        if kani::any() { Some(()) } else { None }
+    }
+}
+// The other entry points of the same loop: the `core` iterator adapter and the
+// two constructors that extend an empty owner.
+#[cfg(jzap_loop_contracts)]
+fn closure_iterator_entry_points_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let result = owner.try_extend(ClosureStdFeed);
+    closure_exit(&owner, max);
+    assert!(if result.is_ok() {
+        owner.len() >= len
+    } else {
+        owner.len() == len
+    });
+    kani::cover!(result.is_ok() && owner.len() > len);
+
+    if let Ok(built) = Vec::try_from_iter_in(ClosureStdFeed, Unmetered, limit) {
+        closure_exit(&built, max);
+        kani::cover!(!built.is_empty());
+    }
+    match Vec::try_from_fallible_iter_in(ClosureFeed, Unmetered, limit) {
+        Ok(built) => {
+            closure_exit(&built, max);
+            kani::cover!(!built.is_empty());
+        }
+        Err(error) => kani::cover!(matches!(error, InitError::Initialize(23))),
+    }
+}
+#[cfg(jzap_loop_contracts)]
+#[kani::proof]
+fn closure_iterator_entry_points_preserve_the_invariant() {
+    closure_iterator_entry_points_case(LengthLimit::new(kani::any()));
+    closure_iterator_entry_points_case(Unlimited);
+}

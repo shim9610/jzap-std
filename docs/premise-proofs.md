@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); steps 8 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); step 8 done for three loops (`try_resize_owned`, `try_extend_from_within`, `try_extend_fallible`: L16, L18, L19 and the iterator-driven extenders have closure harnesses) and not for two (the empty-tail loop of `try_finish`, the loop of `Buffer::collect_rest`); steps 9 and 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -1023,3 +1023,133 @@ Not run in this task: `scripts/verify_owner_protocol.py`,
 | `try_extend_fallible`, `try_extend`, `try_from_iter_in`, `try_from_fallible_iter_in` | a `while let` over the source without a contract; step 8 |
 | `IntoIter::try_clone_in`, `Vec::try_clone_in`, `IntoIter`'s `Debug` | not run |
 | `Splice`'s and `Drain`'s iterator methods on a Splice, `Drain::as_slice`, the `Debug` impls | read-only or delegated to the Drain steps of step 5; not run separately |
+
+### Step 8 (task C): loop contracts on three more product loops
+
+Done on 2026-11-27 for three loops; two loops are not covered (below). Three
+product lines were added, each a `cfg(kani)` attribute; no contract changed
+status.
+
+**What Kani 0.68 accepts.** A `kani::loop_invariant` compiles on `while`,
+`while let`, `loop` and `for` over a `usize` range (the unknown U1 and U2 of
+the design). The macro rewrites `while let` to `loop { match .. }`, and `for`
+to an index loop over Kani's own model of the iterator
+(`kani::KaniIntoIter`): the `core` range iterator is not executed under the
+contract. A separate check on a disposable crate (kept locally under
+`target/verification/i16/step8/range/`) verifies, for every pair of words
+`a <= b`, that the model of `a..b` runs `b - a` turns with the index
+`a + turn`; for `a > b` the model's length subtraction fails verification
+(`library/kani_core/src/iter.rs:142`), where `core` runs no turn. The product
+computes `end - start` with a checked subtraction before its loop.
+
+**The attributes** (the whole product change):
+
+| File, loop | Attribute |
+| --- | --- |
+| `src/vec/convenience.rs`, the `for i in start..end` of `try_extend_from_within` | `#[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() - original == kani::index))]` |
+| `src/vec/convenience.rs`, the `while` of `try_resize_owned` | `#[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= last))]` |
+| `src/vec.rs`, the `while let` of `try_extend_fallible` | `#[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= guard.owner.capacity() && guard.owner.capacity() <= guard.owner.max_len() && guard.owner.max_len() == on_entry(guard.owner.max_len()) && !guard.owner.as_ptr().is_null()))]` |
+
+Each reads the owner through `&self` getters only, for the reason found in
+task A. The loop of `try_extend_fallible` calls `try_push`, which writes the
+pointer and the capacity through pointers of its own; the inferred write set
+is then the whole owner (`goto-instrument` lists a whole-object target), so
+the invariant restates what the loop keeps of every word: the order of the
+three counts, the unchanged limit and a non-null pointer. `kani::index` is
+the count of completed turns of the `for` loop.
+
+By a text search of the proof files and of the product callers of the three
+functions, no existing harness reaches one of these loops in a Kani run with
+loop contracts: the bounded harnesses of step 6 run without the cfg, and
+`scripts/verify_wrapping_memory.py` and the `scripts/verify.py` Kani
+selections do not pass it. The other groups of `scripts/verify_source.py`
+were not rerun on this tree.
+
+**Harnesses** (`src/vec/metadata_proofs.rs`, all from `closure_owner` only,
+every word, `LengthLimit` with any limit and `Unlimited`):
+
+| Store | Function | Harness (`vec::metadata_proofs::`) | Inputs | Solver time |
+| --- | --- | --- | --- | ---: |
+| L18, L19 `convenience.rs:215`, `:235` | `try_resize_owned` | `closure_resize_owned_preserves_the_invariant` | any requested length; a zero-sized value whose clone fails or succeeds on every call | 21 s |
+| L16 `convenience.rs:130` | `try_extend_from_within` | `closure_extend_from_within_preserves_the_invariant` | both endpoints of any `Bound` form; the same value type | 44 s |
+| (through C2 and L14) | `try_extend_fallible` | `closure_extend_fallible_preserves_the_invariant` | a source that ends, fails or yields on every call | 26 s |
+| (the same loop) | `try_extend`, `try_from_iter_in`, `try_from_fallible_iter_in` | `closure_iterator_entry_points_preserve_the_invariant` | a `core` iterator and a fallible source without a bound | 94 s |
+
+Each asserts the invariant and the unchanged limit on every return; the
+error returns go through the `SuffixGuard`. `try_resize_owned` asserts the
+exact length, `try_extend_from_within` the count of the normalized range.
+The covers show growth, a clone or source failure and a limit refusal.
+
+**Pins changed.**
+
+| Pin | Change |
+| --- | --- |
+| `scripts/callsite_projection.py`, `RESIZE_OWNED` | the attribute text inside the pinned body of `try_resize_owned` |
+| `tools/panic-audit/src/main.rs` | `OWNER_INVARIANTS` lists the four predicates (the one of task A and the three above), each accepted as exact text at its loop only; the reviewed getters are `len`, `capacity`, `max_len` and `as_ptr` of `Vec<T, P, L>`, each compared with its whole definition and required exactly once. Unit tests: each predicate is refused at another file or function and with one more conjunct; six changed getter bodies are refused |
+
+**Registration.** A new group `vec-element-loops` in
+`scripts/verify_source.py` holds the four harnesses and six controls
+(`closure-vec-resize-owned-loop-length`, `-last-length`,
+`closure-vec-extend-within-loop-length`, `-reservation`,
+`closure-vec-extend-fallible-length`,
+`closure-vec-iterator-constructor-length`): each makes one store publish a
+wrong length or drops the reservation, and must end in a solver
+counterexample. The group is not in `FOUNDATION_GROUPS` of
+`scripts/source_certificate.py`; the certificate does not run it.
+
+**Run.**
+
+- `python3 scripts/verify_source.py --group vec-element-loops --mutations`:
+  pass in 1,688 s; 4 of 4 harnesses verified, 6 of 6 controls detected.
+- Machine code. The four benchmark executables built from an export of the
+  commit before this step (`71ca6e5`) and from an export of this tree, in two
+  directories of equal path length: 851, 728, 668 and 594 function bodies,
+  all identical (only first 0, only second 0, each). Built one after the
+  other in the same directory, the four files are byte-identical.
+- `cargo fmt --check`: clean. `cargo test --locked --offline --features std`:
+  460 passed, 0 failed. `cargo clippy --locked --offline --lib` with
+  `--all-features` and with `--no-default-features`, `-D warnings`: clean.
+- `cargo test` of `tools/panic-audit`: 5 passed. `scripts/test_verify.py`:
+  50 OK.
+- `scripts/verify_owner_protocol.py --mutations` on this tree: pass,
+  1,299 s, 65 results, `source_closure_complete`, no reused prerequisite, 26
+  actual-Rust harnesses and 3 staging harnesses, as before step 7.
+- `scripts/verify_wrapping_memory.py --mutations` on this tree: pass, 626 s,
+  9 controls detected; 53 modular calls, 26 established and 27 stated, as
+  before.
+
+Not run: `scripts/verify_panic_paths.py`, `scripts/source_certificate.py`,
+`scripts/verify.py`, and the other groups of `scripts/verify_source.py` on
+this tree.
+
+**Not covered: two loops.**
+
+| Loop | What was run | Result |
+| --- | --- | --- |
+| the empty-tail `while let` of `Splice::try_finish` (`edit.rs:467`) | An invariant of the form used for `try_extend_fallible`, in a disposable copy, with a whole-`try_finish` harness. `goto-instrument --dfcc` was killed by the kernel for memory once (another verifier was running), and under a 9.5 GB address-space limit it ended with "Out of memory" after 172 s with the cursor-loop contract compiled in and after 168 s without it | no CBMC run took place; the attribute was not added. The branch keeps the bounded harness of step 1 (at most two values) and the whole-`try_finish` harnesses keep their path assumption |
+| the `loop` of `Buffer::collect_rest` (`buffer.rs:140`) | An invariant that calls a helper of the proof module on the whole owner, in a disposable copy, with an unbounded source and both loop contracts (this loop and the cursor loop of `init::collection::fill` that it calls) | no result: CBMC was stopped after about 40 minutes of symbolic execution. The instrumented program lists, for the outer loop, targets built by casting the owner and source pointers to the write-set types of the contract library (the inner loop's instrumentation is part of the outer loop's body); the attribute was not added. `collect` and `collect_rest` keep the two-value harness of step 4 |
+
+A loop contract on a product loop changes what every Kani run with
+`--cfg jzap_loop_contracts` and `-Z loop-contracts` does at that loop
+(abstraction in place of unwinding). For the two loops above this would also
+have reached existing harnesses that assert exact contents or counts
+(`proofs::collected_slice_reallocation_preserves_values` and the two-value
+collect harness in `buffer`; `empty_tail_splice_publishes_past_the_tail_start`
+in `vec-splice-fill`).
+
+`try_write_vectored` (L22, `u8` only) stays out of scope and is not covered.
+
+**Sites after steps 4 to 8** (line numbers of this tree).
+
+| Evidence | Sites |
+| --- | --- |
+| Closure harness at a zero-sized element (only the shared invariant, or the guard's pair invariant, assumed) | the constructors `new`, `empty` and their `*_in` forms, the capacity constructors, `try_from_slice_in`, the two adopting constructors (unit storage), `try_from_array_in` (L21), `try_into_flattened`; L1-L10, L11 (direct and through its callers), L12 (at `[(); 1]`), L13-L15, L16, L17, L18, L19, L20, L23 (through retain and dedup), L24-L29, L31, L33, L34; S1/C3; F1, F2; C1, C2; the two writes of `tail_start`; `try_extend_fallible` and its three entry points; the `IntoIter` methods; the two whole-owner replacements; Buffer `new`, `reserve`, `push`, `append`, `finish` |
+| The same, and at four sized elements with the storage functions stubbed | C1 and C2 through `try_reserve`, `try_reserve_exact`, `grow`, `reserve_length`, `try_shrink_to`, `grow_for_push`; the capacity constructors; Buffer `reserve` and `finish` |
+| Harness with an extra assumption, not closure evidence | L30 `edit.rs:518` (the whole `try_finish` assumes `tail_len != 0`; the store is reached only on that path); the empty-tail branch of `try_finish` (at most two values); Buffer `collect` and `collect_rest` (a source of at most two values); the bounded harnesses of step 6 for L11, L16, L18 and L19, now beside their closure harnesses |
+| Run by a harness that cannot observe it | L32 `edit.rs:593` |
+| No harness | L22 `convenience.rs:426` (`u8` only); `try_write_fmt` and its `Writer`; `Vec::try_clone_in` and `IntoIter::try_clone_in`; the `Debug` impls; `Buffer::drop`; the `Vec::from_raw_parts` calls outside `src/vec` |
+
+As before: every instantiation is a zero-sized element with `Unmetered`
+(one exchange fixture with `Budget::Limited`), the capacity paths also at four
+sized elements with stubbed storage; no pointer-touching writer runs at a
+sized element for every word, and no `needs_drop` path runs.

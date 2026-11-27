@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); steps 5 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); steps 6 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -494,3 +494,160 @@ every other new harness under 2 s. Peak memory was not measured.
   the status change of `buffer_reserve`, `buffer_push`, `buffer_finish`,
   `buffer_collect`, `buffer_span` and `reservation_before_bulk_write` are
   step 9.
+
+### Step 5: Vec closure harnesses without new loop invariants
+
+Done on 2026-11-27. No product file changed and no contract changed status.
+
+**Site list, checked against the source at `bc757eb`** (a text search for
+assignments, swaps and `&mut` of the owner words in `src/vec.rs` and
+`src/vec/*.rs`): 34 assignments to a `len` place (`vec.rs` 13,
+`convenience.rs` 9, `edit.rs` 11, `ownership.rs` 1), the swap at `vec.rs:490`,
+the two lends at `edit.rs:450` and `edit.rs:678`, and three capacity writes
+(`vec.rs:327`; `vec.rs:811` through the reference, stored at `vec.rs:359`; the
+swap at `vec.rs:491`). The design report's list is complete for these
+channels; no further writer was found. `limit` is never assigned. Two
+whole-owner replacements exist and have no harness of their own
+(`mem::swap(self, &mut replacement)` at `vec.rs:700` in `try_clone_from` and at
+`ownership.rs:252` in `IntoIter::try_clone_from`): each side is a complete
+owner built by other methods.
+
+**Fixture** (`src/vec/query_proofs.rs`). `closure_invariant` is
+`len <= cap <= limit` read from the owner's words. `closure_owner::<T, P, L>`
+builds an owner of zero-sized elements from arbitrary length and capacity
+words under a given policy and limit, assumes `closure_invariant` and nothing
+else, and is the only place where a closure harness assumes anything about an
+owner. `closure_exit` asserts the invariant and the unchanged limit. Every
+harness runs under `LengthLimit` with an arbitrary limit and under
+`Unlimited`, unless the method exists for one policy only.
+
+A guard built directly, not by its constructor, assumes only its pair
+invariant with a `closure_owner` (`src/vec/edit_proofs.rs`):
+`closure_drain` assumes `closure_drain_invariant`,
+`tail_start + tail_len <= cap && (len <= tail_start || tail_len == 0)`, over
+any ordered `Span`; the `ExtractIf` drop harness assumes
+`closure_extract_invariant`, a valid `Extraction` whose total is at most the
+capacity. The constructor harnesses assert these pair invariants instead of
+assuming them.
+
+| Site | Function | Harness | Result |
+| --- | --- | --- | --- |
+| `vec.rs:98` | `new` | `metadata_proofs::closure_empty_constructors_establish_the_invariant` (`()`, `[(); 3]`, `u8`, `u64`, `[u64; 200]`, a 64-aligned type) | verified |
+| `vec.rs:189` | `empty`, `new_in`, `with_limit`, `with_limit_in` | the same harness | verified |
+| | `try_with_capacity(_in)`, `try_with_capacity_and_limit(_in)` | `metadata_proofs::closure_capacity_constructors_establish_the_invariant` (`()`) | verified |
+| | `try_from_slice_in` | `metadata_proofs::closure_slice_constructor_establishes_the_invariant` (`()`, every slice length) | verified |
+| `ownership.rs:87`, `:122` | `try_from_std_in`, `from_boxed_slice` | `metadata_proofs::closure_adopting_constructors_establish_the_invariant_for_unit_storage` (`()` only; the `std` facts of a sized value are trust boundary) | verified |
+| L1 `vec.rs:381` | `try_insert` | `metadata_proofs::closure_insert_preserves_the_invariant` | verified |
+| L2 `vec.rs:386` | `pop` | `metadata_proofs::closure_pop_preserves_the_invariant` | verified |
+| L3 `vec.rs:397` | `remove` | `metadata_proofs::closure_remove_preserves_the_invariant` | verified |
+| L4 `vec.rs:403` | `swap_remove` | `metadata_proofs::closure_swap_remove_preserves_the_invariant` | verified |
+| L5 `vec.rs:417` | `truncate` | `metadata_proofs::closure_truncate_preserves_the_invariant` | verified |
+| L6 `vec.rs:446` | `try_extend_copy` | `metadata_proofs::closure_extend_copy_preserves_the_invariant` | verified |
+| L7, L8 `vec.rs:462-463` | `try_append` | `metadata_proofs::closure_append_preserves_the_invariant_of_both_owners` (all four pairs of length policies) | verified |
+| S1, C3 `vec.rs:489-491` | `try_reuse_larger_buffer` | `metadata_proofs::closure_buffer_exchange_preserves_the_invariant_of_both_owners` (two arbitrary limits) and `..._of_both_unlimited_owners`; both owners charge one `Budget::Limited` | verified |
+| L9, L10 `vec.rs:507-508` | `try_split_off` | `metadata_proofs::closure_split_off_preserves_the_invariant_of_both_owners` | verified |
+| L11 `vec.rs:541` | `try_resize_with_init` | none | **not verified**, see below |
+| L13 `vec.rs:686` | `try_clone` | `metadata_proofs::closure_clone_establishes_the_invariant_of_the_copy` (`()`: the bulk hook, so the copy is published by L6) | verified |
+| L14 `convenience.rs:32` | `push_within_capacity` | `metadata_proofs::closure_push_within_capacity_preserves_the_invariant` | verified |
+| L15 `convenience.rs:89` | `try_set_len` | `metadata_proofs::closure_set_len_preserves_the_invariant` | verified |
+| L17 `convenience.rs:153` | `try_extend_copy_from_within` | `metadata_proofs::closure_extend_copy_from_within_preserves_the_invariant` (both endpoints of any `Bound` form) | verified |
+| L20 `convenience.rs:246` | `try_into_array` | `metadata_proofs::closure_into_array_preserves_the_invariant_of_a_returned_owner` (`N` = 0, 1, 3, `usize::MAX`) | verified; the store of 0 is followed only by the owner's drop, so the harness cannot observe it |
+| L21 `convenience.rs:267` | `try_from_array_in` | `metadata_proofs::closure_array_constructor_establishes_the_invariant` (`N` = 0, 1, 3, `usize::MAX`) | verified |
+| `convenience.rs:371` | `try_into_flattened` (through `from_raw_parts`) | `metadata_proofs::closure_flatten_establishes_the_invariant_of_the_element_owner` (`[(); N]`, `N` = 0, 1, 3, `usize::MAX`) | verified |
+| L23 `edit.rs:53` | `Compact::drop` | the callback-error return of the two harnesses below | verified through them; no stand-alone harness, see below |
+| L24 `edit.rs:93` | `try_retain_mut` | `edit::panic_proofs::closure_retain_preserves_the_invariant` | verified |
+| L25 `edit.rs:149` | `try_dedup_by` | `edit::panic_proofs::closure_dedup_preserves_the_invariant` | verified |
+| L26 `edit.rs:184` | `try_drain` | `edit::panic_proofs::closure_drain_constructor_establishes_the_pair_invariant` | verified |
+| L27 `edit.rs:203` | `try_extract_if` | `edit::panic_proofs::closure_extract_constructor_establishes_the_pair_invariant` | verified |
+| L28 `edit.rs:280` | `Drain::restore_tail` | `edit::panic_proofs::closure_drain_drop_restores_the_invariant_from_every_pair_state` (after one `next` and one `next_back`) | verified |
+| L29 `edit.rs:406` | `ExtractIf::drop` | `edit::panic_proofs::closure_extract_drop_restores_the_invariant_from_every_pair_state` | verified |
+| F1 `edit.rs:450` | `Splice::fill` | `edit::panic_proofs::closure_splice_fill_preserves_the_owner_and_pair_invariants` (a source without a bound; the cursor loop under its existing contract) | verified |
+| L33 `edit.rs:695` | `stage_push` | `edit::panic_proofs::closure_stage_push_preserves_the_invariant` | verified |
+| F2 `edit.rs:678` | `stage_batch` | `edit::panic_proofs::closure_stage_batch_preserves_the_invariant` (a source without a bound) | verified |
+| L34 `ownership.rs:155` | `into_iter` | `ownership::panic_proofs::closure_into_iter_preserves_the_invariant` | verified |
+| C1 `vec.rs:327` | `resize_storage` | `growth_proofs::closure_reserve_...`, `closure_reserve_exact_...`, `closure_grow_...`, `closure_reserve_length_preserves_the_invariant` | verified |
+| C2 `vec.rs:811`, `:359` | `grow_for_push`, `try_push` | `growth_proofs::closure_push_preserves_the_invariant` | verified |
+| C1 | `try_shrink_to`, `try_shrink_to_fit` | `growth_proofs::closure_shrink_preserves_the_invariant_of_a_unit_owner` | verified, but a zero-sized element returns before the write; the sized run is step 6 |
+
+All of these are at zero-sized elements with `Unmetered` (the exchange with
+one `Budget::Limited`). The harnesses assume nothing but the fixture; the two
+drop harnesses of a directly built guard assume its pair invariant.
+
+**L11 is not verified: the loop contract of `try_resize_with_init` does not
+verify in this environment.** A closure harness for it (the fixture, a callback
+that fails, skips the write or writes, both limit policies) fails under
+`-Z loop-contracts`, and so does the existing harness
+`panic_proofs::vec_resize_covers_every_length_and_callback_result`, run as
+`scripts/verify_panic_paths.py` runs it (`RUSTFLAGS="--cfg
+jzap_loop_contracts" cargo kani --lib -Z loop-contracts --exact --harness ...`,
+Z3 on `PATH`): `VERIFICATION:- FAILED` with the failed checks
+`__CPROVER_contracts_car_set_insert` "ptr NULL or writable up to size" and two
+"dereference failure: pointer outside object bounds". The result is the same on
+unmodified `bc757eb`, on the initial snapshot `59f729b`, with CaDiCaL, and with
+`--object-bits 10`; Kani 0.68.0, CBMC 6.11.0. The failing checks belong to the
+write-set instrumentation of the loop contract, not to an assertion of the
+harness, and the cause was not isolated. The closure harness additionally fails
+its exit assertions; with the instrumentation failing, that is not evidence
+about the product. The harness was not committed. `verify_panic_paths.py` was
+not run in this step; its entry for this harness is expected to report
+"unproved" here. No record of this failure was found in `docs/`.
+
+**L23 has no stand-alone harness.** `Compaction` has no constructor for an
+arbitrary valid state outside its module (`Extraction` has
+`from_cursor_state` under `cfg(kani)`; `Compaction` does not, and adding one
+edits a product file). `Compact::drop` runs on the callback-error return of the
+retain and dedup harnesses, from the states the driver's loop contracts admit;
+the control `closure-vec-compact-drop-length` shows that this return reaches
+the store.
+
+**Registration and controls** (`scripts/verify_source.py`). 37 harnesses in
+five groups; 41 controls, at least one per harness. Each control changes one
+product place in a disposable copy and must end in a solver counterexample of
+the named harness. Most make the writer publish a word that breaks the
+invariant; the others drop a call or change a guard so that another asserted
+result fails (`closure-vec-slice-extension`,
+`closure-vec-into-array-length-check`, `closure-vec-reserve-length-growth`,
+`closure-vec-shrink-unit-return`).
+
+| Group | Harnesses before, after | Controls before, after | Run time | Result |
+| --- | --- | --- | ---: | --- |
+| `owner-metadata` | 4, 26 | 4, 29 | 764 s | pass |
+| `vec-layout-growth` | 4, 10 | 5, 11 | 224 s | pass |
+| `vec-compaction` (Z3) | 2, 4 | 0, 3 | 274 s | pass |
+| `vec-splice-fill` (`jzap_init_loop_contracts`) | 4, 9 | 4, 9 | 368 s | pass |
+| `vec-extraction` | 1, 3 | 0, 2 | 82 s | pass |
+
+Each line is `python3 scripts/verify_source.py --group <name> --mutations`
+(the group's direct Verus targets with their mutations, then Kani 0.68.0 with
+CBMC 6.11.0, `--object-bits 10`). Every harness verified and every control was
+detected. Solver times of the new harnesses: retain and dedup 17 s and 18 s,
+flatten 10 s, splice fill 8 s, every other one at most 5.3 s. Peak memory was
+not measured. `python3 scripts/test_verify.py`: 50 OK.
+
+The drain, staging and extraction harnesses are in
+`src/vec/edit_proofs.rs`, which compiles only with `--cfg
+jzap_loop_contracts`. `stage_push` and `stage_batch` are registered in
+`vec-splice-fill`, not in `vec-staging`: that group runs without loop
+contracts, and `stage_batch` runs the shared cursor loop under its contract.
+The groups `vec-staging` (3 harnesses, pinned by
+`verify_owner_protocol.py`) and `vec-cursors` (4, pinned by
+`verify_wrapping_memory.py`) are unchanged, and no pinned count changed.
+
+**Not covered by this step.**
+
+| Site | Reason |
+| --- | --- |
+| L11 `vec.rs:541` `try_resize_with_init`, and with it `try_resize`, `try_resize_with`, the per-element branch of `try_extend_cloned` and `try_clone_in` | the existing loop contract does not verify here (above) |
+| L12 `vec.rs:589` `try_extend_cloned`, witness branch | `()` takes the bulk hook; step 6 |
+| L16 `convenience.rs:129` `try_extend_from_within` | needs a new invariant on a `for` loop; step 8 |
+| L18, L19 `convenience.rs:213`, `:233` `try_resize_owned` | needs a new invariant on a `while` loop; step 8 |
+| L22 `convenience.rs:424` `try_write_vectored` | exists for `u8` only; no zero-sized instantiation |
+| L30 `edit.rs:518`, L31, L32 `edit.rs:592-593` `Splice::try_finish`, `stage_excess` | step 7; the `tail_len == 0` branch needs a loop invariant (step 8) |
+| `try_extend_fallible`, `try_extend`, `try_from_iter_in`, `try_from_fallible_iter_in` | no direct write; their `while let` loop over `try_push` has no invariant |
+| `try_clone_from` (`vec.rs:700`), `IntoIter::try_clone_from` (`ownership.rs:252`) | whole-owner replacement, no harness |
+| `try_write_fmt` and the `SuffixGuard` sites other than through `truncate` | `u8` only; not run |
+| `deque.rs:522`, `deque.rs:579`, `string/convert.rs:218` (`Vec::from_raw_parts`) | other units and the public unsafe boundary |
+| every sized element, every metered policy other than the one exchange fixture, every `needs_drop` path | step 6 for the capacity paths; the rest is not runnable for all words |
+
+The closure check that maps each pinned site to its harness, and any status
+change, are step 9.

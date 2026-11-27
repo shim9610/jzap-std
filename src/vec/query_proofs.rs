@@ -38,3 +38,60 @@ fn every_valid_zst_owner_query_and_spare_partition() {
     queries(length, capacity, LengthLimit::new(limit), limit);
     queries(length, capacity, Unlimited, usize::MAX);
 }
+
+// Closure fixture (issue #16, unit 1 step 5). A closure harness builds each
+// owner with `closure_owner`, whose only assumption is `closure_invariant`,
+// runs actual owner methods and asserts `closure_invariant` on every return.
+
+/// `len <= cap <= limit`, read from the owner's own words.
+pub(super) fn closure_invariant<T, P: AllocationPolicy, L: LengthPolicy>(
+    owner: &Vec<T, P, L>,
+) -> bool {
+    owner.len.get() <= owner.cap.get() && owner.cap.get() <= owner.limit.max_len()
+}
+
+/// An arbitrary owner of zero-sized elements: every length and capacity word
+/// that satisfies `closure_invariant` under the given limit, and nothing else.
+/// A zero-sized element needs no bytes, so every count has a valid layout and
+/// the aligned dangling pointer is valid storage for it.
+pub(super) fn closure_owner<T, P: AllocationPolicy, L: LengthPolicy>(
+    policy: P,
+    limit: L,
+) -> Vec<T, P, L> {
+    assert!(mem::size_of::<T>() == 0);
+    let owner = Vec {
+        ptr: NonNull::dangling(),
+        len: Checked::new(kani::any()),
+        // SAFETY: every count of a zero-sized element has a valid zero-byte layout.
+        cap: unsafe { crate::capacity::Capacity::from_validated_raw(kani::any()) },
+        policy,
+        limit,
+        marker: PhantomData,
+    };
+    kani::assume(closure_invariant(&owner));
+    owner
+}
+
+/// The exit check of a closure harness: the invariant, under the same limit.
+pub(super) fn closure_exit<T, P: AllocationPolicy, L: LengthPolicy>(
+    owner: &Vec<T, P, L>,
+    limit: usize,
+) {
+    assert!(closure_invariant(owner));
+    assert!(owner.max_len() == limit);
+}
+
+/// A unit slice of any length, at an aligned non-null address.
+pub(super) fn closure_units<'a>() -> &'a [()] {
+    // SAFETY: zero-sized values need no storage.
+    unsafe { core::slice::from_raw_parts(NonNull::<()>::dangling().as_ptr(), kani::any()) }
+}
+
+/// Any range endpoint.
+pub(super) fn closure_bound() -> core::ops::Bound<usize> {
+    match kani::any::<u8>() {
+        0 => core::ops::Bound::Included(kani::any()),
+        1 => core::ops::Bound::Excluded(kani::any()),
+        _ => core::ops::Bound::Unbounded,
+    }
+}

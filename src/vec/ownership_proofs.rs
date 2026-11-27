@@ -26,3 +26,21 @@ fn vec_iterator_preserves_every_valid_cursor_state() {
     assert!(it.owner.len.get() == 0);
     drop(it);
 }
+
+// Closure harness (issue #16, unit 1 step 5): the owned iterator takes an
+// arbitrary owner that satisfies only `closure_invariant`.
+fn closure_into_iter_case<L: LengthPolicy>(limit: L) {
+    let owner = super::super::query_proofs::closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let it = owner.into_iter();
+    super::super::query_proofs::closure_exit(&it.owner, max);
+    assert!(it.owner.len.get() == 0);
+    // The pair the iterator keeps with its owner: the unread range lies in the capacity.
+    assert!(it.span.front() == 0 && it.span.back() == len);
+    assert!(it.span.back() <= it.owner.cap.get());
+}
+#[kani::proof]
+fn closure_into_iter_preserves_the_invariant() {
+    closure_into_iter_case(LengthLimit::new(kani::any()));
+    closure_into_iter_case(Unlimited);
+}

@@ -241,3 +241,236 @@ fn empty_tail_splice_publishes_past_the_tail_start() {
     kani::cover!(result.is_ok() && published > tail_start);
     kani::cover!(result.is_err());
 }
+
+// Closure harnesses (issue #16, unit 1 step 5). The owner comes from
+// `closure_owner` (only `closure_invariant` assumed); a guard built directly
+// assumes only its pair invariant with that owner.
+use super::super::query_proofs::{closure_bound, closure_exit, closure_invariant, closure_owner};
+
+/// A callback or source reply chosen freshly on every call.
+fn closure_reply<T>(value: T) -> Result<T, u8> {
+    if kani::any() { Err(23) } else { Ok(value) }
+}
+/// A source without a bound: every call ends, fails or yields a value.
+struct ClosureSource;
+impl TryIterator for ClosureSource {
+    type Item = ();
+    type Error = u8;
+    fn try_next(&mut self) -> Result<Option<()>, u8> {
+        closure_reply(if kani::any() { Some(()) } else { None })
+    }
+}
+
+fn closure_retain_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    // A callback error returns through `Compact::drop`.
+    let _ = owner.try_retain_mut(|_| closure_reply(kani::any::<bool>()));
+    closure_exit(&owner, max);
+    assert!(owner.len() <= len);
+}
+#[kani::proof]
+#[kani::solver(z3)]
+fn closure_retain_preserves_the_invariant() {
+    closure_retain_case(LengthLimit::new(kani::any()));
+    closure_retain_case(Unlimited);
+}
+
+fn closure_dedup_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let _ = owner.try_dedup_by(|_, _| closure_reply(kani::any::<bool>()));
+    closure_exit(&owner, max);
+    assert!(owner.len() <= len && (len == 0 || owner.len() != 0));
+}
+#[kani::proof]
+#[kani::solver(z3)]
+fn closure_dedup_preserves_the_invariant() {
+    closure_dedup_case(LengthLimit::new(kani::any()));
+    closure_dedup_case(Unlimited);
+}
+
+/// The pair a Drain keeps with its owner (docs/premise-proofs.md, step 1):
+/// `tail_start + tail_len <= cap && (len <= tail_start || tail_len == 0)`.
+fn closure_drain_invariant<T, P: AllocationPolicy, L: LengthPolicy>(
+    drain: &Drain<'_, T, P, L>,
+) -> bool {
+    match drain.tail_start.checked_add(drain.tail_len) {
+        Some(end) => {
+            end <= drain.owner.cap.get()
+                && (drain.owner.len.get() <= drain.tail_start || drain.tail_len == 0)
+        }
+        None => false,
+    }
+}
+/// An arbitrary Drain over an owner: any ordered unread range and any tail
+/// words that satisfy `closure_drain_invariant`, and nothing else.
+fn closure_drain<L: LengthPolicy>(
+    owner: &mut Vec<(), Unmetered, L>,
+) -> Drain<'_, (), Unmetered, L> {
+    let span = crate::span::Span::try_new(kani::any(), kani::any());
+    kani::assume(span.is_ok());
+    let drain = Drain {
+        owner,
+        span: span.unwrap(),
+        tail_start: kani::any(),
+        tail_len: kani::any(),
+    };
+    kani::assume(closure_drain_invariant(&drain));
+    drain
+}
+
+/// Runs the constructor and returns the count the guard's drop removes.
+fn closure_drained<L: LengthPolicy>(owner: &mut Vec<(), Unmetered, L>, len: usize) -> usize {
+    match owner.try_drain((closure_bound(), closure_bound())) {
+        Ok(drain) => {
+            assert!(closure_invariant(drain.owner) && closure_drain_invariant(&drain));
+            let start = drain.owner.len.get();
+            assert!(start == drain.span.front() && drain.span.back() == drain.tail_start);
+            assert!(drain.tail_start + drain.tail_len == len);
+            drain.span.len()
+        }
+        Err(_) => 0,
+    }
+}
+fn closure_drain_constructor_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let removed = closure_drained(&mut owner, len);
+    closure_exit(&owner, max);
+    assert!(owner.len() == len - removed);
+}
+#[kani::proof]
+fn closure_drain_constructor_establishes_the_pair_invariant() {
+    closure_drain_constructor_case(LengthLimit::new(kani::any()));
+    closure_drain_constructor_case(Unlimited);
+}
+
+fn closure_drain_drop_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let mut drain = closure_drain(&mut owner);
+    let tail_len = drain.tail_len;
+    let _ = drain.next();
+    let _ = drain.next_back();
+    assert!(closure_invariant(drain.owner) && closure_drain_invariant(&drain));
+    drop(drain);
+    closure_exit(&owner, max);
+    assert!(owner.len() == len + tail_len);
+}
+#[kani::proof]
+fn closure_drain_drop_restores_the_invariant_from_every_pair_state() {
+    closure_drain_drop_case(LengthLimit::new(kani::any()));
+    closure_drain_drop_case(Unlimited);
+}
+
+#[cfg(jzap_init_loop_contracts)]
+fn closure_splice_fill_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let drain = closure_drain(&mut owner);
+    let (tail_start, tail_len) = (drain.tail_start, drain.tail_len);
+    let mut splice = Splice {
+        drain,
+        replacement: ClosureSource,
+    };
+    let result = splice.fill();
+    assert!(closure_invariant(splice.drain.owner) && closure_drain_invariant(&splice.drain));
+    assert!(splice.drain.tail_start == tail_start && splice.drain.tail_len == tail_len);
+    let committed = splice.drain.owner.len.get();
+    assert!(len <= committed);
+    if len > tail_start {
+        assert!(matches!(result, Err(InitError::Storage(Error::Bounds))) && committed == len);
+    }
+    drop(splice);
+    closure_exit(&owner, max);
+    assert!(owner.len() == committed + tail_len);
+}
+// The unwind bound is for verifier-internal bookkeeping; the product loop runs
+// under its contract.
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(12)]
+fn closure_splice_fill_preserves_the_owner_and_pair_invariants() {
+    closure_splice_fill_case(LengthLimit::new(kani::any()));
+    closure_splice_fill_case(Unlimited);
+}
+
+/// The pair an ExtractIf keeps with its owner: a valid cursor whose total is
+/// at most the capacity.
+fn closure_extract_invariant<T, F, P: AllocationPolicy, L: LengthPolicy>(
+    extract: &ExtractIf<'_, T, F, P, L>,
+) -> bool {
+    extract.state.valid() && extract.state.total() <= extract.owner.cap.get()
+}
+
+fn closure_extract_constructor_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let range = (closure_bound(), closure_bound());
+    match owner.try_extract_if(range, |_: &mut ()| closure_reply(kani::any::<bool>())) {
+        Ok(extract) => {
+            assert!(closure_invariant(extract.owner) && closure_extract_invariant(&extract));
+            assert!(extract.owner.len.get() == 0 && extract.state.total() == len);
+            // Nothing was visited: the drop restores the whole length.
+            drop(extract);
+        }
+        Err(_) => {}
+    }
+    assert!(owner.len() == len);
+    closure_exit(&owner, max);
+}
+#[kani::proof]
+fn closure_extract_constructor_establishes_the_pair_invariant() {
+    closure_extract_constructor_case(LengthLimit::new(kani::any()));
+    closure_extract_constructor_case(Unlimited);
+}
+
+fn closure_extract_drop_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let max = owner.max_len();
+    let state = Extraction::from_cursor_state(kani::any(), kani::any(), kani::any(), kani::any());
+    kani::assume(state.is_ok());
+    let extract = ExtractIf {
+        owner: &mut owner,
+        filter: (),
+        state: state.unwrap(),
+    };
+    kani::assume(closure_extract_invariant(&extract));
+    let restored = extract.state.restored_len();
+    drop(extract);
+    closure_exit(&owner, max);
+    assert!(owner.len() == restored);
+}
+#[kani::proof]
+fn closure_extract_drop_restores_the_invariant_from_every_pair_state() {
+    closure_extract_drop_case(LengthLimit::new(kani::any()));
+    closure_extract_drop_case(Unlimited);
+}
+
+#[kani::proof]
+fn closure_stage_push_preserves_the_invariant() {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, LengthLimit::new(kani::any()));
+    let (len, max) = (owner.len(), owner.max_len());
+    let result = stage_push(&mut owner, ());
+    closure_exit(&owner, max);
+    match result {
+        Ok(capacity) => assert!(owner.len() == len + 1 && capacity == owner.capacity()),
+        Err(_) => assert!(owner.len() == len),
+    }
+}
+
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(12)]
+fn closure_stage_batch_preserves_the_invariant() {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, LengthLimit::new(kani::any()));
+    let (len, max) = (owner.len(), owner.max_len());
+    let result = stage_batch(&mut owner, &mut ClosureSource, ());
+    closure_exit(&owner, max);
+    assert!(len <= owner.len());
+    if let Ok(Some(())) = result {
+        // The batch is full: the next value needs growth.
+        assert!(owner.len() == owner.capacity());
+    }
+}

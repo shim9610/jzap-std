@@ -518,6 +518,28 @@ class PremiseTests(unittest.TestCase):
         # One stated contract makes the whole call stated.
         self.assertEqual(premises[('src/span.rs', 'next')], 'stated-not-proved')
 
+    def test_a_verified_function_does_not_discharge_its_own_requires(self):
+        from premise_status import premise, row_premise
+        # Both stores follow a guard inside a directly verified function, but
+        # that function's numeric requires is met only by unverified callers.
+        for contract, function, requires in [
+                ('admitted_cursor', 'init::driver::run', '`old(state)@ <= end`'),
+                ('staged_collection_extent', 'vec::staging_driver::run', '`initial_cap <= limit`')]:
+            entry = premise(contract)
+            self.assertEqual(entry['status'], 'stated-not-proved')
+            for text in (function, requires, 'not verified'):
+                self.assertIn(text, entry['evidence'])
+            self.assertEqual(row_premise([contract]), 'stated-not-proved')
+        for file, function, target in [('src/init/driver.rs', 'run', 'init-prefix'),
+                                       ('src/vec/staging_driver.rs', 'run', 'vec-staging')]:
+            source = (ROOT / file).read_text()
+            head = source.index('pub(crate) fn ' + function + '<')
+            spec = source[source.rfind('verus_spec(', 0, head):head]
+            # The requires the evidence names is the one on the product function.
+            self.assertIn('requires', spec)
+            from verify_direct_verus import TARGETS
+            self.assertIn(target, TARGETS)
+
     def test_certificate_rows_have_no_fixed_disposition(self):
         from source_certificate import BPLUS_ANCESTOR, obligation_counts, obligations
         from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED

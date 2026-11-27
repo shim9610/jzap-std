@@ -121,9 +121,30 @@ STATED = {
                'removal_before_moves', 'reservation_before_bulk_write', 'resized_owner',
                'retained_loop', 'shortened_owner', 'spare_view_before_slice', 'splice_fill_loop',
                'splice_operation', 'split_owner', 'stage_operation',
-               'swap_remove_before_moves', 'vectored_owner', 'admitted_cursor', 'owner_remaining_limit',
-               'owner_spare_capacity', 'drain_before_tail_restore', 'staged_collection_extent',
+               'swap_remove_before_moves', 'vectored_owner', 'owner_remaining_limit',
+               'owner_spare_capacity', 'drain_before_tail_restore',
                'span_clear_caller', 'span_next_caller', 'span_next_back_caller', 'span_remaining_caller']),
+    # A directly verified function does not discharge its own requires. The two
+    # stores below follow a guard inside such a function, so the modular call
+    # cannot wrap; the function's numeric requires still has to be met by its
+    # product callers, and those are not verified.
+    **_stated('The store `*state = Checked::new(wrapping_add(index, 1))` follows the loop guard '
+              '`state.get() < end` inside init::driver::run (src/init/driver.rs), which has its own '
+              'verus_spec, verified by the direct target init-prefix. That function requires '
+              '`old(state)@ <= end`; its product callers init::prefix::initialize (a cursor started '
+              'at 0) and init::collection::fill (for Buffer::collect, Buffer::collect_rest, '
+              'Splice::fill and stage_batch, which pass an owner length and an end) are not verified '
+              'to meet it. admitted_cursor (tools/direct-verus/init-adapters.rs) restates the same '
+              'requires',
+              ['admitted_cursor']),
+    **_stated('`wrapping_add(len, 1)` follows `if len >= limit { return }` inside '
+              'vec::staging_driver::run (src/vec/staging_driver.rs), which has its own verus_spec, '
+              'verified by the direct target vec-staging. That function requires '
+              '`initial_cap <= limit` and `byte_valid(initial_cap, size)`; its one product caller, '
+              'Splice::stage_excess (src/vec/edit.rs), is not verified to meet them. '
+              'staged_collection_extent (tools/direct-verus/vec-adapters.rs) restates the same '
+              'requires',
+              ['staged_collection_extent']),
     **_stated('len <= cap <= limit and the byte bound are the public unsafe contract of '
               'Vec::from_raw_parts (src/vec/ownership.rs). For an external caller it is a promise no '
               'library proof establishes (trust boundary). The library also calls it itself '

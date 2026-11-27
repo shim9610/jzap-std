@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 58 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); steps 2 to 10 below |
+| 1 | Vec and Buffer owner | 58 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); steps 3 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -246,3 +246,57 @@ Not exercised by any run: the fallback branch of
 `scripts/callsite_projection.py` for other `Drain` methods carries the same
 restated assumption, but every `Drain` block is routed to a maintained
 function today, so that branch generates no text.
+
+### Step 2: the two candidates stay stated
+
+Checked on 2026-11-27. No contract changed status and no binding moved.
+
+The plan named two rows whose premise looked discharged inside a directly
+verified function.
+
+| Row | Site | Enclosing function, direct target | Numeric `requires` of that function |
+| --- | --- | --- | --- |
+| `admitted_cursor` (state write) | `*state = Checked::new(wrapping_add(index, 1))`, after `while state.get() < end` | `init::driver::run`, `init-prefix` | `old(state)@ <= end` |
+| `staged_collection_extent` (modular call) | `wrapping_add(len, 1)`, after `if len >= limit { return }` | `vec::staging_driver::run`, `vec-staging` | `initial_cap <= limit`, `byte_valid(initial_cap, size)` |
+
+What was run:
+
+- `python3 scripts/verify_direct_verus.py --target init-prefix --target
+  vec-staging --mutations`: pass (290 and 287 verified, 0 errors; 8 controls
+  detected, among them `init-advance`, `init-early-stop` and `staging-limit`).
+  Each function has its own `verus_spec` and is verified on the product
+  source.
+- A one-off experiment on disposable copies (not a maintained check): with the
+  numeric `requires` deleted, and again with the numeric loop invariants
+  deleted too (`--multiple-errors 50`), Verus reports no error at either store.
+  The failures are the loop invariant on entry, the final assertion or the
+  postconditions, and the callback's precondition. The precondition of the
+  `wrapping_add` at the store follows from the guard alone.
+
+Why they stay stated. A verified function proves its body under its own
+`requires`; it does not discharge that `requires`. `direct-source` is recorded
+only where the callers' side is established too, and here it is not:
+`init::driver::run` is called by `init::prefix::initialize` (a cursor started
+at 0) and by `init::collection::fill` for `Buffer::collect`,
+`Buffer::collect_rest`, `Splice::fill` and `stage_batch`, which pass an owner
+length and an end; `vec::staging_driver::run` is called by
+`Splice::stage_excess`. None of these callers is verified on the product
+source. `scripts/premise_status.py` now records this reason for each of the two
+contracts in place of the general owner reason, and
+`scripts/test_verify.py` keeps them stated.
+
+Open for the owner: whether a store whose own precondition is shown to follow
+from a guard, independently of the enclosing function's `requires`, may count
+as connected. If so, it needs a maintained check of that independence, not the
+one-off run above.
+
+Found while checking, not changed: the modular-call row of the same store in
+`init::driver::run` is bound to `initialized_box_prefix`
+(`scripts/verify_wrapping_memory.py`), a maintained function without a
+`requires` that calls `run` from 0, and is therefore counted as established.
+Its twin in `vec::staging_driver::run` is bound to an adapter that restates the
+function's `requires` and is counted as stated. The two rows have the same
+structure and are reported differently.
+
+`c_previous_kept` was not touched: it rests on a zero-sized Kani instantiation
+and belongs to `instantiated-kani`.

@@ -562,4 +562,93 @@ class PremiseTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'B\\+ ancestor read moved'):
             obligations(owner, string, (area,), verified, lookup.replace(BPLUS_ANCESTOR['expression'], 'ancestor.read()'))
 
+class OwnerWordTests(unittest.TestCase):
+    @staticmethod
+    def borrow(file, function, expression, kind='field_borrow'):
+        members = expression.replace('&mut', '').split('.')[1:]
+        return dict(file=file, function=function, context='', kind=kind, expression=expression,
+                    detail=dict(member=members[-1], members=members, raw=False))
+
+    def product(self):
+        from caller_bindings import LENDS
+        return [self.borrow(file, function, expression)
+                for (file, function), (_, expressions) in LENDS.items() for expression in expressions]
+
+    def test_every_owner_word_borrow_is_bound_and_stays_stated(self):
+        from caller_bindings import lend_bindings
+        from premise_status import premise
+        bindings, other = lend_bindings(self.product(), lambda name: name)
+        self.assertEqual(len(bindings), 10)
+        self.assertEqual({b['role'] for b in bindings}, {'state-lend'})
+        self.assertEqual({b['contract'] for b in bindings}, {'buffer_span', 'splice_fill_loop', 'exchanged_owners'})
+        for binding in bindings:
+            self.assertEqual(premise(binding['contract'])['status'], 'stated-not-proved')
+        self.assertEqual(other, {})
+
+    def test_an_unbound_owner_word_channel_is_refused(self):
+        from caller_bindings import lend_bindings
+        proof = lambda name: name
+        rows = self.product()
+        for extra, message in [
+                # A new lend in a function without a binding, and a second one in a bound function.
+                (self.borrow('src/vec.rs', 'clear', '&mutself.len'), 'unbound owner-word borrow'),
+                (self.borrow('src/boxed/buffer.rs', 'collect', '&mutself.cap'), 'unbound owner-word borrow'),
+                # A borrow of a part of an owner word is a borrow of the word.
+                (self.borrow('src/vec.rs', 'clear', '&mutself.len.0'), 'unbound owner-word borrow'),
+                # No area filter may drop the row.
+                (self.borrow('src/deque.rs', 'clear', '&mutself.len'), 'owner-word borrow in a separately bound area'),
+                (self.borrow('src/string.rs', 'clear', '&mutself.bytes.len'), 'owner-word borrow in a separately bound area'),
+                (self.borrow('src/vec.rs', 'clear', '&mutself.len', kind='field_pattern'), 'unbound owner-word pattern binding'),
+        ]:
+            with self.assertRaisesRegex(AssertionError, message):
+                lend_bindings(rows + [extra], proof)
+        with self.assertRaisesRegex(AssertionError, 'missing expected owner-word borrow'):
+            lend_bindings(rows[1:], proof)
+        with self.assertRaisesRegex(AssertionError, 'unbound owner-word borrow'):
+            lend_bindings(list(reversed(rows)), proof)
+
+    def test_borrows_of_other_fields_are_counted_not_bound(self):
+        from caller_bindings import lend_bindings
+        rows = self.product() + [self.borrow('src/vec/edit.rs', 'try_retain_mut', '&mutg.state'),
+                                 self.borrow('src/deque/iter.rs', 'next', '&mutself.state'),
+                                 self.borrow('src/deque/iter.rs', 'next', '&mutself.inner', kind='field_pattern')]
+        bindings, other = lend_bindings(rows, lambda name: name)
+        self.assertEqual(len(bindings), 10)
+        self.assertEqual(other, {'deque': 2, 'foundation': 1})
+
+    def test_scanner_records_borrows_and_pattern_bindings(self):
+        import json, subprocess, tempfile
+        from scanner_tools import scanner
+        source = '''struct V { len: usize, cap: usize, items: [u8; 2] }
+impl V {
+    fn f(&mut self, other: &mut V) {
+        core::mem::swap(&mut self.len, &mut other.len);
+        let _ = core::mem::replace(&mut (self.cap), 3);
+        let _ = core::mem::take(&mut (*other).len);
+        let _ = &raw mut self.len;
+        let _ = &mut self.len.0;
+        let _ = &self.len;
+        let _ = &raw const self.cap;
+        let _ = &mut self.items[0];
+        let V { len, cap: ref mut c, .. } = self;
+        let V { len: _, .. } = other;
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sample.rs'
+            path.write_text(source)
+            rows = json.loads(subprocess.check_output([str(scanner('state_sites')), 'sample.rs'], cwd=tmp, text=True))
+        compact = lambda text: ''.join(text.split())
+        borrows = [(r['line'], compact(r['expression']), r['detail']['members'], r['detail']['raw'])
+                   for r in rows if r['kind'] == 'field_borrow']
+        self.assertEqual(borrows, [
+            (4, '&mutself.len', ['len'], False), (4, '&mutother.len', ['len'], False),
+            (5, '&mut(self.cap)', ['cap'], False), (6, '&mut(*other).len', ['len'], False),
+            (7, '&rawmutself.len', ['len'], True), (8, '&mutself.len.0', ['len', '0'], False)])
+        patterns = [(r['line'], r['detail']['structure'], r['detail']['member'], r['detail']['ref_mut'])
+                    for r in rows if r['kind'] == 'field_pattern']
+        self.assertEqual(patterns, [(12, 'V', 'len', False), (12, 'V', 'cap', True)])
+
+
 if __name__=='__main__':unittest.main()

@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 58 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); steps 3 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); steps 4 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -113,10 +113,12 @@ Scratch are built on `Vec`.
 maintained functions (`owner_valid`), as generated `requires` on projected
 callers (`scripts/callsite_projection.py`), and as `kani::assume` in three
 harnesses. `Vec` holds `len: Checked<usize>`, `cap: Capacity<T>` and `limit: L`
-as separate fields, written directly at 36 sites for `len` and 4 for `cap`
-(`src/vec.rs`, `src/vec/convenience.rs`, `src/vec/edit.rs`,
-`src/vec/ownership.rs`), and lends `&mut len` to `init::collection::fill`.
-There is no single setter.
+as separate fields. The scanner lists 34 assignments to a `len` place
+(`src/vec.rs` 13, `src/vec/edit.rs` 11, `src/vec/convenience.rs` 9,
+`src/vec/ownership.rs` 1), two assignments to `cap` and one through the local
+reference in `grow_for_push`, the three swaps of `ptr`, `len` and `cap` in
+`try_reuse_larger_buffer`, and two lends of `&mut len` to
+`init::collection::fill`. There is no single setter.
 
 ### Withdrawn: a closed state type with total transitions
 
@@ -145,7 +147,8 @@ new `safe_iterator_state` as `no-premise`, `raw_parts_owner` as the contract of
 
 ### Approach under the constraint
 
-Design from reading the source at `27a705a`; nothing below has been run yet.
+Design from reading the source at `27a705a`. A bullet has been run only where
+it says so; the step records further down give the runs.
 The full report is kept locally under `target/verification/i16/designs/`.
 
 - **Verus cannot carry a specification on a `Vec` or `Buffer` method.** Both
@@ -161,9 +164,9 @@ The full report is kept locally under `target/verification/i16/designs/`.
   that assumes only the invariant and asserts it on exit. Guards (`Drain`,
   `Splice`, `ExtractIf`, `Compact`, `IntoIter`) get a pair invariant with the
   owner, established at their constructor.
-- **Scanner.** `state_sites` records assignments and struct literals. It must
-  also record mutable borrows of the three fields (including arguments of
-  `mem::swap`), so that the writer set is pinned and a new write fails.
+- **Scanner.** `state_sites` recorded assignments and struct literals only.
+  Since step 3 it also records mutable borrows of field places and struct
+  pattern bindings, and a new borrow or binding of an owner word fails.
 - **A premise that was false as written.** `hole_valid` required
   `len <= tail`. After `Splice::try_finish` takes the `tail_len == 0` branch
   and pushes, `len > tail_start` is reachable and `restore_tail` still runs
@@ -300,3 +303,83 @@ structure and are reported differently.
 
 `c_previous_kept` was not touched: it rests on a zero-sized Kani instantiation
 and belongs to `instantiated-kani`.
+
+### Step 3: the scanner pins borrows and pattern bindings of the owner words
+
+Done on 2026-11-27. No product file changed and no contract changed status.
+
+**Scanner** (`tools/panic-audit/src/bin/state_sites.rs`). Two row kinds are
+new, without a field-name list in the scanner:
+
+| Kind | Recorded |
+| --- | --- |
+| `field_borrow` | Every `&mut` and `&raw mut` of a field place, with the chain of members (`self.drain.owner.len` gives `drain`, `owner`, `len`). The arguments of `mem::swap`, `mem::replace` and `mem::take` are such expressions |
+| `field_pattern` | Every field of a struct pattern that is not a wildcard, with a flag for a `ref mut` binding. A plain binding is recorded too: against a `&mut` value, default binding modes make it a mutable reference |
+
+On the product at this commit: 59 `field_borrow` rows and no `field_pattern`
+row.
+
+**Binding** (`scripts/caller_bindings.py`). The owner words are the storage
+words of `Vec` and `Buffer`: `ptr`, `len`, `cap`, `limit`, `layout`. A row whose
+place names one of them, at any position, must match the `LENDS` table by
+file, function, expression and order. The check runs on the whole inventory
+before any area is filtered out, so such a row in a file of another area is
+refused instead of being dropped. A pattern binding of an owner word is always
+refused: the product has none.
+
+| Site | Rows | Contract (stated) |
+| --- | ---: | --- |
+| `Buffer::collect`, `Buffer::collect_rest`: `&mut self.len` lent to `init::collection::fill` | 2 | `buffer_span` |
+| `Splice::fill`: `&mut self.drain.owner.len`; `stage_batch`: `&mut extra.len` | 2 | `splice_fill_loop` |
+| `Vec::try_reuse_larger_buffer`: the operands of the three swaps | 6 | `exchanged_owners` (new) |
+
+`exchanged_owners` (`tools/memory-proof/owner-state.verus.rs`) is a new
+maintained function, verified: two valid owners exchange length and capacity,
+each keeps its limit, and the product's refusals and reservation are its
+branches. The body of `try_reuse_larger_buffer` is compared whole. It requires
+both owners valid, so it is `premise-stated-not-proved`, and unit 1 now has 59
+stated contracts (58 before). No existing contract stated the premise of the
+exchange; `replaced_owner` is a whole-value replacement and does not apply,
+because each owner keeps its own limit and policy.
+
+**Pinned counts.** State writes 91, constructor fields 132 and unsafe callers
+181 are unchanged. Bindings rise from 470 to 480: the ten rows above have the
+new role `state-lend`, and `scripts/source_certificate.py` pins
+`state_lends == 10`. The owner composition reports 565 verified and 0 errors
+(564 before): `exchanged_owners` is the one added.
+
+**Controls**, all detected. Source mutants that compile and must be refused by
+the binding: an assignment to the owner length in a function without a binding
+(`unbound_owner_write`), `mem::swap` and `mem::replace` on an owner word
+(`unbound_owner_lend`, `unbound_owner_take`), a `ref mut` binding and a plain
+binding of the length in a pattern (`owner_ref_mut_pattern`,
+`owner_default_binding_pattern`), and the exchange without its limit check
+(`exchange_without_limit_check`). A weakened maintained function that Verus
+must reject: `exchange_without_equal_limits`. On rows
+(`scripts/test_verify.py`): a borrow in a file of another area, a borrow of a
+part of an owner word, a missing or reordered lend, and the scanner itself on
+a sample file.
+
+**Not finished.**
+
+- 49 of the 59 `field_borrow` rows borrow a field that is not an owner word
+  and are bound to no contract. The binding check counts them per area and
+  the owner-protocol summary lists the counts (`unbound_field_borrows`):
+  hash-map 11, binary-heap 9, foundation 8, btree 7, hash-set 6, deque 3,
+  shared 2, string 2, bplus 1. The eight in the foundation area are the
+  cursor states lent to the verified drivers (`&mut g.state` twice,
+  `&mut self.state`, `&mut prefix.state`), the user's iterator and filter
+  (`&mut self.replacement` twice, `&mut self.filter`) and the byte buffer of
+  `CharBytes`. A new borrow of such a field does not fail any check.
+- The other areas (String, B-tree, hash, BinaryHeap, VecDeque, Scratch) do not
+  read `state_sites` rows at all: their scripts bind unsafe blocks from the
+  `unsafe_sites` scanner, and `caller_bindings.py` has always filtered their
+  assignments and constructor fields out. Only the owner-word guard above
+  covers their files. Their own writes are not bound by this step.
+- Channels the scanner does not record: a method call that borrows its field
+  receiver by auto-reference (the methods called on `len`, `cap` and `limit`
+  places today are `get`, `layout`, `max_len`, `saturating_sub` and `min`,
+  found by a text search and not pinned), the operand of `addr_of_mut!`
+  (an unparsed macro body; every use today is inside an unsafe block), and a
+  borrow of an element or of a dereference of a field (`&mut self.x[i]`,
+  `&mut *self.x`).

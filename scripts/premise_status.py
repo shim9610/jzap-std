@@ -111,6 +111,7 @@ STATED = {
               f'invariants, the range validator result, the reservation result) are requires of the '
               f'maintained function; {MIGRATION}:1882-1886, 1949-1951',
               ['adopted_owner', 'append_owner', 'boxed_to_owner', 'buffer_collect', 'buffer_finish',
+               'exchanged_owners',
                'buffer_push', 'buffer_reserve', 'buffer_span', 'checked_index_before_access',
                'checked_owner_length', 'clone_within_operation', 'commit_reserved_owner',
                'compaction_before_move', 'compaction_before_element', 'complete_splice',

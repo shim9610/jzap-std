@@ -103,6 +103,31 @@ fn split_owner(original:OwnerState,size:usize,at:usize,accepted:bool)
     Some((OwnerState{len:SPLIT_PREFIX_COMMIT,..original},tail))
 }
 
+// `Vec::try_reuse_larger_buffer`: the storage words (pointer, length and
+// capacity) of two owners are exchanged by three `mem::swap` calls; each owner
+// keeps its policy and its limit. The refusals and the reservation in the
+// other owner are the product's (its body is compared whole by
+// caller_bindings.py). `declined` stands for the two accounting conditions,
+// which do not constrain the words. Both owners are stated valid on entry.
+fn exchanged_owners(a:OwnerState,b:OwnerState,size:usize,declined:bool,accepted:bool)
+    ->(r:Option<(OwnerState,OwnerState)>)
+    requires owner_valid(a,size),owner_valid(b,size),
+    ensures match r {Some((x,y))=>owner_valid(x,size) && owner_valid(y,size)
+        && x.len==b.len && x.limit==a.limit
+        && y.len==a.len && y.cap==a.cap && y.limit==b.limit
+        && x.len as int+y.len as int<=x.cap as int,None=>true},
+{
+    if a.len>=b.len || a.limit!=b.limit || declined {return None;}
+    let Ok(needed)=needed_length(a.len,b.len,a.limit) else {return None;};
+    let mut other=b;
+    if other.cap<needed {
+        if a.cap>=needed {return None;}
+        let Some((reserved,_))=reserve_owner(other,size,a.len,true,accepted) else {return None;};
+        other=reserved;
+    }
+    Some((OwnerState{len:other.len,cap:other.cap,..a},OwnerState{len:a.len,cap:a.cap,..other}))
+}
+
 // The byte bound of the adopted capacity is not a premise: the product checks
 // it (`Capacity::try_new` in `Vec::try_from_std_in`), as this function does.
 fn adopted_owner(source_len:usize,source_cap:usize,limit:usize,size:usize,

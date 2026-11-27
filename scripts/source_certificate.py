@@ -471,6 +471,9 @@ def main():
         if collected is None:
             assert owner_path.stat().st_mtime_ns>=started
     assert owner['source_bindings']['state_writes']==91
+    # The mutable borrows of owner words: two lends in Buffer, two in vec/edit.rs
+    # and the six swap operands of Vec::try_reuse_larger_buffer.
+    assert owner['source_bindings']['state_lends']==10
     assert owner['source_bindings']['constructor_fields']==132
     assert owner['source_bindings']['unsafe_callers']==181
     assert len(owner['owner_expressions']['caller_bindings'])==181

@@ -1,5 +1,13 @@
 //! Exhaustive field writes/constructions and accounting/ownership transitions.
 //! No field-name allowlist: newly added state must receive a proof binding.
+//!
+//! A field can also change without an assignment. Every `&mut` and
+//! `&raw mut` of a field place is a `field_borrow` row (this includes the
+//! arguments of `mem::swap`, `mem::replace` and `mem::take`), and every field
+//! of a struct pattern is a `field_pattern` row (a `ref mut` binding, or a
+//! plain binding that default binding modes turn into a `&mut`). Not recorded
+//! here: a method call that borrows its field receiver by auto-reference, and
+//! the operand of `addr_of_mut!`, which is an unparsed macro body.
 use quote::ToTokens;
 use serde_json::{Value, json};
 use syn::{
@@ -18,6 +26,37 @@ fn proof_only(attrs: &[syn::Attribute]) -> bool {
                 _ => false,
             }
     })
+}
+// The members of a field place, outermost last: `self.drain.owner.len` gives
+// `["drain", "owner", "len"]`. Empty when the place is not a field access.
+fn field_members(mut expr: &syn::Expr) -> Vec<String> {
+    let mut members = Vec::new();
+    loop {
+        match expr {
+            syn::Expr::Paren(n) => expr = &n.expr,
+            syn::Expr::Group(n) => expr = &n.expr,
+            syn::Expr::Field(n) => {
+                members.push(n.member.to_token_stream().to_string());
+                expr = &n.base;
+            }
+            _ => break,
+        }
+    }
+    members.reverse();
+    members
+}
+// Whether a pattern binds a name by `ref mut`, at any depth.
+fn binds_ref_mut(pat: &syn::Pat) -> bool {
+    struct Search(bool);
+    impl<'a> Visit<'a> for Search {
+        fn visit_pat_ident(&mut self, n: &'a syn::PatIdent) {
+            self.0 |= n.by_ref.is_some() && n.mutability.is_some();
+            visit::visit_pat_ident(self, n);
+        }
+    }
+    let mut search = Search(false);
+    search.visit_pat(pat);
+    search.0
 }
 struct Census {
     file: String,
@@ -241,6 +280,40 @@ impl<'a> Visit<'a> for Census {
             self.record("compound_write", n, n.span(), json!({}));
         }
         visit::visit_expr_binary(self, n);
+    }
+    fn visit_expr_reference(&mut self, n: &'a syn::ExprReference) {
+        let members = field_members(&n.expr);
+        if n.mutability.is_some() && !members.is_empty() {
+            self.record(
+                "field_borrow",
+                n,
+                n.span(),
+                json!({"member":members.last(),"members":members,"raw":false}),
+            );
+        }
+        visit::visit_expr_reference(self, n);
+    }
+    fn visit_expr_raw_addr(&mut self, n: &'a syn::ExprRawAddr) {
+        let members = field_members(&n.expr);
+        if matches!(n.mutability, syn::PointerMutability::Mut(_)) && !members.is_empty() {
+            self.record(
+                "field_borrow",
+                n,
+                n.span(),
+                json!({"member":members.last(),"members":members,"raw":true}),
+            );
+        }
+        visit::visit_expr_raw_addr(self, n);
+    }
+    fn visit_pat_struct(&mut self, n: &'a syn::PatStruct) {
+        for f in &n.fields {
+            // A wildcard binds nothing; every other field pattern can.
+            if matches!(&*f.pat, syn::Pat::Wild(_)) {
+                continue;
+            }
+            self.record("field_pattern",f,f.span(),json!({"structure":n.path.to_token_stream().to_string(),"member":f.member.to_token_stream().to_string(),"ref_mut":binds_ref_mut(&f.pat)}));
+        }
+        visit::visit_pat_struct(self, n);
     }
     fn visit_expr_struct(&mut self, n: &'a syn::ExprStruct) {
         for f in &n.fields {

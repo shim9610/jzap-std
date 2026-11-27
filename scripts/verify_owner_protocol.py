@@ -109,7 +109,9 @@ def main():
 
     text,expressions=program()
     row,log=verify('owner-protocol',text);assert row['exit_code']==0,log[-5000:]
-    state_rows=[r for r in state_inventory(ROOT,OUT) if not is_string(r["file"])]
+    # The whole inventory: the binding check filters each area itself, after it
+    # has refused an owner-word borrow in any of them.
+    state_rows=state_inventory(ROOT,OUT)
     source_files=sorted(str(p.relative_to(ROOT)) for p in (ROOT/'src').rglob('*.rs') if not p.name.endswith('proofs.rs') and not is_string(str(p.relative_to(ROOT))))
     unsafe_rows=json.loads(subprocess.check_output([str(scanner('unsafe_sites')),*source_files],cwd=ROOT,text=True))
     for site in unsafe_rows:site['group']=group(site)
@@ -188,6 +190,8 @@ def main():
             ('hole_without_length_bound','        && (h.len<=h.tail || (h.tail_len==0 && h.len<=h.cap))','        && (h.len<=h.tail || h.tail_len==0)'),
             ('hole_fill_without_admission','    if h.tail.checked_sub(h.len).is_none() {return 2;}\n',''),
             ('hole_push_moves_tail','    h.len=next;\n    true','    h.len=next;h.tail=next;\n    true'),
+            # Exchanged storage words keep each owner's own limit.
+            ('exchange_without_equal_limits','    if a.len>=b.len || a.limit!=b.limit || declined {return None;}','    if a.len>=b.len || declined {return None;}'),
         ]:
             assert text.count(old)==1,name
             row,log=verify('mutation-'+name,text.replace(old,new))
@@ -222,6 +226,18 @@ def main():
             ('buffer_growth_end','src/boxed/buffer.rs','fill(self.ptr, &mut self.len, self.cap.get(), &mut iter)','fill(self.ptr, &mut self.len, 0, &mut iter)','unbound collection extent'),
             ('bulk_clone_without_append','src/clone.rs','None\n    }\n    /// Clone into existing storage','Some(Ok(()))\n    }\n    /// Clone into existing storage','bulk clone hook changed'),
             ('unbound_live_transition','src/vec.rs','self.truncate(0);','crate::compaction::Compaction::full(0).keep_live(); self.truncate(0);','unbound admitted cursor step'),
+            # Every mutation channel of an owner word is pinned: an assignment,
+            # a mutable borrow (also as an argument of mem::swap or mem::replace)
+            # and a pattern binding, with or without `ref mut`. A borrow in a
+            # file of another area is refused by the same check; test_verify.py
+            # exercises that on rows, because VecDeque pins its files whole and
+            # refuses a source mutant earlier.
+            ('unbound_owner_write','src/vec/edit.rs','        self.span.clear();\n        if !mem::needs_drop::<T>() {','        self.span.clear();\n        self.owner.len = Checked::new(0);\n        if !mem::needs_drop::<T>() {','unbound state write'),
+            ('unbound_owner_lend','src/vec.rs','self.truncate(0);','core::mem::swap(&mut self.len, &mut Checked::new(0)); self.truncate(0);','unbound owner-word borrow'),
+            ('unbound_owner_take','src/vec.rs','self.truncate(0);','let _ = core::mem::replace(&mut self.cap, crate::capacity::Capacity::empty(0)); self.truncate(0);','unbound owner-word borrow'),
+            ('owner_ref_mut_pattern','src/vec.rs','self.truncate(0);','{ let Self { len: ref mut hidden, .. } = *self; core::mem::swap(hidden, &mut Checked::new(0)); } self.truncate(0);','unbound owner-word pattern binding'),
+            ('owner_default_binding_pattern','src/vec.rs','self.truncate(0);','{ let Self { len, .. } = &mut *self; core::mem::swap(len, &mut Checked::new(0)); } self.truncate(0);','unbound owner-word pattern binding'),
+            ('exchange_without_limit_check','src/vec.rs','            || self.max_len() != other.max_len()\n','','unbound owner exchange'),
         ]:
             with tempfile.TemporaryDirectory(prefix='jzap-source-binding-') as tmp:
                 source=Path(tmp);shutil.copytree(ROOT/'src',source/'src')
@@ -233,7 +249,7 @@ def main():
                 path.write_text(changed)
                 build=subprocess.run(['rustc','--edition=2024','--crate-type=rlib','--crate-name=jzap','--cfg=feature="alloc"',str(source/'src/lib.rs'),'-o',str(source/'libjzap.rlib')],cwd=ROOT,capture_output=True,text=True)
                 assert build.returncode==0,build.stderr
-                mutated_states=[r for r in state_inventory(source,OUT/('mutation-'+name)) if not is_string(r["file"])]
+                mutated_states=state_inventory(source,OUT/('mutation-'+name))
                 mutated_unsafe=json.loads(subprocess.check_output([str(scanner('unsafe_sites')),*source_files],cwd=source,text=True))
                 for site in mutated_unsafe:site['group']=group(site)
                 try:

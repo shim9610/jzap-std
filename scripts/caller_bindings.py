@@ -118,6 +118,71 @@ WRITES={
 }
 
 
+# `Vec::try_reuse_larger_buffer`, compared whole (comments removed).
+EXCHANGE=('ifself.len()>=other.len()||self.max_len()!=other.max_len()||!self.policy.budget().is_metered()'
+    '||!self.policy.budget().same_domain(other.policy.budget()){returnOk(false);}'
+    'letneeded=required_len(self.len(),other.len(),self.max_len())?;'
+    'ifother.capacity()<needed{ifself.capacity()>=needed{returnOk(false);}other.try_reserve_exact(self.len())?;}'
+    'mem::swap(&mutself.ptr,&mutother.ptr);mem::swap(&mutself.len,&mutother.len);mem::swap(&mutself.cap,&mutother.cap);Ok(true)')
+# The storage words of the tracked owners (`Vec`, `Buffer`). A mutable borrow
+# of one of them publishes like an assignment, so it is bound like one.
+OWNER_WORDS=('ptr','len','cap','limit','layout')
+# The contract that states the premise of each lend, and the borrowed places in
+# source order. `init::collection::fill` publishes the lent length through
+# `Commit::drop`; `Vec::try_reuse_larger_buffer` exchanges the words of two owners.
+LENDS={
+ ('src/boxed/buffer.rs','collect'):('buffer_span',['&mutself.len']),
+ ('src/boxed/buffer.rs','collect_rest'):('buffer_span',['&mutself.len']),
+ ('src/vec/edit.rs','fill'):('splice_fill_loop',['&mutself.drain.owner.len']),
+ ('src/vec/edit.rs','stage_batch'):('splice_fill_loop',['&mutextra.len']),
+ ('src/vec.rs','try_reuse_larger_buffer'):('exchanged_owners',['&mutself.ptr','&mutother.ptr','&mutself.len','&mutother.len','&mutself.cap','&mutother.cap']),
+}
+
+
+def area(row):
+    """The binding domain of one row; `foundation` is the domain of this file."""
+    from verify_string import is_string
+    from shared_bindings import separate
+    from btree_bindings import is_btree
+    from bplus_bindings import is_bplus
+    from hash_map_bindings import is_hash_map
+    from verify_hash_set import is_hash_set
+    from verify_binary_heap import is_binary_heap
+    from verify_deque import is_deque
+    from verify_scratch_slice import is_scratch_slice
+    file=row['file']
+    for name,member in (('string',is_string),('btree',is_btree),('bplus',is_bplus),('hash-map',is_hash_map),
+                        ('hash-set',is_hash_set),('binary-heap',is_binary_heap),('deque',is_deque),('scratch-slice',is_scratch_slice)):
+        if member(file):return name
+    return 'shared' if separate(row) else 'foundation'
+
+
+def lend_bindings(rows,proof):
+    """Bind every mutable borrow and pattern binding of an owner word.
+
+    `rows` is the whole inventory, before any area is filtered out: an owner
+    word borrowed in a file of another area fails here instead of being
+    dropped by that area's filter. Borrows of other fields are counted per
+    area and returned; they are recorded by the scanner and bound nowhere.
+    """
+    seen={};bindings=[];other={}
+    for row in rows:
+        if row['kind'] not in ('field_borrow','field_pattern'):continue
+        detail=row['detail'];members=detail.get('members',[detail['member']])
+        if not set(members)&set(OWNER_WORDS):
+            other[area(row)]=other.get(area(row),0)+1
+            continue
+        assert row['kind']=='field_borrow',('unbound owner-word pattern binding',row)
+        assert area(row)=='foundation',('owner-word borrow in a separately bound area',row)
+        key=(row['file'],row['function']);assert key in LENDS,('unbound owner-word borrow',row)
+        contract,expected=LENDS[key];position=seen.get(key,0)
+        assert position<len(expected) and compact(row['expression'])==expected[position],('unbound owner-word borrow',row,expected)
+        seen[key]=position+1
+        bindings.append(dict(site=row,contract=proof(contract),role='state-lend'))
+    for key,(_,expected) in LENDS.items():assert seen.get(key)==len(expected),('missing expected owner-word borrow',key)
+    return bindings,dict(sorted(other.items()))
+
+
 def compaction_leaves(root, unsafe_rows, state_rows):
     """Read-only correspondence checks; no proof program is generated here."""
     from verify_edit_loops import block
@@ -208,6 +273,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     check_hash_set(root)
     # The B+ audit verifies the source-bound initialized prefix and snapshot separately.
     check_bplus(root)
+    inventory_rows=rows
     rows=[r for r in rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     unsafe_rows=[r for r in unsafe_rows if not is_string(r['file']) and not separate(r) and not is_btree(r['file']) and not is_bplus(r['file']) and not is_hash_map(r['file']) and not is_hash_set(r['file']) and not is_copy_capability_site(r) and not is_binary_heap(r['file']) and not is_deque(r['file']) and not is_scratch_slice(r['file'])]
     compaction_leaves(root,unsafe_rows,rows)
@@ -260,6 +326,8 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         else:raise AssertionError(('unbound state write',row))
         bindings.append(dict(site=row,contract=proof(contract),role='state-publication'))
     for key,(contract,expected) in WRITES.items():assert seen.get(key)==len(expected),('missing expected publication',key)
+    lends,other_borrows=lend_bindings(inventory_rows,proof)
+    bindings+=lends
     assert not [r for r in rows if r['kind']=='compaction_driver_import'], 'unbound compaction driver import'
     entries=[r for r in rows if r['kind']=='compaction_driver_reference']
     expected_entries={
@@ -497,6 +565,9 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     assert body('src/vec.rs','fn grow(')=='letneeded=required_len(self.len.get(),additional,self.max_len())?;self.grow_to(needed,exact)'
     shrink=body('src/vec.rs','pub fn try_shrink_to(')
     assert 'letcap=self.len.get().max(minimum_capacity);ifcap<self.cap.get(){self.resize_storage(cap)?;}' in shrink
+    # The exchange of the storage words is modeled whole by exchanged_owners:
+    # the refusals, the reservation in the other owner and the three swaps.
+    assert body('src/vec.rs','pub(crate) fn try_reuse_larger_buffer(')==EXCHANGE,'unbound owner exchange'
     array=body('src/vec/convenience.rs','pub fn try_from_array_in')
     assert 'letmutresult=Self::empty(policy,limit);' in array and 'result.try_reserve_exact(N)' in array,'unbound array reservation'
     imported=body('src/vec/ownership.rs','pub fn from_boxed_slice(')
@@ -598,6 +669,10 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
         else:raise AssertionError(('unbound unsafe caller',row))
         bindings.append(dict(site=row,contract=proof(contract),role='typed-memory-boundary'))
     return dict(bindings=bindings,state_writes=sum(x['role']=='state-publication' for x in bindings),
+                state_lends=sum(x['role']=='state-lend' for x in bindings),
+                # Recorded by the scanner and bound to no contract: mutable borrows
+                # of fields that are not owner words, per area.
+                unbound_field_borrows=other_borrows,
                 constructor_fields=sum(x['role']=='state-construction' for x in bindings),
                 unsafe_callers=sum(x['role']=='typed-memory-boundary' for x in bindings),
                 boundary='Source-projection numeric/guard certificate under valid typed storage, allocator, safe Rust ownership and explicit public-unsafe/callback contracts; not a Rust provenance theorem.')

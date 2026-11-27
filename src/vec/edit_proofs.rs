@@ -259,6 +259,10 @@ impl TryIterator for ClosureSource {
     fn try_next(&mut self) -> Result<Option<()>, u8> {
         closure_reply(if kani::any() { Some(()) } else { None })
     }
+    // Any lower bound, or an error: a hint is never trusted.
+    fn try_size_hint(&self) -> Result<(usize, Option<usize>), u8> {
+        closure_reply((kani::any(), None))
+    }
 }
 
 fn closure_retain_case<L: LengthPolicy>(limit: L) {
@@ -379,6 +383,10 @@ fn closure_splice_fill_case<L: LengthPolicy>(limit: L) {
     assert!(splice.drain.tail_start == tail_start && splice.drain.tail_len == tail_len);
     let committed = splice.drain.owner.len.get();
     assert!(len <= committed);
+    // The phase fact `move_tail` and `stage_excess` need: a full hole.
+    if let Ok(true) = result {
+        assert!(committed == tail_start);
+    }
     if len > tail_start {
         assert!(matches!(result, Err(InitError::Storage(Error::Bounds))) && committed == len);
     }
@@ -473,4 +481,129 @@ fn closure_stage_batch_preserves_the_invariant() {
         // The batch is full: the next value needs growth.
         assert!(owner.len() == owner.capacity());
     }
+}
+
+// Closure harnesses of the splice (issue #16, unit 1 step 7). `move_tail` and
+// `stage_excess` keep the Drain pair invariant only from the phase a completed
+// `fill` leaves, `len == tail_start`. They run here from every pair state and
+// assert the pair invariant for the states of that phase; nothing is assumed
+// about the phase.
+fn closure_move_tail_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, cap, max) = (owner.len(), owner.capacity(), owner.max_len());
+    let drain = closure_drain(&mut owner);
+    let (tail_start, tail_len) = (drain.tail_start, drain.tail_len);
+    let mut splice = Splice {
+        drain,
+        replacement: ClosureSource,
+    };
+    let additional: usize = kani::any();
+    let result = splice.move_tail(additional);
+    assert!(closure_invariant(splice.drain.owner));
+    assert!(splice.drain.owner.len.get() == len && splice.drain.tail_len == tail_len);
+    match result {
+        Ok(()) => {
+            assert!(splice.drain.tail_start - tail_start == additional);
+            // The reservation holds the length, the opened hole and the tail.
+            let room = splice.drain.owner.cap.get() - len;
+            assert!(room >= tail_len && room - tail_len >= additional);
+        }
+        Err(_) => {
+            assert!(splice.drain.tail_start == tail_start && splice.drain.owner.cap.get() == cap)
+        }
+    }
+    if len == tail_start {
+        assert!(closure_drain_invariant(&splice.drain));
+    }
+    kani::cover!(result.is_ok() && len == tail_start && additional > 0 && tail_len > 0);
+    kani::cover!(result.is_err());
+    drop(splice);
+    closure_exit(&owner, max);
+    assert!(owner.len() == len + tail_len);
+}
+#[kani::proof]
+fn closure_move_tail_preserves_the_owner_invariant_and_the_filled_pair() {
+    closure_move_tail_case(LengthLimit::new(kani::any()));
+    closure_move_tail_case(Unlimited);
+}
+
+#[cfg(jzap_init_loop_contracts)]
+fn closure_stage_excess_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let drain = closure_drain(&mut owner);
+    let (tail_start, tail_len) = (drain.tail_start, drain.tail_len);
+    let mut splice = Splice {
+        drain,
+        replacement: ClosureSource,
+    };
+    let result = splice.stage_excess((), kani::any());
+    assert!(closure_invariant(splice.drain.owner));
+    assert!(splice.drain.tail_len == tail_len);
+    let (committed, moved) = (splice.drain.owner.len.get(), splice.drain.tail_start);
+    match result {
+        // The staged values and the tail move by the same count.
+        Ok(()) => assert!(committed > len && committed - len == moved - tail_start),
+        Err(_) => assert!(committed == len && moved == tail_start),
+    }
+    if len == tail_start {
+        assert!(closure_drain_invariant(&splice.drain) && committed == moved);
+    }
+    kani::cover!(result.is_ok() && len == tail_start && tail_len > 0);
+    kani::cover!(matches!(result, Err(InitError::Initialize(23))));
+    kani::cover!(matches!(result, Err(InitError::Storage(Error::Capacity))));
+    drop(splice);
+    closure_exit(&owner, max);
+    assert!(owner.len() == committed + tail_len);
+}
+// The staging loop takes at most two turns at a zero-sized element: the
+// staging owner starts with its whole limit as capacity. The cursor loop runs
+// under its contract.
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_stage_excess_preserves_the_owner_invariant_and_the_filled_pair() {
+    closure_stage_excess_case(LengthLimit::new(kani::any()));
+}
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_stage_excess_preserves_the_owner_invariant_and_the_filled_pair_unlimited() {
+    closure_stage_excess_case(Unlimited);
+}
+
+// The whole `try_finish` with a retained tail, from every pair state: the
+// source ends, fails or yields without a bound, and every hint is arbitrary.
+// The call consumes the guard, so the exit state is read after its drop.
+#[cfg(jzap_init_loop_contracts)]
+fn closure_splice_finish_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let drain = closure_drain(&mut owner);
+    let tail_len = drain.tail_len;
+    // Path selection: the empty-tail branch is a separate loop.
+    kani::assume(tail_len != 0);
+    let result = Splice {
+        drain,
+        replacement: ClosureSource,
+    }
+    .try_finish();
+    closure_exit(&owner, max);
+    // Nothing committed before the call and no tail value is lost.
+    assert!(owner.len() >= tail_len && owner.len() - tail_len >= len);
+    kani::cover!(result.is_ok() && owner.len() - tail_len > len);
+    kani::cover!(matches!(result, Err(InitError::Initialize(23))));
+    kani::cover!(matches!(result, Err(InitError::Storage(Error::Capacity))));
+}
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_splice_finish_with_a_tail_preserves_the_invariant() {
+    closure_splice_finish_case(LengthLimit::new(kani::any()));
+}
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_splice_finish_with_a_tail_preserves_the_invariant_unlimited() {
+    closure_splice_finish_case(Unlimited);
 }

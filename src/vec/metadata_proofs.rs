@@ -647,3 +647,76 @@ fn closure_resize_with_init_preserves_the_invariant() {
     kani::cover!(matches!(limited, Err(InitError::Storage(Error::Capacity))));
     let _ = closure_resize_with_init_case(Unlimited);
 }
+
+// The whole-owner replacement of `Vec::try_clone_from`: the receiver takes a
+// copy built under its own limit, or keeps every word on refusal.
+fn closure_clone_from_case<L: LengthPolicy>(limit: L, source_limit: L) -> Result<(), Error> {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let source = closure_owner::<(), _, _>(Unmetered, source_limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let (source_len, source_max) = (source.len(), source.max_len());
+    let result = owner.try_clone_from(&source);
+    closure_exit(&owner, max);
+    closure_exit(&source, source_max);
+    assert!(source.len() == source_len);
+    assert!(owner.len() == if result.is_ok() { source_len } else { len });
+    kani::cover!(result.is_ok() && len != source_len);
+    kani::cover!(result.is_ok() && len == source_len);
+    result
+}
+#[kani::proof]
+fn closure_clone_from_replaces_the_whole_owner_under_the_invariant() {
+    let limited =
+        closure_clone_from_case(LengthLimit::new(kani::any()), LengthLimit::new(kani::any()));
+    // The source may hold more than the receiver's limit admits.
+    kani::cover!(limited == Err(Error::Capacity));
+    let _ = closure_clone_from_case(Unlimited, Unlimited);
+}
+
+// The callers of the L11 loop that pass their own callback, under the loop
+// contract: no bound on the request.
+#[cfg(jzap_loop_contracts)]
+fn closure_resize_callers_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let new_len: usize = kani::any();
+    let result = owner.try_resize(new_len, &ClosureFlaky);
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { new_len } else { len });
+    kani::cover!(result.is_ok() && new_len > len);
+    kani::cover!(result == Err(Error::InvalidStructure));
+
+    let len = owner.len();
+    let new_len: usize = kani::any();
+    let result = owner.try_resize_with(new_len, || {
+        if kani::any() {
+            Err(23u8)
+        } else {
+            Ok(ClosureFlaky)
+        }
+    });
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { new_len } else { len });
+    kani::cover!(result.is_ok() && new_len > len);
+    kani::cover!(matches!(result, Err(InitError::Initialize(23))));
+
+    let len = owner.len();
+    // SAFETY: zero-sized values need no storage.
+    let source = unsafe {
+        core::slice::from_raw_parts(NonNull::<ClosureFlaky>::dangling().as_ptr(), kani::any())
+    };
+    let result = owner.try_extend_cloned(source);
+    closure_exit(&owner, max);
+    match result {
+        Ok(()) => assert!(owner.len() - len == source.len()),
+        Err(_) => assert!(owner.len() == len),
+    }
+    kani::cover!(result.is_ok() && !source.is_empty());
+    kani::cover!(result == Err(Error::InvalidStructure));
+}
+#[cfg(jzap_loop_contracts)]
+#[kani::proof]
+fn closure_resize_callers_preserve_the_invariant() {
+    closure_resize_callers_case(LengthLimit::new(kani::any()));
+    closure_resize_callers_case(Unlimited);
+}

@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 task A done (the loop contract of `try_resize_with_init` restated, L11 has its closure harness); steps 7 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); steps 8 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -885,3 +885,141 @@ harnesses of `src/panic_proofs.rs`, `scripts/source_certificate.py`.
 `try_extend_cloned` and the two `try_clone_in` functions call this loop with
 other callbacks. They write no owner word themselves; they were not run under
 the loop contract in this task.
+
+### Step 7, task B: guards, the whole splice and the whole-owner replacements
+
+Done on 2026-11-27. No product file changed and no contract changed status.
+
+**Splice** (`src/vec/edit_proofs.rs`). The owner comes from `closure_owner`
+and the guard from `closure_drain` (any ordered unread range and any tail words
+that satisfy `closure_drain_invariant`). The source of every harness ends,
+fails or yields on each call, without a bound, and its size hint is an
+arbitrary word or an error.
+
+| Site | Function | Harness (`vec::edit::panic_proofs::`) | Assumes | Result |
+| --- | --- | --- | --- | --- |
+| F1 `edit.rs:450` | `Splice::fill` | `closure_splice_fill_preserves_the_owner_and_pair_invariants` (step 5), now also asserting that `Ok(true)` leaves `len == tail_start` | owner and pair invariant | verified |
+| `edit.rs:439` (`tail_start`) | `Splice::move_tail` | `closure_move_tail_preserves_the_owner_invariant_and_the_filled_pair` | owner and pair invariant | verified |
+| L31, L32 `edit.rs:592-593`, `edit.rs:591` (`tail_start`) | `Splice::stage_excess` | `closure_stage_excess_preserves_the_owner_invariant_and_the_filled_pair` (`LengthLimit`) and `.._unlimited` | owner and pair invariant | verified |
+| L30 `edit.rs:518` | `Splice::try_finish`, whole | `closure_splice_finish_with_a_tail_preserves_the_invariant` (`LengthLimit`) and `.._unlimited` | owner and pair invariant, **and `tail_len != 0`** | verified; not closure evidence while the path is selected by an assumption |
+
+`move_tail` and `stage_excess` keep the pair invariant only from the phase a
+completed `fill` leaves, `len == tail_start`. Their harnesses assume nothing
+about the phase: they run from every pair state, assert the owner invariant
+and the unchanged limit on every return, and assert the pair invariant (and,
+for `stage_excess`, `len == tail_start` again) for the states that started in
+the phase. On refusal every word is unchanged. `stage_excess` asserts that the
+length and `tail_start` move by the same count.
+
+The phase fact at the two call sites inside `try_finish`:
+
+- `fill` returns `Ok(true)` only with `len == tail_start`, from every pair
+  state (the harness above).
+- No Kani run asserts the fact at the call sites of the actual `try_finish`.
+  The method consumes the guard, so a harness reads the state only after the
+  guard's drop, and a proof cannot place an assertion inside product code.
+  Between the return of `fill` and each call the function writes neither word
+  (`try_next`, `try_size_hint`, arithmetic and `try_reserve`): this is a
+  reading, not a run.
+- The maintained function `splice_operation` is generated from the pinned text
+  of `try_finish`; its callees `hole_move` and `stage_operation` require
+  `len == tail` and Verus derives it from the `ensures` of `hole_fill`. That
+  covers the projection, as before this step.
+
+The whole-`try_finish` harnesses assert the owner invariant after the guard's
+drop on every return (success, source error, refusal) and that the length is
+at least the old length plus the tail. The addition in `Drain::restore_tail`
+is checked in place by the `cfg(kani)` assertion of `wrapping_add`.
+
+The staging loop of `staging_driver::run` has no contract. At a zero-sized
+element the staging owner starts with its whole limit as capacity, so the loop
+takes at most two turns; the unwinding assertion (`kani::unwind(4)`) checks
+that bound, and the cursor loop runs under its existing contract. L32
+(`extra.len = 0`) is followed only by the drop of `extra`; no harness can
+observe it.
+
+**IntoIter** (`src/vec/ownership_proofs.rs`). The pair it keeps with its
+owner is `closure_iter_invariant`: `span.front <= span.back`,
+`span.back <= cap` and `len == 0`. `closure_iter` builds an owner from
+`closure_owner` and any range, and assumes that pair invariant and nothing
+else.
+
+| Method | Harness (`vec::ownership::panic_proofs::`) | Result |
+| --- | --- | --- |
+| `into_iter` (L34) | `closure_into_iter_preserves_the_invariant` (step 5), now asserting `closure_iter_invariant` | verified |
+| `as_slice`, `as_mut_slice`, `as_ref`, `as_mut`, `size_hint`, `len`, `next`, `next_back`, `drop` | `closure_iter_steps_preserve_the_pair_invariant` | verified |
+| `try_clone` | `closure_iter_clone_establishes_the_pair_invariant_of_the_copy` | verified |
+| `try_clone_from` (the swap at `ownership.rs:252`) | `closure_iter_clone_from_replaces_the_whole_value_under_the_pair_invariant` | verified |
+| `default` | `closure_iter_default_establishes_the_pair_invariant` | verified |
+
+**The two whole-owner replacements.**
+`metadata_proofs::closure_clone_from_replaces_the_whole_owner_under_the_invariant`
+runs `Vec::try_clone_from` (the swap at `vec.rs:700`) on two owners from
+`closure_owner` with their own limits: the receiver satisfies the invariant
+under its own limit on every return, takes the source's length on success and
+keeps every word on refusal; the source is unchanged. The covers show the
+replacement path, the in-place path of equal lengths and a limit refusal. The
+IntoIter harness above does the same for the pair invariant. The value that
+the swap moves out is dropped inside the method, where no harness can read it:
+it is the receiver's previous value, word for word.
+`closure_whole_value_exchange_keeps_both_invariants` states that exchange on
+the two types (`mem::swap` of two values that each satisfy their invariant).
+It runs no product statement, so it has no control.
+
+**The callers of the L11 loop.**
+`metadata_proofs::closure_resize_callers_preserve_the_invariant` runs
+`try_resize`, `try_resize_with` and the per-element branch of
+`try_extend_cloned` under the loop contract of task A, with a zero-sized value
+whose clone fails or succeeds on every call and with no bound on the request.
+
+**Registration and controls** (`scripts/verify_source.py`). The move-tail and
+stage-excess harnesses join `vec-splice-fill`; the two whole-`try_finish`
+harnesses are an `EXTRA` invocation of that group marked
+`extra_assumption='a retained tail (tail_len != 0)'`. The IntoIter harnesses
+and the `Vec::try_clone_from` harness join `owner-metadata`; the L11 callers
+join `clone`. Thirteen controls are new, each a product mutation that must end
+in a solver counterexample of the named harness:
+
+| Control | Mutation | Harness that must fail |
+| --- | --- | --- |
+| `closure-vec-splice-fill-phase` | `init::collection::finished` reports a full hole when the source ended | the fill harness (the new phase assertion) |
+| `closure-vec-move-tail-reservation` | `move_tail` reserves the hole without the tail | the move-tail harness |
+| `closure-vec-stage-excess-length` | L31 publishes one more | the stage-excess harness (`LengthLimit`) |
+| `closure-vec-stage-excess-growth` | `stage_excess` never grows | the stage-excess harness (`Unlimited`) |
+| `closure-vec-splice-finish-length` | L30 publishes one more | the whole-`try_finish` harness (`LengthLimit`) |
+| `closure-vec-splice-finish-move` | `try_finish` skips `move_tail` | the whole-`try_finish` harness (`Unlimited`) |
+| `closure-vec-clone-from-swap` | `Vec::try_clone_from` returns without the swap | the `try_clone_from` harness |
+| `closure-vec-iter-step` | `Span::next` jumps to the end | the IntoIter steps harness |
+| `closure-vec-iter-clone-length`, `closure-vec-iter-default-length` | `into_iter` publishes `usize::MAX` | the IntoIter clone and default harnesses |
+| `closure-vec-iter-clone-from-swap` | `IntoIter::try_clone_from` returns without the swap | the IntoIter `try_clone_from` harness |
+| `closure-vec-resize-callers-commit` | `try_resize_with_init` drops its guard on success | the L11 callers harness |
+
+**Run**, each `python3 scripts/verify_source.py --group <name> --mutations`
+on the tree of this task (Kani 0.68.0, CBMC 6.11.0, CaDiCaL,
+`--object-bits 10`):
+
+| Group | Harnesses (main, extra) | Controls | Run time | Result |
+| --- | --- | ---: | ---: | --- |
+| `vec-splice-fill` | 12 (9 before), 2 with a retained tail | 15 (9 before) | 1,216 s | pass |
+| `owner-metadata` | 33 (27 before) | 36 (31 before) | 1,778 s | pass |
+| `clone` | 4 (3 before), 4 bounded | 8 (7 before) | 1,392 s | pass |
+
+Every harness verified and every control was detected. Solver times of the
+new harnesses: the whole `try_finish` 192 s (`LengthLimit`) and 135 s
+(`Unlimited`), stage-excess 50 s and 48 s, move-tail 20 s, the L11 callers
+157 s, every IntoIter and replacement harness at most 10 s. Peak
+memory was not measured. `python3 scripts/test_verify.py`: 50 OK.
+Not run in this task: `scripts/verify_owner_protocol.py`,
+`scripts/verify_wrapping_memory.py` (both at the end of step 8),
+`scripts/verify_panic_paths.py`, `scripts/source_certificate.py`.
+
+**Not covered by this task.**
+
+| Site | Reason |
+| --- | --- |
+| the empty-tail branch of `Splice::try_finish` (`while let` over `try_push`) | needs a loop contract; step 8. Until then the whole-`try_finish` harnesses select the other path by an assumption |
+| the Drain words at the return of `try_finish`, and the phase fact at its two call sites, on the actual function | not observable by a harness (above) |
+| L32 `edit.rs:593` | not observable (above) |
+| `try_extend_fallible`, `try_extend`, `try_from_iter_in`, `try_from_fallible_iter_in` | a `while let` over the source without a contract; step 8 |
+| `IntoIter::try_clone_in`, `Vec::try_clone_in`, `IntoIter`'s `Debug` | not run |
+| `Splice`'s and `Drain`'s iterator methods on a Splice, `Drain::as_slice`, the `Debug` impls | read-only or delegated to the Drain steps of step 5; not run separately |

@@ -180,7 +180,18 @@ CLOSURE = {
         'flatten_establishes_the_invariant_of_the_element_owner',
         # Under the loop contract of try_resize_with_init: no bound on the request.
         'resize_with_init_preserves_the_invariant',
-    )] + ['vec::ownership::panic_proofs::closure_into_iter_preserves_the_invariant'],
+        # The whole-owner replacement of try_clone_from.
+        'clone_from_replaces_the_whole_owner_under_the_invariant',
+    )] + ['vec::ownership::panic_proofs::closure_' + name for name in (
+        'into_iter_preserves_the_invariant',
+        # The pair an IntoIter keeps with its owner (its own fixture helper).
+        'iter_steps_preserve_the_pair_invariant',
+        'iter_clone_establishes_the_pair_invariant_of_the_copy',
+        'iter_clone_from_replaces_the_whole_value_under_the_pair_invariant',
+        'iter_default_establishes_the_pair_invariant',
+        # Runs no product statement: mem::swap on the two types.
+        'whole_value_exchange_keeps_both_invariants',
+    )],
     'vec-layout-growth': ['vec::growth_proofs::closure_' + name for name in (
         'reserve_preserves_the_invariant',
         'reserve_exact_preserves_the_invariant',
@@ -201,6 +212,11 @@ CLOSURE = {
         'splice_fill_preserves_the_owner_and_pair_invariants',
         'stage_push_preserves_the_invariant',
         'stage_batch_preserves_the_invariant',
+        # From every pair state; the pair invariant is asserted for the states
+        # of the phase a completed fill leaves (len == tail_start).
+        'move_tail_preserves_the_owner_invariant_and_the_filled_pair',
+        'stage_excess_preserves_the_owner_invariant_and_the_filled_pair',
+        'stage_excess_preserves_the_owner_invariant_and_the_filled_pair_unlimited',
     )],
     'vec-extraction': ['vec::edit::panic_proofs::closure_' + name for name in (
         'extract_constructor_establishes_the_pair_invariant',
@@ -208,7 +224,10 @@ CLOSURE = {
     )],
     # Second instantiations: the bitwise branch of try_extend_cloned at a
     # zero-sized array, and Capacity::for_slice.
-    'clone': ['vec::metadata_proofs::closure_extend_cloned_witness_preserves_the_invariant'],
+    # The callers of the try_resize_with_init loop with their own callbacks run
+    # under its loop contract, without a bound on the request.
+    'clone': ['vec::metadata_proofs::closure_extend_cloned_witness_preserves_the_invariant',
+              'vec::metadata_proofs::closure_resize_callers_preserve_the_invariant'],
     'layout': ['layout::proofs::closure_slice_capacity_matches_the_slice_layout'],
 }
 for _group, _names in CLOSURE.items():
@@ -233,6 +252,12 @@ EXTRA = {
         'push_growth_preserves_the_invariant_of_every_sized_owner',
         'capacity_constructors_establish_the_invariant_of_every_sized_owner',
     )], cfgs=['jzap_closure_stubs'], stubbing=True)],
+    # The whole try_finish on the path with a retained tail. The empty-tail
+    # branch is a loop over the source without a contract.
+    'vec-splice-fill': [dict(harnesses=['vec::edit::panic_proofs::closure_' + name for name in (
+        'splice_finish_with_a_tail_preserves_the_invariant',
+        'splice_finish_with_a_tail_preserves_the_invariant_unlimited',
+    )], extra_assumption='a retained tail (tail_len != 0)')],
     # The element loops are unwound for at most two new elements. Without
     # --cfg jzap_loop_contracts the loop of try_resize_with_init is unwound too.
     'clone': [dict(harnesses=['vec::metadata_proofs::closure_bounded_' + name for name in (
@@ -664,6 +689,26 @@ CONTROLS = [
      '        self.try_reserve(additional.get())\n            .map_err(InitError::Storage)?;\n        let original = self.len.get();',
      '        self.try_reserve(0)\n            .map_err(InitError::Storage)?;\n        let original = self.len.get();',
      'vec::metadata_proofs::closure_resize_with_init_preserves_the_invariant'),
+    ('closure-vec-clone-from-swap', 'owner-metadata', 'src/vec.rs',
+     "        mem::swap(self, &mut replacement);\n        Ok(())\n    }\n}\nimpl<'a, T: TryCloneIn<'a>",
+     "        Ok(())\n    }\n}\nimpl<'a, T: TryCloneIn<'a>",
+     'vec::metadata_proofs::closure_clone_from_replaces_the_whole_owner_under_the_invariant'),
+    ('closure-vec-iter-step', 'owner-metadata', 'src/span.rs',
+     '        let next = Checked::new(wrapping_add(self.front.get(), 1));\n        self.front = next;',
+     '        let next = Checked::new(wrapping_add(self.front.get(), 1));\n        self.front = self.back;',
+     'vec::ownership::panic_proofs::closure_iter_steps_preserve_the_pair_invariant'),
+    ('closure-vec-iter-clone-length', 'owner-metadata', 'src/vec/ownership.rs',
+     '        let back = self.len.get();\n        self.len = Checked::new(0);',
+     '        let back = self.len.get();\n        self.len = Checked::new(usize::MAX);',
+     'vec::ownership::panic_proofs::closure_iter_clone_establishes_the_pair_invariant_of_the_copy'),
+    ('closure-vec-iter-clone-from-swap', 'owner-metadata', 'src/vec/ownership.rs',
+     '        mem::swap(self, &mut replacement);\n        Ok(())\n    }\n    fn try_clone(&self)',
+     '        Ok(())\n    }\n    fn try_clone(&self)',
+     'vec::ownership::panic_proofs::closure_iter_clone_from_replaces_the_whole_value_under_the_pair_invariant'),
+    ('closure-vec-iter-default-length', 'owner-metadata', 'src/vec/ownership.rs',
+     '        let back = self.len.get();\n        self.len = Checked::new(0);',
+     '        let back = self.len.get();\n        self.len = Checked::new(usize::MAX);',
+     'vec::ownership::panic_proofs::closure_iter_default_establishes_the_pair_invariant'),
     ('closure-vec-resize-capacity', 'vec-layout-growth', 'src/vec.rs',
      'crate::capacity::Capacity::try_new(cap)?;',
      'crate::capacity::Capacity::try_new(cap.wrapping_add(1))?;',
@@ -720,6 +765,30 @@ CONTROLS = [
      '    let end = extra.capacity();',
      '    let end = extra.max_len();',
      'vec::edit::panic_proofs::closure_stage_batch_preserves_the_invariant'),
+    ('closure-vec-splice-fill-phase', 'vec-splice-fill', 'src/init/collection.rs',
+     '        Err(Stop::End) => Ok(false),',
+     '        Err(Stop::End) => Ok(true),',
+     'vec::edit::panic_proofs::closure_splice_fill_preserves_the_owner_and_pair_invariants'),
+    ('closure-vec-move-tail-reservation', 'vec-splice-fill', 'src/vec/edit.rs',
+     '        self.drain.owner.try_reserve(required)?;',
+     '        self.drain.owner.try_reserve(additional)?;',
+     'vec::edit::panic_proofs::closure_move_tail_preserves_the_owner_invariant_and_the_filled_pair'),
+    ('closure-vec-stage-excess-length', 'vec-splice-fill', 'src/vec/edit.rs',
+     '        self.drain.owner.len = next_len;',
+     '        self.drain.owner.len = Checked::new(next_len.get().wrapping_add(1));',
+     'vec::edit::panic_proofs::closure_stage_excess_preserves_the_owner_invariant_and_the_filled_pair'),
+    ('closure-vec-stage-excess-growth', 'vec-splice-fill', 'src/vec/edit.rs',
+     '        if needed > self.drain.owner.cap.get() {',
+     '        if false {',
+     'vec::edit::panic_proofs::closure_stage_excess_preserves_the_owner_invariant_and_the_filled_pair_unlimited'),
+    ('closure-vec-splice-finish-length', 'vec-splice-fill', 'src/vec/edit.rs',
+     '        self.drain.owner.len = next;\n        if !self.fill()? {',
+     '        self.drain.owner.len = Checked::new(next.get().wrapping_add(1));\n        if !self.fill()? {',
+     'vec::edit::panic_proofs::closure_splice_finish_with_a_tail_preserves_the_invariant'),
+    ('closure-vec-splice-finish-move', 'vec-splice-fill', 'src/vec/edit.rs',
+     '        self.move_tail(additional)?;\n',
+     '',
+     'vec::edit::panic_proofs::closure_splice_finish_with_a_tail_preserves_the_invariant_unlimited'),
     ('closure-vec-extract-constructor-length', 'vec-extraction', 'src/vec/edit.rs',
      '        self.len = Checked::new(0);\n        Ok(ExtractIf {',
      '        self.len = Checked::new(usize::MAX);\n        Ok(ExtractIf {',
@@ -768,6 +837,10 @@ CONTROLS = [
      '        mem::forget(guard);\n        Ok(())\n    }\n    pub fn try_resize_with<E>',
      '        Ok(())\n    }\n    pub fn try_resize_with<E>',
      'vec::metadata_proofs::closure_bounded_resize_returns_preserve_the_invariant'),
+    ('closure-vec-resize-callers-commit', 'clone', 'src/vec.rs',
+     '        mem::forget(guard);\n        Ok(())\n    }\n    pub fn try_resize_with<E>',
+     '        Ok(())\n    }\n    pub fn try_resize_with<E>',
+     'vec::metadata_proofs::closure_resize_callers_preserve_the_invariant'),
     ('closure-vec-bounded-resize-owned-loop-length', 'clone', 'src/vec/convenience.rs',
      '            guard.owner.len = next;\n        }\n        let next = match guard.owner.len + Checked::new(1) {',
      '            guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        }\n        let next = match guard.owner.len + Checked::new(1) {',

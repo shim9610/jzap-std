@@ -91,7 +91,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); steps 6 to 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); steps 7 to 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -651,3 +651,125 @@ The groups `vec-staging` (3 harnesses, pinned by
 
 The closure check that maps each pinned site to its harness, and any status
 change, are step 9.
+
+### Step 6: second instantiations
+
+Done on 2026-11-27. No product file changed and no contract changed status.
+
+**(a) The capacity paths at sized elements, with the storage functions
+stubbed** (`src/vec/growth_proofs.rs`, module `sized`). `-Z stubbing` replaces
+`storage::allocate`, `storage::reallocate` and `storage::deallocate` in this
+crate; Kani lists the three stubs for each harness. `allocate` returns an
+aligned address or `Error::Allocation`, `reallocate` returns the same pointer
+or `Error::Allocation`, each chosen freshly on every call, and `deallocate`
+does nothing, so no storage exists and the words range over every admitted
+value. The fixture `closure_sized_owner::<T, L>` takes any length and any
+capacity that `Capacity::try_new` admits and assumes `closure_invariant` and
+nothing else; the admission is the byte bound of the closed `Capacity` type.
+Every harness asserts `closure_invariant`, the unchanged limit and the byte
+bound (`layout::array::<T>(cap)` is `Ok`) on every return, for `u8`, `u64`,
+`[u64; 200]` (1,600 bytes) and a 64-aligned 64-byte type, under `LengthLimit`
+with an arbitrary limit and under `Unlimited`.
+
+| Harness (`vec::growth_proofs::sized::`) | Entry point | Solver time |
+| --- | --- | ---: |
+| `closure_reserve_preserves_the_invariant_of_every_sized_owner` | `try_reserve` | 66 s |
+| `closure_reserve_exact_preserves_the_invariant_of_every_sized_owner` | `try_reserve_exact` | 55 s |
+| `closure_grow_preserves_the_invariant_of_every_sized_owner` | `grow`, both `exact` values | 24 s |
+| `closure_reserve_length_preserves_the_invariant_of_every_sized_owner` | `reserve_length` | 23 s |
+| `closure_shrink_preserves_the_invariant_of_every_sized_owner` | `try_shrink_to`, `try_shrink_to_fit` | 44 s |
+| `closure_push_growth_preserves_the_invariant_of_every_sized_owner` | `grow_for_push`, called as `try_push` calls it when `len >= cap` | 19 s |
+| `closure_capacity_constructors_establish_the_invariant_of_every_sized_owner` | `try_with_capacity_in`, `try_with_capacity_and_limit_in` | 15 s |
+
+The covers are satisfied for each type and policy: a grown capacity, an
+allocator refusal and a layout refusal of the two reserve harnesses; a shrunk
+capacity and a refusal of the shrink harness. Limits of this instantiation:
+the stubs do not run the budget steps of the storage functions; the stub of
+`reallocate` refuses with `Error::Allocation` only (the alignment refusal of
+the real function is not modelled; `Vec` never changes the alignment);
+`try_push` itself is not run, because its element write needs storage: the
+harness calls `grow_for_push` on the owner's words and makes the two stores
+of `vec.rs:358-359` itself.
+
+**(b) `T = [(); 1]`, the bitwise branch of `try_extend_cloned` (L12,
+`vec.rs:589`).** `[(); 1]` has a copy witness and no bulk hook.
+`metadata_proofs::closure_extend_cloned_witness_preserves_the_invariant`
+asserts the witness, runs the method from a `closure_owner` on a slice of every
+length and asserts the invariant. The control `closure-vec-witness-length`
+mutates the store of that branch and is detected, so the branch is the one
+that ran.
+
+**(c) A zero-sized type whose clone fails or succeeds on every call**
+(`ClosureFlaky`: no witness, no hook). These harnesses carry an assumption
+beyond the shared invariant and are **not closure evidence**: every call asks
+for at most two new elements (`CLOSURE_CLONES`), so that the element loops are
+unwound. They run without `--cfg jzap_loop_contracts`, so the loop of
+`try_resize_with_init`, whose contract does not verify here (step 5), is
+unwound as well. The owner is a `closure_owner`: its length, capacity and
+limit are arbitrary.
+
+| Harness (`vec::metadata_proofs::`) | Method | Stores reached | Extra assumption |
+| --- | --- | --- | --- |
+| `closure_bounded_extend_cloned_returns_preserve_the_invariant` | `try_extend_cloned` (per-element branch) | L11 | the source has at most 2 elements |
+| `closure_bounded_resize_returns_preserve_the_invariant` | `try_resize` | L5, L11 | `new_len <= len + 2` |
+| `closure_bounded_resize_owned_returns_preserve_the_invariant` | `try_resize_owned` | L5, L18, L19 | `new_len <= len + 2` |
+| `closure_bounded_extend_from_within_returns_preserve_the_invariant` | `try_extend_from_within` | L16 | the range has at most 2 elements |
+
+Each asserts the invariant and the exact length on the success return and on
+the error return (the `SuffixGuard` restores the length); the covers show a
+success with two new elements and a clone failure. L11, L16, L18 and L19 stay
+without closure evidence: the bounded runs do not replace the all-count
+harnesses of step 8.
+
+**(d) `Capacity::for_slice`** (`src/layout/proofs.rs`; the proof module of
+`capacity.rs` is inside the product file).
+`layout::proofs::closure_slice_capacity_matches_the_slice_layout`: for `()`
+and `[(); 3]`, a slice of every length and every limit gives the limit as the
+count and a zero-byte layout; for `u8`, `u64` and `[u64; 200]`, each prefix of
+a real three-element array gives its length and the layout of that slice. A
+longer sized slice needs storage: that a valid slice satisfies the byte bound
+is the trust boundary on `core`, not shown here.
+
+**Registration** (`scripts/verify_source.py`). The seven stubbed harnesses are
+an `EXTRA` invocation of `vec-layout-growth` (`-Z stubbing`,
+`--cfg jzap_closure_stubs`). The witness harness is appended to `clone` and
+the slice-capacity harness to `layout`. The four bounded harnesses are an
+`EXTRA` invocation of `clone` without loop contracts, marked
+`extra_assumption`. Fourteen controls are new, one per harness and two for
+`try_resize_owned`.
+
+**Run**, all on the tree of this step, each
+`python3 scripts/verify_source.py --group <name> --mutations`:
+
+| Group | Harnesses (main, extra) | Controls | Run time | Result |
+| --- | --- | ---: | ---: | --- |
+| `vec-layout-growth` | 10, 7 stubbed | 18 (11 before) | 756 s | pass |
+| `clone` | 3 (2 before), 4 bounded | 7 (1 before) | 480 s | pass |
+| `layout` | 3 (2 before) | 4 (3 before) | 75 s | pass |
+| `owner-metadata` (rerun, its proof file changed) | 26 | 29 | 763 s | pass |
+| `vec-compaction` (rerun) | 4 | 3 | 250 s | pass |
+| `vec-splice-fill` (rerun) | 9 | 9 | 376 s | pass |
+| `vec-extraction` (rerun) | 3 | 2 | 80 s | pass |
+| `buffer` (rerun) | 10, 2 stubbed | 16 | 388 s | pass |
+
+Every harness verified and every control was detected. Solver times of the
+new harnesses besides the table above: the four bounded harnesses 11 s to
+23 s, the witness harness 3 s, the slice-capacity harness 1 s. Peak memory
+was not measured. `python3 scripts/test_verify.py`: 50 OK.
+`python3 scripts/verify_owner_protocol.py --mutations` on the same tree: pass,
+1,288 s, 65 results, 26 actual-Rust harnesses and 3 staging harnesses as in
+the run before step 4. No pinned count changed in any script: the groups
+`vec-staging` and `vec-cursors` were not extended.
+`cargo kani --lib --harness boxed::buffer::proofs::`, the prefix selection of
+`scripts/verify.py` for the Box area, verifies 7 of 7 (1 before step 4).
+Not run: `scripts/verify_panic_paths.py`, `scripts/source_certificate.py`,
+`scripts/verify.py`.
+
+**Sites after steps 4 to 6.**
+
+| Evidence | Sites |
+| --- | --- |
+| Closure harness at a zero-sized element (only the shared invariant, or the guard's pair invariant, assumed) | the constructors `new`, `empty` and their `*_in` forms, `try_from_array_in` (L21), `try_into_flattened`; L1-L10, L12 (at `[(); 1]`), L13-L15, L17, L20, L23 (through retain and dedup), L24-L29, L33, L34; S1/C3; F1, F2; C1, C2; Buffer `new`, `reserve`, `push`, `append`, `finish` |
+| The same, and at four sized elements with the storage functions stubbed | C1 and C2 through `try_reserve`, `try_reserve_exact`, `grow`, `reserve_length`, `try_shrink_to`, `grow_for_push`; the capacity constructors; Buffer `reserve` and `finish` |
+| Harness with an extra assumption (a bound on the request), not closure evidence | L11, L16, L18, L19 (at most two new elements); Buffer `collect` and `collect_rest` (a source of at most two values) |
+| No harness | L22, L30, L31, L32; the iterator-driven extenders; the two whole-owner replacements; `try_write_fmt`; the `Vec::from_raw_parts` calls outside `src/vec` |

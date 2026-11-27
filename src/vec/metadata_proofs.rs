@@ -488,3 +488,124 @@ fn closure_flatten_establishes_the_invariant_of_the_element_owner() {
     closure_flatten_case::<3, _>(Unlimited);
     closure_flatten_case::<{ usize::MAX }, _>(Unlimited);
 }
+
+// Second instantiations (issue #16, unit 1 step 6).
+
+/// A unit slice of single-element unit arrays, of any length.
+fn closure_unit_arrays<'a>() -> &'a [[(); 1]] {
+    // SAFETY: zero-sized values need no storage.
+    unsafe { core::slice::from_raw_parts(NonNull::<[(); 1]>::dangling().as_ptr(), kani::any()) }
+}
+
+// `[(); 1]` has a copy witness and no bulk hook, so `try_extend_cloned` takes
+// its own bitwise branch and publishes the length there.
+fn closure_extend_cloned_witness_case<L: LengthPolicy>(limit: L) {
+    assert!(<[(); 1] as TryClone>::copy_witness().is_some());
+    let mut owner = closure_owner::<[(); 1], _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let source = closure_unit_arrays();
+    let result = owner.try_extend_cloned(source);
+    closure_exit(&owner, max);
+    match result {
+        Ok(()) => assert!(len.checked_add(source.len()) == Some(owner.len())),
+        Err(_) => assert!(owner.len() == len),
+    }
+}
+#[kani::proof]
+fn closure_extend_cloned_witness_preserves_the_invariant() {
+    closure_extend_cloned_witness_case(LengthLimit::new(kani::any()));
+    closure_extend_cloned_witness_case(Unlimited);
+}
+
+/// A zero-sized value whose clone fails or succeeds, chosen on every call. It
+/// has no copy witness and no bulk hook: the cloning writers clone it element
+/// by element.
+struct ClosureFlaky;
+impl TryClone for ClosureFlaky {
+    fn try_clone(&self) -> Result<Self, Error> {
+        if kani::any() {
+            Err(Error::InvalidStructure)
+        } else {
+            Ok(ClosureFlaky)
+        }
+    }
+}
+/// At most two new elements: the element loops of the cloning writers are
+/// unwound, not abstracted. This is a bound on the request, not on the owner.
+const CLOSURE_CLONES: usize = 2;
+
+fn closure_flaky_extend_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let count: usize = kani::any();
+    kani::assume(count <= CLOSURE_CLONES);
+    // SAFETY: zero-sized values need no storage.
+    let source =
+        unsafe { core::slice::from_raw_parts(NonNull::<ClosureFlaky>::dangling().as_ptr(), count) };
+    let result = owner.try_extend_cloned(source);
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { len + count } else { len });
+    kani::cover!(result.is_ok() && count == CLOSURE_CLONES);
+    kani::cover!(result == Err(Error::InvalidStructure));
+}
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_bounded_extend_cloned_returns_preserve_the_invariant() {
+    closure_flaky_extend_case(LengthLimit::new(kani::any()));
+    closure_flaky_extend_case(Unlimited);
+}
+
+fn closure_flaky_resize_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let new_len: usize = kani::any();
+    kani::assume(new_len <= len || new_len - len <= CLOSURE_CLONES);
+    let result = owner.try_resize(new_len, &ClosureFlaky);
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { new_len } else { len });
+    kani::cover!(result.is_ok() && new_len > len && new_len - len == CLOSURE_CLONES);
+    kani::cover!(result == Err(Error::InvalidStructure));
+}
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_bounded_resize_returns_preserve_the_invariant() {
+    closure_flaky_resize_case(LengthLimit::new(kani::any()));
+    closure_flaky_resize_case(Unlimited);
+}
+
+fn closure_flaky_resize_owned_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let new_len: usize = kani::any();
+    kani::assume(new_len <= len || new_len - len <= CLOSURE_CLONES);
+    let result = owner.try_resize_owned(new_len, ClosureFlaky);
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { new_len } else { len });
+    kani::cover!(result.is_ok() && new_len > len && new_len - len == CLOSURE_CLONES);
+    kani::cover!(matches!(&result, Err(rejected) if rejected.error == Error::InvalidStructure));
+}
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_bounded_resize_owned_returns_preserve_the_invariant() {
+    closure_flaky_resize_owned_case(LengthLimit::new(kani::any()));
+    closure_flaky_resize_owned_case(Unlimited);
+}
+
+fn closure_flaky_extend_from_within_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<ClosureFlaky, _, _>(Unmetered, limit);
+    let (len, max) = (owner.len(), owner.max_len());
+    let start: usize = kani::any();
+    let count: usize = kani::any();
+    kani::assume(count <= CLOSURE_CLONES && start <= usize::MAX - count);
+    let result = owner.try_extend_from_within(start..start + count);
+    closure_exit(&owner, max);
+    assert!(owner.len() == if result.is_ok() { len + count } else { len });
+    kani::cover!(result.is_ok() && count == CLOSURE_CLONES);
+    kani::cover!(result == Err(Error::InvalidStructure));
+}
+#[kani::proof]
+#[kani::unwind(4)]
+fn closure_bounded_extend_from_within_returns_preserve_the_invariant() {
+    closure_flaky_extend_from_within_case(LengthLimit::new(kani::any()));
+    closure_flaky_extend_from_within_case(Unlimited);
+}

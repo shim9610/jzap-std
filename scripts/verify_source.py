@@ -204,17 +204,41 @@ CLOSURE = {
         'extract_constructor_establishes_the_pair_invariant',
         'extract_drop_restores_the_invariant_from_every_pair_state',
     )],
+    # Second instantiations: the bitwise branch of try_extend_cloned at a
+    # zero-sized array, and Capacity::for_slice.
+    'clone': ['vec::metadata_proofs::closure_extend_cloned_witness_preserves_the_invariant'],
+    'layout': ['layout::proofs::closure_slice_capacity_matches_the_slice_layout'],
 }
 for _group, _names in CLOSURE.items():
     GROUPS[_group]['harnesses'] = GROUPS[_group]['harnesses'] + _names
 # Closure harnesses that need Kani options their group does not use run in
 # their own invocation of that group: `stubbing` replaces the storage functions
-# named by the harness attributes (-Z stubbing); `cfgs` are added to the group's.
+# named by the harness attributes (-Z stubbing); `cfgs` are added to the group's;
+# `loop_contracts` replaces the group's choice. `extra_assumption` names what
+# these harnesses assume beyond the shared invariant: they are evidence for the
+# stated inputs only, not closure evidence.
 EXTRA = {
     'buffer': [dict(harnesses=['boxed::buffer::proofs::sized::closure_' + name for name in (
         'reserve_preserves_the_invariant_for_every_sized_owner',
         'finish_transfers_exactly_the_length_of_every_sized_owner',
     )], cfgs=['jzap_closure_stubs'], stubbing=True)],
+    'vec-layout-growth': [dict(harnesses=['vec::growth_proofs::sized::closure_' + name for name in (
+        'reserve_preserves_the_invariant_of_every_sized_owner',
+        'reserve_exact_preserves_the_invariant_of_every_sized_owner',
+        'grow_preserves_the_invariant_of_every_sized_owner',
+        'reserve_length_preserves_the_invariant_of_every_sized_owner',
+        'shrink_preserves_the_invariant_of_every_sized_owner',
+        'push_growth_preserves_the_invariant_of_every_sized_owner',
+        'capacity_constructors_establish_the_invariant_of_every_sized_owner',
+    )], cfgs=['jzap_closure_stubs'], stubbing=True)],
+    # The element loops are unwound for at most two new elements. Without
+    # --cfg jzap_loop_contracts the loop of try_resize_with_init is unwound too.
+    'clone': [dict(harnesses=['vec::metadata_proofs::closure_bounded_' + name for name in (
+        'extend_cloned_returns_preserve_the_invariant',
+        'resize_returns_preserve_the_invariant',
+        'resize_owned_returns_preserve_the_invariant',
+        'extend_from_within_returns_preserve_the_invariant',
+    )], loop_contracts=False, extra_assumption='at most two new elements per call')],
 }
 
 
@@ -225,7 +249,8 @@ def options(group, harness=None):
                   object_bits=row.get('object_bits', 10), cfgs=tuple(row.get('cfgs', ())), stubbing=False)
     for extra in EXTRA.get(group, ()):
         if harness in extra['harnesses']:
-            result.update(cfgs=result['cfgs'] + tuple(extra.get('cfgs', ())), stubbing=extra.get('stubbing', False))
+            result.update(cfgs=result['cfgs'] + tuple(extra.get('cfgs', ())), stubbing=extra.get('stubbing', False),
+                          loop_contracts=extra.get('loop_contracts', result['loop_contracts']))
     return result
 
 
@@ -693,6 +718,62 @@ CONTROLS = [
      '        self.owner.len = Checked::new(self.state.restored_len());\n    }\n}\n\n#[must_use',
      '        self.owner.len = Checked::new(usize::MAX);\n    }\n}\n\n#[must_use',
      'vec::edit::panic_proofs::closure_extract_drop_restores_the_invariant_from_every_pair_state'),
+    ('closure-vec-sized-capacity-count', 'vec-layout-growth', 'src/capacity.rs',
+     '        Ok((\n            Self {\n                count: Checked::new(count),',
+     '        Ok((\n            Self {\n                count: Checked::new(count.wrapping_add(1)),',
+     'vec::growth_proofs::sized::closure_reserve_preserves_the_invariant_of_every_sized_owner'),
+    ('closure-vec-sized-reserve-exact-additional', 'vec-layout-growth', 'src/vec.rs',
+     '            self.grow(additional, true)?;',
+     '            self.grow(additional.wrapping_sub(1), true)?;',
+     'vec::growth_proofs::sized::closure_reserve_exact_preserves_the_invariant_of_every_sized_owner'),
+    ('closure-vec-sized-grow-limit', 'vec-layout-growth', 'src/vec.rs',
+     'required_len(self.len.get(), additional, self.max_len())?;\n        self.grow_to(needed, exact)',
+     'required_len(self.len.get(), additional, usize::MAX)?;\n        self.grow_to(needed, exact)',
+     'vec::growth_proofs::sized::closure_grow_preserves_the_invariant_of_every_sized_owner'),
+    ('closure-vec-sized-reserve-length-growth', 'vec-layout-growth', 'src/vec.rs',
+     '            self.grow_to(needed, false)?;',
+     '            let _ = needed;',
+     'vec::growth_proofs::sized::closure_reserve_length_preserves_the_invariant_of_every_sized_owner'),
+    ('closure-vec-sized-shrink-capacity', 'vec-layout-growth', 'src/vec.rs',
+     'let cap = self.len.get().max(minimum_capacity);',
+     'let cap = self.len.get().min(minimum_capacity);',
+     'vec::growth_proofs::sized::closure_shrink_preserves_the_invariant_of_every_sized_owner'),
+    ('closure-vec-sized-push-growth-limit', 'vec-layout-growth', 'src/vec.rs',
+     'growth_for_layout(cap.get(), needed, max_len, ',
+     'growth_for_layout(cap.get(), needed, usize::MAX, ',
+     'vec::growth_proofs::sized::closure_push_growth_preserves_the_invariant_of_every_sized_owner'),
+    ('closure-vec-sized-constructor-reservation', 'vec-layout-growth', 'src/vec.rs',
+     'Self::new_in(policy);\n        result.try_reserve_exact(capacity)?;',
+     'Self::new_in(policy);\n        let _ = capacity;',
+     'vec::growth_proofs::sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner'),
+    ('closure-vec-witness-length', 'clone', 'src/vec.rs',
+     '                    source.len(),\n                )\n            };\n            self.len = Checked::new(needed);',
+     '                    source.len(),\n                )\n            };\n            self.len = Checked::new(needed.wrapping_add(1));',
+     'vec::metadata_proofs::closure_extend_cloned_witness_preserves_the_invariant'),
+    ('closure-vec-bounded-resize-step', 'clone', 'src/vec.rs',
+     'let next = (guard.owner.len + Checked::new(1))\n                .map_err(|_| InitError::Storage(Error::Capacity))?;',
+     'let next = (guard.owner.len + Checked::new(2))\n                .map_err(|_| InitError::Storage(Error::Capacity))?;',
+     'vec::metadata_proofs::closure_bounded_extend_cloned_returns_preserve_the_invariant'),
+    ('closure-vec-bounded-resize-commit', 'clone', 'src/vec.rs',
+     '        mem::forget(guard);\n        Ok(())\n    }\n    pub fn try_resize_with<E>',
+     '        Ok(())\n    }\n    pub fn try_resize_with<E>',
+     'vec::metadata_proofs::closure_bounded_resize_returns_preserve_the_invariant'),
+    ('closure-vec-bounded-resize-owned-loop-length', 'clone', 'src/vec/convenience.rs',
+     '            guard.owner.len = next;\n        }\n        let next = match guard.owner.len + Checked::new(1) {',
+     '            guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        }\n        let next = match guard.owner.len + Checked::new(1) {',
+     'vec::metadata_proofs::closure_bounded_resize_owned_returns_preserve_the_invariant'),
+    ('closure-vec-bounded-resize-owned-last-length', 'clone', 'src/vec/convenience.rs',
+     '        guard.owner.len = next;\n        mem::forget(guard);',
+     '        guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        mem::forget(guard);',
+     'vec::metadata_proofs::closure_bounded_resize_owned_returns_preserve_the_invariant'),
+    ('closure-vec-bounded-extend-within-length', 'clone', 'src/vec/convenience.rs',
+     '            guard.owner.len = next;\n        }\n        mem::forget(guard);',
+     '            guard.owner.len = Checked::new(next.get().wrapping_add(1));\n        }\n        mem::forget(guard);',
+     'vec::metadata_proofs::closure_bounded_extend_from_within_returns_preserve_the_invariant'),
+    ('closure-slice-capacity-limit', 'layout', 'src/capacity.rs',
+     'logical_capacity(mem::size_of::<T>(), values.len(), limit)',
+     'logical_capacity(mem::size_of::<T>(), values.len(), 0)',
+     'layout::proofs::closure_slice_capacity_matches_the_slice_layout'),
 ]
 CONTROLS_HARNESS = {name: harness for name, _group, _file, _old, _new, harness in CONTROLS}
 # Only negative controls use these small concrete counterexamples. Positive

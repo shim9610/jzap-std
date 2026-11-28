@@ -1517,3 +1517,59 @@ Peak memory was not measured. Not run in this step:
 `scripts/verify_owner_protocol.py`, `scripts/verify_wrapping_memory.py`, the
 Miri deque checks, `scripts/source_certificate.py`.
 
+
+### Step C: the retain loop invariant does not verify without a product addition
+
+Run on 2026-11-28; not committed to the product. No product file changed in
+this step, so no machine-code comparison was made; `src/deque/edit.rs`, the
+`deque_callers.py` body pin, the `verify_deque.py` review hash and
+`tools/panic-audit` are as at step B. The store of `Repair::drop` (W30,
+`src/deque/edit.rs:249`) stays without a harness.
+
+**What was run.** In a copy of the tree, the design's attribute on the
+`while let` of `try_retain_mut`:
+
+```
+#[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(guard.state.valid_for(guard.owner.len()) && guard.owner.len() <= guard.owner.capacity() && guard.owner.capacity() <= guard.owner.max_len() && guard.owner.max_len() == on_entry(guard.owner.max_len())))]
+```
+
+(accepted by the extended panic-audit grammar of that copy, which reviewed
+`VecDeque::len`, `capacity` and the non-inline `max_len` as exact texts), and a
+harness `closure_retain_preserves_the_invariant`: a `closure_deque` owner of
+every length under both limit policies, a callback that keeps, removes or
+fails on every call, `try_retain_mut` and `try_retain`, the invariant asserted
+on every return. Kani 0.68.0, CBMC 6.11.0, CaDiCaL, `--object-bits 10`,
+`--cfg jzap_loop_contracts -Z loop-contracts`: **verification failed** after
+32 s; the four failed checks are "null reference produced" at
+`src/deque/edit.rs:258` (`&mut *p`, the callback's argument, with `p` from
+`guard.owner.slot(read)`), one per instantiation.
+
+**Cause, isolated.** `goto-instrument --show-goto-functions` on the kept
+program lists the loop's inferred write set: `guard.state.read` and
+`guard.state.write`, and, for each of five pointers to the owner (`&*self` and
+the loads of `guard.owner` for the slot call and the invariant's getters), the
+owner pointer cast to the `Compaction` type with the fields `read` (offset 0)
+and `write` (offset 8), eight bytes each. Under this toolchain
+`VecDeque<(), Unmetered, L>` has `ptr` at offset 0, `cap` at 8, `head` at 16,
+`len` at 24 and `limit` at 32 (`mem::offset_of!`), and `Compaction` has `read`
+at 0 and `write` at 8. So the contract havocs `ptr` and `cap` of the owner at
+loop entry. The invariant restates `cap` (`len <= cap <= max_len`); nothing
+restates `ptr`, and the havocked pointer may be null.
+
+| Variant (each in a disposable copy) | Result |
+| --- | --- |
+| the design's invariant (above) | failed: null reference at `edit.rs:258`, 32 s |
+| `guard.state.valid_for(on_entry(guard.state.remaining()))`, which reads no owner word | failed: the same write-set targets (from `&*self`), the null reference and the exit assertion `closure_invariant` |
+| the design's invariant `&& !guard.owner.probe_ptr().is_null()`, with a temporary `#[cfg(kani)] pub(crate) fn probe_ptr(&self) -> *const T { self.ptr.as_ptr() }` added to `src/deque.rs` | verified, 31 s |
+
+The targets come from the loop body, not from the invariant's form, and the
+one fact missing is that `ptr` is not null. VecDeque has no one-expression
+getter of `ptr`: its `&self` methods that read it (`as_slices`, `iter`, `get`,
+`front`, ...) compute through the ring geometry and slice constructors. The
+only fix found is a new `cfg(kani)` getter in a product file, which this step
+does not make (owner instruction for unit 4); it is put to the owner. With a
+getter, the predicate would be the design's with `!guard.owner.<getter>().is_null()`
+added, as for `try_extend_fallible` in unit 1 step 8.
+
+The harness and the attribute are kept locally
+(`target/verification/i16/unit4/c/kept/`), with the three logs.

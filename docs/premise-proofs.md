@@ -1660,3 +1660,43 @@ body) each fail.
 
 **Step E is not applied.** Vec is not closed, so no Vec contract moves to
 `instantiated-kani` and `scripts/premise_status.py` is unchanged (below).
+
+### Unit 4 state after steps B to D
+
+Checks on the tree of step D (`58fab39`), each run alone:
+
+- `python3 scripts/verify_owner_protocol.py --mutations`: pass, 1,346 s,
+  65 results, owner composition 566 verified and 0 errors,
+  `source_closure_complete`, no reused prerequisite, 26 actual-Rust and 3
+  staging harnesses; bindings 480 (91 state writes, 10 lends, 132 constructor
+  fields, 181 unsafe callers), unchanged: deque rows are filtered there.
+- `python3 scripts/verify_wrapping_memory.py --mutations`: pass, 692 s,
+  9 controls detected, 53 modular calls (26 established, 27 stated), as before.
+- `python3 scripts/verify.py --area deque --check miri --check miri-tree --check miri-32`:
+  pass, 20 of 20 tests in each configuration.
+
+An earlier attempt ran the two scripts above at the same time; the owner
+protocol starts `verify_wrapping_memory.py` itself, the two runs collided on
+the lock of `verify_source.py`, both were stopped and rerun one after the
+other. Not run: `scripts/source_certificate.py`, `scripts/verify_panic_paths.py`,
+`cargo test` and clippy (no product file and no non-proof Rust file changed in
+unit 4).
+
+**Step E (contract statuses) is not applied.** Vec and VecDeque are not
+closed (step D), so no Vec contract becomes `instantiated-kani` and
+`scripts/premise_status.py` is unchanged. No deque contract qualifies in any
+case: every maintained deque `requires` adds facts of its operation
+(`index < len`, `len < cap`, `raw_valid`, ...) to the ring, so none is exactly
+an owner invariant. The certificate's row counts were not recomputed: the
+premise table, the binding lists and Buffer's closure are the same as at
+step 9 (17 `instantiated-kani`, 1,023 `premise-stated-not-proved` in that
+computation). `c_keep_live` and `c_remove_live` stay stated: the design's
+section 5 needs an owner decision between a stub of the two compaction
+transitions and a requires-free restatement.
+
+**What closes the unit.** One owner decision: a `cfg(kani)` getter of the
+deque pointer in `src/deque.rs` (as `Compaction::valid_for` is a
+`cfg(kani)` method in a product file), so that the retain loop invariant can
+restate `!ptr.is_null()` (step C, verified in a disposable copy). With it, W30
+has its harness and the joint closure closes VecDeque and Vec together;
+step E then applies.

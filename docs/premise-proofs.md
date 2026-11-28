@@ -128,7 +128,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 | 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); step 8 done for three loops (`try_resize_owned`, `try_extend_from_within`, `try_extend_fallible`: L16, L18, L19 and the iterator-driven extenders have closure harnesses) and not for two (the empty-tail loop of `try_finish`, the loop of `Buffer::collect_rest`); step 9 done (the Buffer lends have closure harnesses for a source without a bound; `scripts/owner_closure.py` reports Buffer closed and Vec not closed, blocked by the two `Vec::from_raw_parts` calls in `src/deque.rs`; four Buffer contracts are `instantiated-kani`); step 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
-| 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | In progress (below). Step B done (closure harnesses at `T = ()` for every constructor and writer except the retain loop, the sized capacity constructors with stubbed storage, the two `Vec::from_raw_parts` calls); step C not done: the retain loop contract does not verify without a `cfg(kani)` pointer getter, a product addition awaiting the owner; step D done (`owner_closure.py` decides Vec and VecDeque jointly: both not closed, blocked by the retain store); step E not applicable; no contract changed status |
+| 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Steps B to E done (below): every VecDeque constructor and writer has a closure harness at `T = ()` (the retain loop under a loop contract that uses the owner-approved `cfg(kani)` getter `probe_ptr`); `owner_closure.py` closes Vec and VecDeque jointly; 8 Vec contracts moved to `instantiated-kani` (21 rows); no deque contract moves (none requires exactly the ring invariant) |
 | 5 | Hash table | 19 | Table shape, credit, tag and ownership | Not started |
 | 6 | Shared ownership | 19 | Counter words of a live owner, allocation and payload extents | Not started |
 | 7 | Binary heap | 13 | Storage and length (on unit 1) | Not started |
@@ -1775,3 +1775,92 @@ stand-in table of step D is removed.
   `tools/panic-audit`: 6 passed.
 - `python3 scripts/owner_closure.py --controls`: the table above, 9 of 9.
   `python3 scripts/test_verify.py`: 66 OK.
+
+### Step E: Vec contracts on the jointly closed owner
+
+Done on 2026-11-28. With Vec and VecDeque closed (step C, completed), eight
+Vec contracts move to `instantiated-kani` in `scripts/premise_status.py`.
+`OWNER_INVARIANT['Vec']` accepts the Vec invariant in two exact texts, the
+form the maintained function uses: `owner_valid({s},size)` and its expansion
+`{len}<={cap}<={limit},byte_valid({cap},size)` (`form='expanded'`).
+`maintained_requires` now also reads a `requires` clause that is followed by
+the body instead of `ensures` (`internal_copy_before_append` has none).
+`check_instantiated` on every binding row of the owner protocol and of the
+area summaries accepts all twelve contracts (each row in `src/vec*.rs` inside
+`Vec<T, P, L>`).
+
+| Contract | Maintained `requires` | Rows | Functions |
+| --- | --- | ---: | --- |
+| `checked_owner_length` | `owner_valid(s,size)` | 1 | `try_set_len` |
+| `split_owner` | `owner_valid(original,size)` | 3 | `try_split_off` |
+| `shortened_owner` | `owner_valid(s,size)` | 4 | `pop`, `truncate` |
+| `owner_to_array` | `owner_valid(s,size)` | 2 | `try_into_array` |
+| `memory_reserve` | `len<=cap<=limit,byte_valid(cap,size)` | 2 | `grow`, `reserve_length` |
+| `insertion_before_moves` | the same | 2 | `try_insert` |
+| `internal_copy_before_append` | the same | 2 | `try_extend_copy_from_within` |
+| `drain_constructor` | the same | 5 | `try_drain` |
+
+Instantiations recorded with the rows: `T = ()` for every Vec method and lend
+(`Unmetered`, one exchange fixture with `Budget::Limited`), jointly with
+VecDeque; `[(); 1]` and `[(); N]` for the bitwise extension and
+`try_into_flattened`; `u8`, `u64`, `[u64; 200]` and a 64-aligned type for
+the capacity paths with the storage functions stubbed. The byte bound of the
+maintained `requires` is vacuous at `T = ()` and asserted by the sized
+capacity harnesses only.
+
+Considered and left stated: `commit_reserved_owner` (a row in
+`src/clone.rs`, outside `Vec<T, P, L>`); `append_owner`, `exchanged_owners`
+(two owner invariants; `check_instantiated` compares one);
+`raw_parts_owner` (its rows are the literal of the public unsafe
+`Vec::from_raw_parts`, whose premise for external callers is the
+public-unsafe contract, not the closure); `clone_within_operation`,
+`owned_resize_operation` (`len<=cap<=limit` without the byte bound: not the
+exact text); `initialized_operation`, `complete_splice` (the invariant plus
+`call_requires`; not moved without an owner decision);
+`reservation_before_bulk_write` (Buffer rows), `extend_operation` and
+`vectored_owner` (`Vec<u8>` rows), `resized_owner` and `adopted_owner`
+(further conjuncts); every deque contract (each adds operation facts to
+`ring`). `c_keep_live` and `c_remove_live` stay stated (design section 5,
+owner decision).
+
+**Control.** A unit test (`scripts/test_verify.py`) makes the expanded
+`requires` of `memory_reserve` weaker (`len <= cap, byte_valid(cap, size)`)
+and stronger (an added `len > 0`): `check_instantiated` refuses both and
+accepts the original; a `drain_constructor` row in `src/clone.rs` or in
+`Vec<u8, ..>` is refused; each Vec contract fails when Vec is not closed.
+
+**Row counts**, computed as in step 9 (`counts.py`, local copy
+`target/verification/i16/unit4/e/counts.py`; before with `premise_status.py`
+of `660a180` and Buffer's closure, after with this tree and the joint
+closure; owner rows from the fresh owner-protocol run below; area rows from
+the area summaries on disk: the deque summary from the step C run, the others
+from bindings-only runs of 2026-11-27):
+
+| Disposition | Before | After |
+| --- | ---: | ---: |
+| solver-and-source-connected | 105 | 105 |
+| instantiated-kani | 17 | 38 |
+| trust-boundary | 0 | 0 |
+| premise-stated-not-proved | 1,038 | 1,017 |
+| unproved | 21 | 21 |
+| total | 1,181 | 1,181 |
+
+The 21 moved rows are exactly the rows of the eight contracts above. Against
+step 9 (1,023 stated, 36 unproved) the before column differs by 15 rows that
+moved from `unproved` to stated: the deque summary on disk now lists its nine
+Kani harnesses as verified (the bindings-only artifact noted in step 9). The
+certificate itself was not run.
+
+**Run.**
+
+- `python3 scripts/verify_owner_protocol.py --mutations` on the tree of
+  step C plus this change: pass, 1,395 s, 65 results, owner composition 566
+  verified and 0 errors, `source_closure_complete`, no reused prerequisite;
+  bindings 480 (91, 10, 132, 181), unchanged.
+- `python3 scripts/test_verify.py`: 66 OK. `cargo fmt --all --check`: clean.
+
+Not run: `scripts/source_certificate.py`, `scripts/verify_panic_paths.py`,
+`scripts/verify_wrapping_memory.py` and Miri after steps C and E (run on
+`58fab39`; step C changed only `cfg(kani)` code, and the machine code of the
+five executables is identical).
+

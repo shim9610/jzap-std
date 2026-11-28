@@ -153,12 +153,32 @@ OWNER_INVARIANT = {
                    instantiations=['T = () for every method and lend (zero-sized element, Unmetered)',
                                    'T = u8, u64, [u64; 200] and a 64-aligned 64-byte type for reserve and finish, '
                                    'with storage::reallocate and storage::deallocate stubbed']),
+    # Issue #16, unit 4: Vec closes jointly with VecDeque. The maintained
+    # functions state the Vec invariant in two texts: `owner_valid` of an
+    # OwnerState, or its expansion over the three words (`form='expanded'`).
+    'Vec': dict(requires='owner_valid({s},size)',
+                expanded='{len}<={cap}<={limit},byte_valid({cap},size)',
+                files=('src/vec.rs', 'src/vec/convenience.rs', 'src/vec/edit.rs', 'src/vec/ownership.rs'),
+                instantiations=['T = () for every Vec method and lend (zero-sized element, Unmetered; one exchange '
+                                'fixture with Budget::Limited), jointly with VecDeque (scripts/owner_closure.py)',
+                                'T = [(); 1] and [(); N] for the bitwise extension and try_into_flattened',
+                                'T = u8, u64, [u64; 200] and a 64-aligned 64-byte type for the capacity paths '
+                                '(try_reserve, try_reserve_exact, grow, reserve_length, try_shrink_to, the capacity '
+                                'constructors), with the storage functions stubbed']),
 }
 _BUFFER_EVIDENCE = ('scripts/owner_closure.py reports Buffer closed at the zero-sized element (constructor new, the '
                     'writes of reserve, push, append and finish, the lends of collect and collect_rest, each under '
                     'a closure harness of the buffer group); the maintained requires is the Buffer invariant '
                     'len <= cap with the byte bound, which the harness invariant (layout::array::<T>(cap) == layout) '
                     'implies')
+_VEC_EVIDENCE = ('scripts/owner_closure.py reports Vec closed at the zero-sized element jointly with VecDeque (every '
+                 'Vec constructor, length and capacity store, lend and library call of Vec::from_raw_parts under a '
+                 'closure harness, except the trust-boundary literal of the public unsafe Vec::from_raw_parts, two '
+                 'u8-only and two unobservable stores; the VecDeque into_vec harness assumes the VecDeque invariant, '
+                 'closed with the retain loop contract approved on 2026-11-28); the maintained requires is the Vec '
+                 'invariant len <= cap <= limit with the byte bound, which is vacuous at T = () and asserted by the '
+                 'sized capacity harnesses')
+_EVIDENCE = {'Buffer': None, 'Vec': _VEC_EVIDENCE}
 INSTANTIATED_KANI = {
     'buffer_reserve': dict(owner='Buffer', maintained='tools/memory-proof/owner-state.verus.rs',
                            words=dict(len='len', cap='cap'), call_requires=()),
@@ -168,6 +188,18 @@ INSTANTIATED_KANI = {
                           words=dict(len='len', cap='cap'), call_requires=()),
     'buffer_collect': dict(owner='Buffer', maintained='tools/memory-proof/operation-closure.verus.rs',
                            words=dict(len='initial', cap='initial_cap'), call_requires=('cb', 'alloc')),
+    # Vec (issue #16, unit 4 step E): requires exactly the Vec invariant, every row in Vec<T, P, L>.
+    **{name: dict(owner='Vec', maintained='tools/memory-proof/' + file, words=dict(s=s), call_requires=())
+       for name, file, s in (('checked_owner_length', 'owner-state.verus.rs', 's'),
+                             ('split_owner', 'owner-state.verus.rs', 'original'),
+                             ('shortened_owner', 'operation-closure.verus.rs', 's'),
+                             ('owner_to_array', 'operation-closure.verus.rs', 's'))},
+    **{name: dict(owner='Vec', maintained='tools/memory-proof/' + file, form='expanded',
+                  words=dict(len='len', cap='cap', limit='limit'), call_requires=())
+       for name, file in (('memory_reserve', 'wrapping-memory.verus.rs'),
+                          ('insertion_before_moves', 'wrapping-memory.verus.rs'),
+                          ('internal_copy_before_append', 'wrapping-memory.verus.rs'),
+                          ('drain_constructor', 'operation-closure.verus.rs'))},
 }
 
 
@@ -178,14 +210,15 @@ def maintained_requires(root, contract):
     heads = [m for m in re.finditer(r'\bfn\s+' + contract + r'\s*[<(]', text)]
     assert len(heads) == 1, ('maintained function missing or duplicated', contract)
     rest = text[heads[0].end():]
-    m = re.search(r'\brequires\b(.*?)\bensures\b', rest[:rest.index('{')] if '{' in rest else rest, re.S)
+    # The clause ends at `ensures`, or at the body when there is none.
+    m = re.search(r'\brequires\b(.*?)(?:\bensures\b|$)', rest[:rest.index('{')] if '{' in rest else rest, re.S)
     assert m, ('maintained function without requires', contract)
     return re.sub(r'\s+', '', m.group(1))
 
 
 def expected_requires(contract):
     row = INSTANTIATED_KANI[contract]
-    text = OWNER_INVARIANT[row['owner']]['requires'].format(**row['words'])
+    text = OWNER_INVARIANT[row['owner']][row.get('form', 'requires')].format(**row['words'])
     for callback in row['call_requires']:
         text += ',forall|i:usize|call_requires(*' + callback + ',(i,))'
     return text + ','
@@ -226,15 +259,15 @@ STATED = {
               ['adopted_owner', 'append_owner', 'boxed_to_owner',
                'exchanged_owners',
                'buffer_span', 'checked_index_before_access',
-               'checked_owner_length', 'clone_within_operation', 'commit_reserved_owner',
+               'clone_within_operation', 'commit_reserved_owner',
                'compaction_before_move', 'compaction_before_element', 'complete_splice',
-               'cursor_before_read', 'dedup_loop', 'drain_constructor', 'extend_operation',
+               'cursor_before_read', 'dedup_loop', 'extend_operation',
                'extract_next_loop', 'extraction_before_move', 'hole_move', 'hole_restore',
-               'initialized_operation', 'insertion_before_moves', 'internal_copy_before_append',
-               'memory_reserve', 'owned_resize_operation', 'owner_to_array', 'prefix_storage_connection',
+               'initialized_operation', 
+               'owned_resize_operation', 'prefix_storage_connection',
                'removal_before_moves', 'reservation_before_bulk_write', 'resized_owner',
-               'retained_loop', 'shortened_owner', 'spare_view_before_slice', 'splice_fill_loop',
-               'splice_operation', 'split_owner', 'stage_operation',
+               'retained_loop', 'spare_view_before_slice', 'splice_fill_loop',
+               'splice_operation', 'stage_operation',
                'swap_remove_before_moves', 'vectored_owner', 'owner_remaining_limit',
                'owner_spare_capacity', 'drain_before_tail_restore',
                'span_clear_caller', 'span_next_caller', 'span_next_back_caller', 'span_remaining_caller']),
@@ -378,7 +411,7 @@ INSTANTIATED = 'instantiated-kani'
 TRUSTED = 'trust-boundary'
 _INSTANTIATED_ROWS = {name: dict(status=INSTANTIATED, basis=INSTANTIATED, owner=row['owner'],
                                  instantiations=OWNER_INVARIANT[row['owner']]['instantiations'],
-                                 evidence=_BUFFER_EVIDENCE) for name, row in INSTANTIATED_KANI.items()}
+                                 evidence=_EVIDENCE[row['owner']] or _BUFFER_EVIDENCE) for name, row in INSTANTIATED_KANI.items()}
 _TRUSTED_ROWS = {name: dict(status=TRUSTED, basis=TRUSTED, item=item, evidence=TRUST_BOUNDARY_ITEMS[item])
                  for name, item in TRUST_BOUNDARY.items()}
 _tables = (ESTABLISHED, STATED, _INSTANTIATED_ROWS, _TRUSTED_ROWS)

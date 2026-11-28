@@ -621,30 +621,46 @@ class PremiseTests(unittest.TestCase):
         from premise_status import (INSTANTIATED, INSTANTIATED_KANI, STATED_NOT_PROVED, TRUSTED, TRUST_BOUNDARY,
                                     check_instantiated, disposition, premise)
         from source_certificate import BPLUS_ANCESTOR, obligation_counts, obligations
-        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=False)}
-        self.assertEqual(set(INSTANTIATED_KANI), {'buffer_reserve', 'buffer_push', 'buffer_finish', 'buffer_collect'})
+        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=True)}
+        vec = {'checked_owner_length', 'split_owner', 'shortened_owner', 'owner_to_array',
+               'memory_reserve', 'insertion_before_moves', 'internal_copy_before_append', 'drain_constructor'}
+        self.assertEqual(set(INSTANTIATED_KANI), {'buffer_reserve', 'buffer_push', 'buffer_finish', 'buffer_collect'} | vec)
+        self.assertEqual({c for c, r in INSTANTIATED_KANI.items() if r.get('form') == 'expanded'},
+                         {'memory_reserve', 'insertion_before_moves', 'internal_copy_before_append', 'drain_constructor'})
         self.assertEqual(TRUST_BOUNDARY, {})
         verified = set(INSTANTIATED_KANI) | {'buffer_span', 'reservation_before_bulk_write', 'resized_owner'}
         for contract in INSTANTIATED_KANI:
             self.assertEqual(premise(contract)['status'], INSTANTIATED)
             self.assertEqual(disposition(contract, verified, closed), INSTANTIATED)
-            for closure in (None, {'Buffer': dict(closed=False)}, {}):
+            owner = INSTANTIATED_KANI[contract]['owner']
+            for closure in (None, {**closed, owner: dict(closed=False)}, {}):
                 with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
                     disposition(contract, verified, closure)
-        # Premises that are not exactly the Buffer invariant, and every Vec
-        # contract while Vec is not closed, stay stated.
-        for contract in ('buffer_span', 'reservation_before_bulk_write', 'resized_owner'):
+        # Premises that are not exactly an owner invariant stay stated.
+        stays = ('buffer_span', 'reservation_before_bulk_write', 'resized_owner', 'commit_reserved_owner',
+                 'append_owner', 'exchanged_owners', 'raw_parts_owner', 'clone_within_operation',
+                 'owned_resize_operation', 'initialized_operation', 'complete_splice')
+        verified |= set(stays)
+        for contract in stays:
             self.assertEqual(disposition(contract, verified, closed), STATED_NOT_PROVED)
-        self.assertEqual(len(check_instantiated(ROOT, closed)), 4)
+        self.assertEqual(len(check_instantiated(ROOT, closed)), 12)
         with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
-            check_instantiated(ROOT, {'Buffer': dict(closed=False)})
+            check_instantiated(ROOT, {'Buffer': dict(closed=False), 'Vec': dict(closed=True)})
+        with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
+            check_instantiated(ROOT, {'Buffer': dict(closed=True), 'Vec': dict(closed=False)})
+        vsite = dict(file='src/vec/edit.rs', function='try_drain', context='Vec < T , P , L >')
+        check_instantiated(ROOT, closed, [(vsite, 'drain_constructor')])
+        for other in (dict(vsite, file='src/clone.rs'), dict(vsite, context='Vec < u8 , P , L >')):
+            with self.assertRaisesRegex(AssertionError, 'outside a function of the owner'):
+                check_instantiated(ROOT, closed, [(other, 'drain_constructor')])
         site = dict(file='src/boxed/buffer.rs', function='push', context='Buffer < T , P >')
         check_instantiated(ROOT, closed, [(site, 'buffer_push')])
         for other in (dict(site, file='src/vec.rs'), dict(site, context='Buffer < u8 , P >')):
             with self.assertRaisesRegex(AssertionError, 'outside a function of the owner'):
                 check_instantiated(ROOT, closed, [(other, 'buffer_push')])
         with tempfile.TemporaryDirectory() as tmp:
-            for name in ('tools/memory-proof/owner-state.verus.rs', 'tools/memory-proof/operation-closure.verus.rs'):
+            for name in ('tools/memory-proof/owner-state.verus.rs', 'tools/memory-proof/operation-closure.verus.rs',
+                         'tools/memory-proof/wrapping-memory.verus.rs'):
                 (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(ROOT / name, Path(tmp) / name)
             path = Path(tmp) / 'tools/memory-proof/operation-closure.verus.rs'
@@ -654,6 +670,22 @@ class PremiseTests(unittest.TestCase):
             path.write_text(text.replace(old, old + 'len>0,'))
             with self.assertRaisesRegex(AssertionError, 'not exactly the owner invariant'):
                 check_instantiated(tmp, closed)
+            path.write_text(text)
+            # The second accepted text (the expanded Vec invariant) is exact too:
+            # a weaker or a stronger expanded requires is refused.
+            path = Path(tmp) / 'tools/memory-proof/wrapping-memory.verus.rs'
+            text = path.read_text()
+            old = 'fn memory_reserve(len: usize, cap: usize, limit: usize'
+            self.assertEqual(text.count(old), 1)
+            head = text.index(old)
+            clause = text.index('requires', head)
+            line_end = text.index('\n', clause)
+            for changed in ('requires len <= cap, byte_valid(cap, size),', 'requires len <= cap <= limit, byte_valid(cap, size), len > 0,'):
+                path.write_text(text[:clause] + changed + text[line_end:])
+                with self.assertRaisesRegex(AssertionError, 'not exactly the owner invariant'):
+                    check_instantiated(tmp, closed)
+            path.write_text(text)
+            check_instantiated(tmp, closed)
         owner = dict(source_bindings=dict(bindings=[
             dict(site=site, contract='buffer_push', role='state-publication'),
             dict(site=site, contract='buffer_span', role='state-lend')]))

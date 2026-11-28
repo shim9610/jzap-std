@@ -543,6 +543,41 @@ fn closure_adopting_constructor_establishes_the_invariant_for_unit_storage() {
     closure_adopting_case(Unlimited);
 }
 
+// The retain loop runs under its loop contract (`--cfg jzap_loop_contracts`,
+// `-Z loop-contracts`): every length, a callback that keeps, removes or fails
+// on every call, no bound on the number of turns.
+#[cfg(jzap_loop_contracts)]
+mod loops {
+    use super::*;
+
+    fn closure_choice() -> Result<bool, u8> {
+        match kani::any::<u8>() {
+            0 => Ok(true),
+            1 => Ok(false),
+            _ => Err(7),
+        }
+    }
+    fn closure_retain_case<L: LengthPolicy>(limit: L) {
+        let mut owner = closure_deque::<(), _, _>(Unmetered, limit);
+        let (len, max) = (owner.len(), owner.max_len());
+        let result = owner.try_retain_mut(|_| closure_choice());
+        closure_exit(&owner, max);
+        assert!(owner.len() <= len);
+        kani::cover!(result.is_ok() && owner.len() < len && owner.len() > 0);
+        kani::cover!(result.is_err() && len > 1);
+        let len = owner.len();
+        let result = owner.try_retain(|_| closure_choice());
+        closure_exit(&owner, max);
+        assert!(owner.len() <= len);
+        kani::cover!(result.is_ok());
+    }
+    #[kani::proof]
+    fn closure_retain_preserves_the_invariant() {
+        closure_retain_case(LengthLimit::new(kani::any()));
+        closure_retain_case(Unlimited);
+    }
+}
+
 // Second instantiation: the capacity constructors at sized elements. No
 // storage exists: `-Z stubbing` replaces the storage functions, so the
 // capacity word ranges over every admitted count and the allocator succeeds

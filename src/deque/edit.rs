@@ -251,6 +251,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> VecDeque<T, P, L> {
         }
         let state = crate::compaction::Compaction::full(self.len());
         let mut guard = Repair { owner: self, state };
+        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(guard.state.valid_for(guard.owner.len()) && guard.owner.len() <= guard.owner.capacity() && guard.owner.capacity() <= guard.owner.max_len() && guard.owner.max_len() == on_entry(guard.owner.max_len()) && !guard.owner.probe_ptr().is_null()))]
         while let Some(read) = guard.state.peek() {
             // SAFETY: compaction read is live; exclusive callback borrow ends before movement.
             let p = unsafe { guard.owner.slot(read) };

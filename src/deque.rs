@@ -121,6 +121,10 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> VecDeque<T, P, L> {
     pub fn max_len(&self) -> usize {
         self.limit.max_len()
     }
+    #[cfg(kani)]
+    fn probe_ptr(&self) -> *const T {
+        self.ptr.as_ptr()
+    }
     pub fn allocation_policy(&self) -> &P {
         &self.policy
     }

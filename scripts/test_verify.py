@@ -751,15 +751,11 @@ class OwnerWordTests(unittest.TestCase):
         result = owner_closure.report(ROOT, ROOT / 'target/verification/test-owner-closure')
         self.assertTrue(result['Buffer']['closed'])
         self.assertEqual(result['Buffer']['counts'], {'harness': 8})
-        # Issue #16, unit 4: the retain store has no harness (step C), so
-        # VecDeque is not closed, and through the joint closure neither is Vec.
-        self.assertFalse(result['Vec']['closed'])
-        self.assertFalse(result['VecDeque']['closed'])
-        self.assertEqual([(b['file'], b['function'], b['disposition']) for b in result['Vec']['blocking']],
-                         [('src/deque.rs', 'into_vec', 'uncovered')])
-        self.assertEqual([(b['file'], b['function'], b['disposition']) for b in result['VecDeque']['blocking']],
-                         [('src/deque.rs', 'from_vec', 'uncovered'), ('src/deque/edit.rs', 'drop', 'uncovered')])
-        self.assertEqual(result['VecDeque']['counts'], {'harness': 40, 'uncovered': 2, 'unobservable': 2})
+        # Issue #16, unit 4: Vec and VecDeque close together (the joint closure).
+        self.assertTrue(result['Vec']['closed'])
+        self.assertTrue(result['VecDeque']['closed'])
+        self.assertEqual((result['Vec']['depends_on'], result['VecDeque']['depends_on']), (['VecDeque'], ['Vec']))
+        self.assertEqual(result['VecDeque']['counts'], {'harness': 42, 'unobservable': 2})
         self.assertEqual(sum(bool(s.get('dead')) for s in result['VecDeque']['sites']), 15)
         calls = {s['function']: s for s in result['Vec']['sites'] if s['kind'] == 'call' and s['file'] == 'src/deque.rs'}
         self.assertEqual(sorted(calls), ['into_vec', 'try_from_std_in'])
@@ -841,16 +837,13 @@ class OwnerWordTests(unittest.TestCase):
                         owner_closure.check_fixtures(tmp)
 
     def test_owner_closure_is_a_joint_fixpoint(self):
-        # Mechanism only: with the retain store mapped to an unrelated VecDeque
-        # harness both owners close, each through the other's invariant.
+        # An other-unit entry for the into_vec call, or the retain store
+        # without a harness, opens both owners.
         import owner_closure
         out = ROOT / 'target/verification/test-owner-closure'
         table = dict(owner_closure.SITES)
-        table[owner_closure.RETAIN_SITE] = owner_closure.h(owner_closure.Q + 'truncate_preserves_the_invariant')
-        result = owner_closure.report(ROOT, out, table=table)
-        self.assertTrue(result['Vec']['closed'] and result['VecDeque']['closed'])
-        self.assertEqual((result['Vec']['depends_on'], result['VecDeque']['depends_on']), (['VecDeque'], ['Vec']))
-        # A trust-boundary or other-unit entry for the Vec call still opens both.
+        result = owner_closure.report(ROOT, out, table={**table, owner_closure.RETAIN_SITE: owner_closure.d('uncovered', 'x')})
+        self.assertFalse(result['Vec']['closed'] or result['VecDeque']['closed'])
         table[('Vec', 'call', 'src/deque.rs', 'VecDeque', 'into_vec', 'Vec::from_raw_parts', 1)] = owner_closure.d('other-unit:4', 'x')
         result = owner_closure.report(ROOT, out, table=table)
         self.assertFalse(result['Vec']['closed'] or result['VecDeque']['closed'])
@@ -860,8 +853,8 @@ class OwnerWordTests(unittest.TestCase):
         results = owner_closure.controls(ROOT, ROOT / 'target/verification/test-owner-closure')
         self.assertEqual([r['name'] for r in results],
                          ['unmapped-write', 'harness-assumption', 'harness-out-of-group', 'other-unit-site',
-                          'deque-unmapped-write', 'retain-uncovered', 'into-vec-harness-assumption',
-                          'from-vec-harness-assumption'])
+                          'deque-unmapped-write', 'retain-harness-assumption', 'into-vec-harness-assumption',
+                          'from-vec-harness-assumption', 'retain-uncovered'])
         self.assertTrue(all(r['detected'] for r in results), results)
 
     def test_borrows_of_other_fields_are_counted_not_bound(self):

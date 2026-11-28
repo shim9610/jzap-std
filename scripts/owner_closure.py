@@ -183,6 +183,7 @@ EXCHANGE = [M + 'buffer_exchange_preserves_the_invariant_of_both_owners',
             M + 'buffer_exchange_preserves_the_invariant_of_both_unlimited_owners']
 UNIT_STORAGE = M + 'adopting_constructors_establish_the_invariant_for_unit_storage'
 Q = 'deque::proofs::closure::closure_'
+QL = 'deque::proofs::closure::loops::closure_'
 DEQUE_SIZED = ['deque::proofs::closure::sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner']
 # Stores that do not execute at a zero-sized element: (kind, guard text).
 # 'enclosed': every occurrence of the store is inside the block the guard
@@ -387,10 +388,9 @@ SITES = {
     ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_split_off', 'self.len=Checked::new(at)', 1):
         h(Q + 'split_off_preserves_the_invariant_of_both_owners'),
     ('VecDeque', 'write', 'src/deque/edit.rs', 'Repair', 'drop', 'self.owner.len=Checked::new(self.state.restored_len())', 1):
-        d('uncovered', 'reached after the `while let` of try_retain_mut, which runs for every length at T = (); the '
-          'loop contract of the design (unit 4 step C) does not verify: the inferred loop write set casts the '
-          'owner pointer to the Compaction type and havocs the words at its read and write offsets, ptr and cap; '
-          'only a ptr getter, which VecDeque does not have, could restate ptr (docs/premise-proofs.md, unit 4)'),
+        h(QL + 'retain_preserves_the_invariant',
+          note='after the while-let of try_retain_mut, which runs under its loop contract (the predicate restates '
+               'ptr through the cfg(kani) getter VecDeque::probe_ptr, owner decision 2026-11-28)'),
     ('VecDeque', 'write', 'src/deque/iter.rs', 'VecDeque', 'drain', 'self.len=Checked::new(start)', 1):
         h(Q + 'drain_preserves_the_invariant'),
     ('VecDeque', 'write', 'src/deque/iter.rs', 'Retire', 'drop',
@@ -929,7 +929,7 @@ RETAIN_SITE = ('VecDeque', 'write', 'src/deque/edit.rs', 'Repair', 'drop',
 
 
 def controls(root=ROOT, out=None):
-    """Eight defects, each must make the result not closed or fail the script."""
+    """Nine defects, each must make the result not closed or fail the script."""
     import shutil
     import tempfile
     out = Path(out or ROOT / 'target/verification/owner-closure') / 'controls'
@@ -981,25 +981,22 @@ def controls(root=ROOT, out=None):
         results.append(dict(name='deque-unmapped-write', detected=False))
     except AssertionError as error:
         results.append(dict(name='deque-unmapped-write', detected='site without an entry' in str(error), error=str(error)[:300]))
-    # The retain store has no harness, so neither owner is closed. The joint
-    # controls use a stand-in table in which that one store is mapped to an
-    # unrelated VecDeque harness: there both owners must close, and each
-    # defect must open both again.
-    stand_in = dict(SITES)
-    stand_in[RETAIN_SITE] = h(Q + 'truncate_preserves_the_invariant')
-    r = report(root, out / 'stand-in', table=stand_in)
-    assert r['Vec']['closed'] and r['VecDeque']['closed'], ('stand-in table does not close both owners', r['Vec']['blocking'],
-                                                            r['VecDeque']['blocking'])
-    r = report(root, out / 'retain-uncovered')
-    results.append(dict(name='retain-uncovered', detected=not r['VecDeque']['closed'] and not r['Vec']['closed'],
-                        blocking=r['VecDeque']['blocking'] + r['Vec']['blocking']))
-    for name, anchor in [('into-vec-harness-assumption', '    let values = owner.into_vec();'),
+    # The retain harness weakened by an assumption, or the retain store left
+    # without a harness: VecDeque is not closed, and through the joint closure
+    # neither is Vec. Then each Vec<->VecDeque conversion harness weakened.
+    for name, anchor in [('retain-harness-assumption', '        let result = owner.try_retain_mut(|_| closure_choice());'),
+                         ('into-vec-harness-assumption', '    let values = owner.into_vec();'),
                          ('from-vec-harness-assumption', '    let owner = VecDeque::from_vec(source);')]:
         work = copy()
         mutate(work, 'src/deque/closure_proofs.rs', anchor, '    kani::assume(kani::any());\n' + anchor)
-        r = report(work, out / name, table=stand_in)
+        r = report(work, out / name)
         results.append(dict(name=name, detected=not r['Vec']['closed'] and not r['VecDeque']['closed'],
                             blocking=r['Vec']['blocking'] + r['VecDeque']['blocking']))
+    table = dict(SITES)
+    table[RETAIN_SITE] = d('uncovered', 'control: the retain harness is not registered')
+    r = report(root, out / 'retain-uncovered', table=table)
+    results.append(dict(name='retain-uncovered', detected=not r['VecDeque']['closed'] and not r['Vec']['closed'],
+                        blocking=r['VecDeque']['blocking'] + r['Vec']['blocking']))
     shutil.rmtree(out, ignore_errors=True)
     return results
 
@@ -1007,7 +1004,7 @@ def controls(root=ROOT, out=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / 'target/verification/owner-closure')
-    parser.add_argument('--controls', action='store_true', help='Also run the eight defect controls')
+    parser.add_argument('--controls', action='store_true', help='Also run the nine defect controls')
     args = parser.parse_args()
     result = report(ROOT, args.output)
     for owner, row in result.items():

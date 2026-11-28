@@ -255,7 +255,10 @@ CLOSURE = {
         # The two calls of Vec::from_raw_parts in src/deque.rs.
         'into_vec_establishes_the_vec_invariant',
         'adopting_constructor_establishes_the_invariant_for_unit_storage',
-    )],
+    )] + [
+        # The retain loop under its loop contract (src/deque/edit.rs).
+        'deque::proofs::closure::loops::closure_retain_preserves_the_invariant',
+    ],
     'vec-element-loops': ['vec::metadata_proofs::closure_' + name for name in (
         'resize_owned_preserves_the_invariant',
         'extend_from_within_preserves_the_invariant',
@@ -1017,6 +1020,10 @@ CONTROLS = [
      '        if source.len() > limit.max_len() || cap > limit.max_len() {',
      '        if cap > limit.max_len() {',
      'deque::proofs::closure::closure_adopting_constructor_establishes_the_invariant_for_unit_storage'),
+    ('closure-deque-retain-length', 'deque-closure', 'src/deque/edit.rs',
+     '                self.owner.len = Checked::new(self.state.restored_len());',
+     '                self.owner.len = Checked::new(add(self.state.restored_len(), 1));',
+     'deque::proofs::closure::loops::closure_retain_preserves_the_invariant'),
     ('closure-deque-sized-capacity', 'deque-closure', 'src/deque.rs',
      '        let new = if exact {\n            needed\n        } else {',
      '        let new = if exact {\n            add(needed, 1)\n        } else {',

@@ -149,7 +149,7 @@ fn reviewed_extraction_observer(method: &syn::ImplItemFn) -> bool {
 // owner whole through the reviewed getters; each is accepted only as this
 // exact text at this loop. `kani::index` is the verifier's counter of a `for`
 // loop and `on_entry` its value before the loop.
-const OWNER_INVARIANTS: [(&str, &str, &str); 4] = [
+const OWNER_INVARIANTS: [(&str, &str, &str); 5] = [
     (
         "src/vec.rs",
         "try_resize_with_init",
@@ -170,36 +170,106 @@ const OWNER_INVARIANTS: [(&str, &str, &str); 4] = [
         "try_extend_from_within",
         "original<=guard.owner.len()&&guard.owner.len()-original==kani::index",
     ),
+    (
+        "src/deque/edit.rs",
+        "try_retain_mut",
+        "guard.state.valid_for(guard.owner.len())&&guard.owner.len()<=guard.owner.capacity()&&guard.owner.capacity()<=guard.owner.max_len()&&guard.owner.max_len()==on_entry(guard.owner.max_len())&&!guard.owner.probe_ptr().is_null()",
+    ),
 ];
-// The getters those predicates call, as their whole reviewed definitions.
-const OWNER_GETTERS: [(&str, &str, &str); 4] = [
-    ("len", "usize", "self.len.get()"),
-    ("capacity", "usize", "self.cap.get()"),
-    ("max_len", "usize", "self.limit.max_len()"),
-    ("as_ptr", "*const T", "self.ptr.as_ptr()"),
+// The getters those predicates call, as their whole reviewed definitions:
+// (owner type, attributes and visibility, name, output, body).
+// `VecDeque::max_len` has no `#[inline]`; `VecDeque::probe_ptr` exists only
+// under `cfg(kani)` (owner decision, 2026-11-28). Each text is compared
+// exactly, never as a pattern.
+const OWNER_GETTERS: [(&str, &str, &str, &str, &str); 8] = [
+    (
+        "Vec<T,P,L>",
+        "#[inline] pub",
+        "len",
+        "usize",
+        "self.len.get()",
+    ),
+    (
+        "Vec<T,P,L>",
+        "#[inline] pub",
+        "capacity",
+        "usize",
+        "self.cap.get()",
+    ),
+    (
+        "Vec<T,P,L>",
+        "#[inline] pub",
+        "max_len",
+        "usize",
+        "self.limit.max_len()",
+    ),
+    (
+        "Vec<T,P,L>",
+        "#[inline] pub",
+        "as_ptr",
+        "*const T",
+        "self.ptr.as_ptr()",
+    ),
+    (
+        "VecDeque<T,P,L>",
+        "#[inline] pub",
+        "len",
+        "usize",
+        "self.len.get()",
+    ),
+    (
+        "VecDeque<T,P,L>",
+        "#[inline] pub",
+        "capacity",
+        "usize",
+        "self.cap.get()",
+    ),
+    (
+        "VecDeque<T,P,L>",
+        "pub",
+        "max_len",
+        "usize",
+        "self.limit.max_len()",
+    ),
+    (
+        "VecDeque<T,P,L>",
+        "#[cfg(kani)]",
+        "probe_ptr",
+        "*const T",
+        "self.ptr.as_ptr()",
+    ),
 ];
-fn reviewed_owner_getter(method: &syn::ImplItemFn) -> bool {
-    OWNER_GETTERS.iter().any(|(name, output, body)| {
-        let expected: syn::ImplItemFn = syn::parse_str(&format!(
-            "#[inline] pub fn {name}(&self) -> {output} {{ {body} }}"
-        ))
-        .expect("reviewed getter text");
-        method.to_token_stream().to_string() == expected.to_token_stream().to_string()
-    })
+fn reviewed_owner_getter(owner: &str, method: &syn::ImplItemFn) -> bool {
+    OWNER_GETTERS
+        .iter()
+        .filter(|row| row.0 == owner)
+        .any(|(_, attributes, name, output, body)| {
+            let expected: syn::ImplItemFn = syn::parse_str(&format!(
+                "{attributes} fn {name}(&self) -> {output} {{ {body} }}"
+            ))
+            .expect("reviewed getter text");
+            method.to_token_stream().to_string() == expected.to_token_stream().to_string()
+        })
 }
-fn owner_getters(text: &str) -> Result<usize, Box<dyn std::error::Error>> {
+/// The number of reviewed getters of `owner` (for example `Vec<T,P,L>`) in
+/// `text`; a getter of that name with any other definition fails.
+fn owner_getters(text: &str, owner: &str) -> Result<usize, Box<dyn std::error::Error>> {
     let mut reviewed = 0;
     for item in syn::parse_file(text)?.items {
         if let syn::Item::Impl(block) = item {
-            let owner = block.trait_.is_none()
-                && block.self_ty.to_token_stream().to_string().replace(' ', "") == "Vec<T,P,L>";
+            let matches = block.trait_.is_none()
+                && block.self_ty.to_token_stream().to_string().replace(' ', "") == owner;
             for item in block.items {
                 if let syn::ImplItem::Fn(method) = item {
                     let name = method.sig.ident.to_string();
-                    if owner && OWNER_GETTERS.iter().any(|(getter, _, _)| *getter == name) {
+                    if matches
+                        && OWNER_GETTERS
+                            .iter()
+                            .any(|row| row.0 == owner && row.2 == name)
+                    {
                         assert!(
-                            reviewed_owner_getter(&method),
-                            "Vec::{name} requires review"
+                            reviewed_owner_getter(owner, &method),
+                            "{owner}::{name} requires review"
                         );
                         reviewed += 1;
                     }
@@ -254,14 +324,20 @@ fn validate_metadata_getters() -> Result<bool, Box<dyn std::error::Error>> {
     ];
     if !paths.iter().all(|p| std::path::Path::new(p).exists())
         || !std::path::Path::new("src/vec.rs").exists()
+        || !std::path::Path::new("src/deque.rs").exists()
     {
         return Ok(false);
     }
-    assert_eq!(
-        owner_getters(&std::fs::read_to_string("src/vec.rs")?)?,
-        OWNER_GETTERS.len(),
-        "expected each reviewed Vec getter once"
-    );
+    for (file, owner) in [
+        ("src/vec.rs", "Vec<T,P,L>"),
+        ("src/deque.rs", "VecDeque<T,P,L>"),
+    ] {
+        assert_eq!(
+            owner_getters(&std::fs::read_to_string(file)?, owner)?,
+            OWNER_GETTERS.iter().filter(|row| row.0 == owner).count(),
+            "expected each reviewed {owner} getter once"
+        );
+    }
     let mut checked = 0;
     let mut extraction_observers = 0;
     for path in paths {
@@ -732,6 +808,7 @@ mod tests {
         let owner = |body: &str| {
             format!("impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {{ {body} }}")
         };
+        let owner_getters = |text: &str| owner_getters(text, "Vec<T,P,L>");
         let reviewed = "#[inline] pub fn len(&self) -> usize { self.len.get() } \
             #[inline] pub fn capacity(&self) -> usize { self.cap.get() } \
             #[inline] pub fn max_len(&self) -> usize { self.limit.max_len() } \
@@ -749,6 +826,43 @@ mod tests {
             let source = owner(changed);
             assert!(
                 std::panic::catch_unwind(|| owner_getters(&source)).is_err(),
+                "{changed}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviews_the_definitions_of_the_deque_getters() {
+        let owner = |body: &str| {
+            format!("impl<T, P: AllocationPolicy, L: LengthPolicy> VecDeque<T, P, L> {{ {body} }}")
+        };
+        let getters = |text: &str| owner_getters(text, "VecDeque<T,P,L>");
+        let reviewed = "#[inline] pub fn len(&self) -> usize { self.len.get() } \
+            #[inline] pub fn capacity(&self) -> usize { self.cap.get() } \
+            pub fn max_len(&self) -> usize { self.limit.max_len() } \
+            #[cfg(kani)] fn probe_ptr(&self) -> *const T { self.ptr.as_ptr() }";
+        assert_eq!(getters(&owner(reviewed)).unwrap(), 4);
+        // The Vec texts are not the VecDeque review: as_ptr is not listed.
+        assert_eq!(
+            getters(&owner(
+                "pub fn as_ptr(&self) -> *const T { core::ptr::null() }"
+            ))
+            .unwrap(),
+            0
+        );
+        for changed in [
+            "#[inline] pub fn len(&self) -> usize { self.head.get() }",
+            "#[inline] pub fn len(&mut self) -> usize { self.len.get() }",
+            "#[inline] pub fn capacity(&self) -> usize { self.len.get() }",
+            "#[inline] pub fn max_len(&self) -> usize { self.limit.max_len() }",
+            "pub fn max_len(&self) -> usize { usize::MAX }",
+            "#[cfg(kani)] fn probe_ptr(&self) -> *const T { core::ptr::null() }",
+            "fn probe_ptr(&self) -> *const T { self.ptr.as_ptr() }",
+            "#[cfg(kani)] pub fn probe_ptr(&self) -> *const T { self.ptr.as_ptr() }",
+        ] {
+            let source = owner(changed);
+            assert!(
+                std::panic::catch_unwind(|| getters(&source)).is_err(),
                 "{changed}"
             );
         }

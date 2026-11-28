@@ -234,7 +234,7 @@ FOUNDATION_GROUPS=(
     'vec-element-loops deque-closure '
 ).split()
 
-FOUNDATION_CONTROLS=166
+FOUNDATION_CONTROLS=167
 
 
 def commands(out,profiles):

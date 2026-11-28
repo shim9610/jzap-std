@@ -1700,3 +1700,78 @@ deque pointer in `src/deque.rs` (as `Compaction::valid_for` is a
 restate `!ptr.is_null()` (step C, verified in a disposable copy). With it, W30
 has its harness and the joint closure closes VecDeque and Vec together;
 step E then applies.
+
+### Step C, completed: the retain loop contract with the approved pointer getter
+
+Owner decision, 2026-11-28: a `cfg(kani)`-only getter of the deque pointer is
+approved as a product addition (the pattern of `Compaction::valid_for`).
+Done on 2026-11-28. The whole non-proof product change:
+
+```
+// src/deque.rs, after VecDeque::max_len
+    #[cfg(kani)]
+    fn probe_ptr(&self) -> *const T {
+        self.ptr.as_ptr()
+    }
+// src/deque/edit.rs, on the while-let of try_retain_mut
+        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(guard.state.valid_for(guard.owner.len()) && guard.owner.len() <= guard.owner.capacity() && guard.owner.capacity() <= guard.owner.max_len() && guard.owner.max_len() == on_entry(guard.owner.max_len()) && !guard.owner.probe_ptr().is_null()))]
+```
+
+`probe_ptr` is private (the call site `deque::edit` is a child module).
+
+**Machine code.** The five benchmark executables (`deque`,
+`jzap-throughput-analysis`, `string`, `binary_heap`, `scratch_slice` of
+`tools/throughput-analysis`) built with `RUSTFLAGS="-C symbol-mangling-version=v0"`
+from `git archive 660a180` and from an export of this tree, in two
+directories of equal path length: 691, 834, 706, 645 and 573 function bodies,
+all identical by `tools/perf-audit/codegen_diff.py` (0 differing, 0 present in
+one build only) and as multisets of normalized bodies. Rebuilt in the same
+directory, the five files are byte-identical.
+
+**Harness** `deque::proofs::closure::loops::closure_retain_preserves_the_invariant`
+(module under `cfg(jzap_loop_contracts)`): a `closure_deque` owner of every
+length under both limit policies, a callback that keeps, removes or fails on
+every call and no bound on the turns; `try_retain_mut` and `try_retain`; the
+invariant and the unchanged limit asserted on every return. Verified in
+29.8 s (alone) and 32.2 s (in the group); the base and step checks of the
+loop contract are in the log; six covers satisfied (a strict shrink to a
+nonempty length, a callback error with length above 1, `try_retain` success,
+for each policy). Control `closure-deque-retain-length`
+(`restored_len() + 1`) detected.
+
+**Pins.** `scripts/deque_callers.py` (body of `try_retain_mut`),
+`scripts/verify_deque.py` (`REVIEWED` hashes of `src/deque.rs` and
+`src/deque/edit.rs`), `tools/panic-audit/src/main.rs`: `OWNER_INVARIANTS`
+lists the predicate for `src/deque/edit.rs::try_retain_mut` as exact text;
+`OWNER_GETTERS` now carries the owner type and the full attribute and
+visibility text, and reviews `VecDeque::len`, `capacity`, `max_len` (without
+`#[inline]`) and `probe_ptr` (`#[cfg(kani)]`, private) as whole definitions;
+a unit test refuses changed bodies, a `pub` or missing `cfg(kani)` on
+`probe_ptr` and an `#[inline]` on `max_len`. `scripts/source_certificate.py`:
+`FOUNDATION_CONTROLS = 167`.
+
+**`scripts/owner_closure.py`.** W30 maps to the retain harness. Controls (9
+of 9 detected): the four of step 9; an unmapped deque write; a
+`kani::assume` added to the retain, the into_vec or the from_vec harness
+(each: neither owner closed); W30 without a harness (neither closed). The
+stand-in table of step D is removed.
+
+| Owner | Closed at `T = ()` | Dispositions | Uses the invariant of |
+| --- | --- | --- | --- |
+| `Buffer` | yes | 8 harness | — |
+| `Vec` | **yes** | 49 harness, 2 unobservable, 2 not-instantiable, 1 trust-boundary | VecDeque (the into_vec harness) |
+| `VecDeque` | **yes** | 42 harness (15 not executed at `T = ()`), 2 unobservable | Vec (the from_vec harness) |
+
+**Run**, one at a time on this tree:
+
+- `python3 scripts/verify_source.py --group deque-closure --mutations`: pass,
+  1,142 s; 22 of 22 and 1 of 1 harnesses verified, 23 of 23 controls detected.
+- `python3 scripts/verify_deque.py --kani --mutations`: pass, 663 s; 9 Kani
+  harnesses, 11 compiled mutations, 48 caller controls, maintained callers
+  388 verified and 0 errors.
+- `cargo test --locked --offline --features std`: 462 passed, 0 failed.
+  `python3 scripts/verify.py --area deque --check clippy` (both feature sets,
+  `-D warnings`): pass. `cargo fmt --all --check`: clean. `cargo test` of
+  `tools/panic-audit`: 6 passed.
+- `python3 scripts/owner_closure.py --controls`: the table above, 9 of 9.
+  `python3 scripts/test_verify.py`: 66 OK.

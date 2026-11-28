@@ -48,12 +48,21 @@ BODIES={
   'ifself.is_empty(){None}else{Some(unsafe{core::pop_nonempty(&mutself.data)})}',
  ('collections/binary_heap.rs', '', 'pub fn into_sorted_vec('):
   'letmutend=self.len();whileend>1{end=crate::arithmetic::bounded::wrapping_sub(end,1);letptr=self.data.as_mut_ptr();unsafe{::core::ptr::swap(ptr,ptr.add(end))};unsafe{core::sift_down(self.data.as_mut_slice(),0,end)};}self.data',
+ # Issue #16, unit 7 (rule A): the product functions that enter the kernels with a Vec.
+ ('collections/binary_heap.rs', '', 'pub fn from_vec('):
+  'core::rebuild(data.as_mut_slice());Self{data}',
+ ('collections/binary_heap.rs', '', 'pub fn try_append('):
+  'letreused=self.data.try_reuse_larger_buffer(&mutother.data)?;letswapped=!reused&&self.len()<other.len()&&!self.allocation_policy().budget().is_metered()&&!other.allocation_policy().budget().is_metered()&&self.max_len()==other.max_len();ifswapped{::core::mem::swap(self,other);}letstart=self.len();ifletErr(error)=self.data.try_append(&mutother.data){ifswapped{::core::mem::swap(self,other);}returnErr(error);}core::rebuild_tail(self.data.as_mut_slice(),start);Ok(())',
+ ('collections/binary_heap.rs', 'pub fn try_retain<E>(', 'fn drop('):
+  'ifself.start<self.heap.len(){core::rebuild_tail(self.heap.data.as_mut_slice(),self.start);}',
+ ('collections/binary_heap.rs', 'pub fn try_extend<I: TryIntoIterator<Item = T>>(', 'fn drop('):
+  'core::rebuild_tail(self.heap.data.as_mut_slice(),self.start);',
 }
 # Maintained caller -> product calls its text must contain.
 CALLERS={
  'heap_restore_caller':['offset_storage(s,pos)', 'distinct_nonoverlap_caller(value,s,0,pos,1)'],
  'heap_peek_caller':['heap_element_caller(s,0,len)'],
- 'heap_peek_drop_caller':['heap_descend_caller(s,0,len,zst,true,choices,stops)'],
+ 'heap_peek_drop_caller':['heap_descend_caller(s,0,len,size==0,true,choices,stops)'],
  'span_remaining_caller':['span.len()', 'span.front()', 'offset_storage(a,front)', 'slice_caller(a,front,count)'],
  'span_next_caller':['span.next()', 'offset_storage(a,index)', 'slice_caller(a,index,1)'],
  'span_next_back_caller':['span.next_back()', 'offset_storage(a,index)', 'slice_caller(a,index,1)'],
@@ -62,13 +71,18 @@ CALLERS={
  'heap_element_caller':['offset_storage(s,index)', 'slice_caller(s,index,1)'],
  'heap_move_caller':['offset_storage(s,index)', 'offset_storage(s,pos)', 'unordered_nonoverlap_caller(s,index,pos,1)'],
  'heap_sift_up_caller':['crate::collections::binary_heap::geometry::parent(hole)', 'heap_element_caller(s,pos,end)', 'heap_element_caller(s,p,end)', 'heap_move_caller(s,p,hole,end)'],
- 'heap_descend_caller':['crate::arithmetic::bounded::wrapping_sub(end,1)', 'heap_first_child(pos,end,zst)', 'crate::arithmetic::bounded::wrapping_add(child,1)', 'crate::collections::binary_heap::geometry::selected(child,end,choices[child])', 'heap_first_child(hole,end,zst)', 'heap_element_caller(s,pos,end)', 'heap_element_caller(s,child,end)', 'heap_element_caller(s,right,end)', 'heap_move_caller(s,child,hole,end)'],
+ 'heap_descend_caller':['crate::arithmetic::bounded::wrapping_sub(end,1)', 'heap_first_child(pos,end,zst)', 'crate::arithmetic::bounded::wrapping_add(child,1)', 'crate::collections::binary_heap::geometry::selected(child,end,pick(choices,child))', 'heap_first_child(hole,end,zst)', 'heap_element_caller(s,pos,end)', 'heap_element_caller(s,child,end)', 'heap_element_caller(s,right,end)', 'heap_move_caller(s,child,hole,end)'],
  'heap_sift_bottom_caller':['heap_descend_caller(s,pos,end,zst,false,choices,stops)', 'heap_sift_up_caller(s,pos,hole,end,stops)'],
  'heap_rebuild_caller':['crate::arithmetic::bounded::wrapping_sub(pos,1)', 'heap_descend_caller(s,pos,end,zst,true,choices,stops)'],
- 'heap_rebuild_tail_caller':['crate::arithmetic::bounded::wrapping_sub(len,start)', 'heap_sift_up_caller(s,0,pos,len,replies)', 'crate::arithmetic::bounded::wrapping_add(pos,1)'],
+ 'heap_rebuild_tail_caller':['crate::arithmetic::bounded::wrapping_sub(len,start)', 'heap_rebuild_caller(s,len,zst,choices,stops)', 'heap_sift_up_caller(s,0,pos,len,stops)', 'crate::arithmetic::bounded::wrapping_add(pos,1)'],
  'heap_pop_caller':['crate::arithmetic::bounded::wrapping_sub(len,1)', 'heap_sift_bottom_caller(s,0,last,zst,choices,stops)', 'heap_element_caller(s,last,len)', 'replace_caller(s,0)'],
  'heap_push_caller':['crate::arithmetic::bounded::wrapping_sub(len,1)', 'heap_sift_up_caller(s,0,pos,len,replies)'],
  'heap_sorted_caller':['crate::arithmetic::bounded::wrapping_sub(end,1)', 'heap_descend_caller(s,0,end,zst,true,choices,stops)', 'heap_element_caller(s,0,len)', 'heap_element_caller(s,end,len)'],
+ # Issue #16, unit 7 (rule A): callers of the product functions that enter the kernels with a Vec.
+ 'heap_from_vec_caller':['heap_rebuild_caller(s,len,size==0,choices,stops)'],
+ 'heap_append_caller':['heap_rebuild_tail_caller(s,start,len,size==0,choices,stops)'],
+ 'heap_retain_repair_caller':['heap_rebuild_tail_caller(s,start,len,size==0,choices,stops)'],
+ 'heap_extend_repair_caller':['heap_rebuild_tail_caller(s,start,len,size==0,choices,stops)'],
 }
 # Product body restated with `zst` for `size_of::<T>() == 0`; the maintained
 # suffix is fixed here and the product text is fixed in BODIES.

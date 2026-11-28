@@ -33,14 +33,14 @@ def correspondence(root=ROOT):
 # Weakened maintained callers; Verus must report an error for each.
 SOLVER_CONTROLS=[
  ('first_child_unbounded_slice',' requires pos<end,!zst ==> end<=isize::MAX,\n ensures child>pos,zst ==> child<=end,',' requires pos<end,\n ensures child>pos,zst ==> child<=end,'),
- ('sift_up_from_end',' requires raw_valid(s),end<=s.cap,pos<end,replies@.len()>=end,\n ensures hole<=pos,',' requires raw_valid(s),end<=s.cap,pos<=end,replies@.len()>=end,\n ensures hole<=pos,'),
+ ('sift_up_from_end',' requires raw_valid(s),end<=s.cap,pos<end,\n ensures hole<=pos,',' requires raw_valid(s),end<=s.cap,pos<=end,\n ensures hole<=pos,'),
  ('descend_inclusive_last',' while child<last\n',' while child<=last\n'),
- ('descend_empty_slice',' requires raw_valid(s),end<=s.cap,pos<end,!zst ==> end<=isize::MAX,choices@.len()>=end,stops@.len()>=end,\n ensures pos<=hole,hole<end,',' requires raw_valid(s),end<=s.cap,pos<=end,!zst ==> end<=isize::MAX,choices@.len()>=end,stops@.len()>=end,\n ensures pos<=hole,hole<end,'),
+ ('descend_empty_slice',' requires raw_valid(s),end<=s.cap,pos<end,!zst ==> end<=isize::MAX,\n ensures pos<=hole,hole<end,',' requires raw_valid(s),end<=s.cap,pos<=end,!zst ==> end<=isize::MAX,\n ensures pos<=hole,hole<end,'),
  ('rebuild_without_progress','  pos=crate::arithmetic::bounded::wrapping_sub(pos,1);\n  let _hole=heap_descend_caller(s,pos,end,zst,true,choices,stops);','  let _hole=heap_descend_caller(s,pos,end,zst,true,choices,stops);'),
- ('rebuild_tail_past_len',' while pos<len\n  invariant pos<=len,replies@.len()>=len,',' while pos<=len\n  invariant pos<=len,replies@.len()>=len,'),
- ('pop_empty',' requires raw_valid(s),len<=s.cap,len>0,!zst ==> len<=isize::MAX,choices@.len()>=len,stops@.len()>=len,\n ensures last+1==len,',' requires raw_valid(s),len<=s.cap,!zst ==> len<=isize::MAX,choices@.len()>=len,stops@.len()>=len,\n ensures last+1==len,'),
+ ('rebuild_tail_past_len','  while pos<len\n   invariant pos<=len,','  while pos<=len\n   invariant pos<=len,'),
+ ('pop_empty',' requires len<=cap<=limit,byte_valid(cap,size),paired_storage(s,cap,size),len>0,\n ensures last+1==len,',' requires len<=cap<=limit,byte_valid(cap,size),paired_storage(s,cap,size),\n ensures last+1==len,'),
  ('pop_single_sift',' if last==0 {\n  return last;\n }\n',''),
- ('push_empty',' requires raw_valid(s),len<=s.cap,len>0,replies@.len()>=len,\n{\n let pos=',' requires raw_valid(s),len<=s.cap,replies@.len()>=len,\n{\n let pos='),
+ ('push_empty',' requires len<=cap<=limit,byte_valid(cap,size),paired_storage(s,cap,size),len>0,\n{\n proof { paired_raw(s,cap,size); }\n let pos=',' requires len<=cap<=limit,byte_valid(cap,size),paired_storage(s,cap,size),\n{\n proof { paired_raw(s,cap,size); }\n let pos='),
  ('sorted_to_zero',' while end>1\n',' while end>0\n'),
  # The index facts are unchanged in the next six; only the storage call or its premise is.
  ('move_onto_itself','  heap_move_caller(s,p,hole,end);','  heap_move_caller(s,hole,hole,end);'),
@@ -48,7 +48,13 @@ SOLVER_CONTROLS=[
  ('element_outside_storage',' requires raw_valid(s),index<end,end<=s.cap,\n ensures doc_ptr_add',' requires raw_valid(s),index<end,\n ensures doc_ptr_add'),
  ('pop_replace_past_end',' let _root=replace_caller(s,0);',' let _root=replace_caller(s,len);'),
  ('sorted_swap_at_length','  let _last=heap_element_caller(s,end,len);','  let _last=heap_element_caller(s,len,len);'),
- ('sift_up_storage_shorter_than_slice',' requires raw_valid(s),end<=s.cap,pos<end,replies@.len()>=end,\n ensures hole<=pos,',' requires raw_valid(s),pos<end,replies@.len()>=end,\n ensures hole<=pos,'),
+ ('sift_up_storage_shorter_than_slice',' requires raw_valid(s),end<=s.cap,pos<end,\n ensures hole<=pos,',' requires raw_valid(s),pos<end,\n ensures hole<=pos,'),
+ # Issue #16, unit 7 (rules A and B): the restated entry callers and the pairing.
+ ('peek_drop_past_length',',0<len,len<=vlen,\n',',0<len,\n'),
+ ('pairing_without_allocation','else { from_allocation(s) }','else { true }'),
+ ('dangling_at_any_address','if cap==0 || size==0 { s.base==s.align }','if cap==0 || size==0 { true }'),
+ ('append_without_owner_invariant','fn heap_append_caller(s:RawStorage,start:usize,len:usize,cap:usize,limit:usize,size:usize,choices:&[bool],stops:&[bool])\n requires len<=cap<=limit,','fn heap_append_caller(s:RawStorage,start:usize,len:usize,cap:usize,limit:usize,size:usize,choices:&[bool],stops:&[bool])\n requires cap<=limit,'),
+ ('from_vec_without_pairing','fn heap_from_vec_caller(s:RawStorage,len:usize,cap:usize,limit:usize,size:usize,choices:&[bool],stops:&[bool])\n requires len<=cap<=limit,byte_valid(cap,size),paired_storage(s,cap,size),','fn heap_from_vec_caller(s:RawStorage,len:usize,cap:usize,limit:usize,size:usize,choices:&[bool],stops:&[bool])\n requires len<=cap<=limit,byte_valid(cap,size),'),
 ]
 # Compiled product changes that the whole-body comparison must refuse.
 TEXT_CONTROLS=[
@@ -60,6 +66,10 @@ TEXT_CONTROLS=[
  ('pop-sift-end','collections/binary_heap/core.rs','unsafe { sift_bottom(data.as_mut_slice(), 0, last) };','unsafe { sift_bottom(data.as_mut_slice(), 0, crate::arithmetic::bounded::wrapping_add(last, 1)) };'),
  ('push-position','collections/binary_heap.rs','let pos = crate::arithmetic::bounded::wrapping_sub(self.len(), 1);','let pos = self.len();'),
  ('sorted-loop-bound','collections/binary_heap.rs','while end > 1 {','while end > 0 {'),
+ # Issue #16, unit 7: the product functions that enter the kernels with a Vec.
+ ('from-vec-slice','collections/binary_heap.rs','core::rebuild(data.as_mut_slice());','core::rebuild(data.as_mut_slice().split_at_mut(0).1);'),
+ ('append-tail-start','collections/binary_heap.rs','core::rebuild_tail(self.data.as_mut_slice(), start);','core::rebuild_tail(self.data.as_mut_slice(), 0);'),
+ ('retain-repair-bound','collections/binary_heap.rs','if self.start < self.heap.len() {','if self.start <= self.heap.len() {'),
 ]
 def inputs(root=ROOT):
  root=Path(root)
@@ -81,6 +91,11 @@ def bindings(root=ROOT):
   elif fn in ('rebuild_tail','into_sorted_vec','try_append','try_extend'):contract=HARNESSES[3]
   else:contract=HARNESSES[1]
   caller=SITES.get((row['file'].split('/')[-1],fn)) if row['kind']!='unsafe_impl' else None
+  # Issue #16, unit 7: a block that only calls core::set_len (PeekMut::deref_mut,
+  # PeekMut::drop, PeekMut::pop) is the set_len protocol of the owner kernel
+  # harness, not a call of the maintained caller named for its function.
+  if row['file']=='src/collections/binary_heap.rs' and re.sub(r'\s+','',row.get('expression','')).startswith('unsafe{core::set_len('):
+   contract,caller=HARNESSES[2],None
   result.append(dict(site=row,contract=caller or 'kani:'+contract,also=['kani:'+contract] if caller else [],role='reviewed guarded heap frontier / initialized hole / exclusive peek / retired drain',boundary=__doc__))
  return phases,result
 def main():

@@ -630,7 +630,7 @@ class PremiseTests(unittest.TestCase):
                          [PROVED, STATED_NOT_PROVED, UNPROVED, UNPROVED, STATED_NOT_PROVED, STATED_NOT_PROVED])
         self.assertEqual(rows[-1]['contract'], 'lookup_path_read')
         from premise_status import INSTANTIATED, TRUSTED
-        self.assertEqual(obligation_counts(rows), {PROVED: 1, INSTANTIATED: 0, TRUSTED: 0, STATED_NOT_PROVED: 3, UNPROVED: 2})
+        self.assertEqual(obligation_counts(rows), {PROVED: 1, INSTANTIATED: 0, 'instantiated-kani+local': 0, TRUSTED: 0, STATED_NOT_PROVED: 3, UNPROVED: 2})
         # Without a verified lemma the B+ ancestor row is unproved, not connected.
         self.assertEqual(obligations(owner, string, (area,), verified - {'lookup_path_read'}, lookup)[-1]['disposition'], UNPROVED)
         with self.assertRaisesRegex(AssertionError, 'B\\+ ancestor read moved'):
@@ -641,7 +641,7 @@ class PremiseTests(unittest.TestCase):
         from premise_status import (INSTANTIATED, INSTANTIATED_KANI, STATED_NOT_PROVED, TRUSTED, TRUST_BOUNDARY,
                                     check_instantiated, disposition, premise)
         from source_certificate import BPLUS_ANCESTOR, obligation_counts, obligations
-        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=True)}
+        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=True), 'BinaryHeap': dict(closed=True)}
         vec = {'checked_owner_length', 'split_owner', 'shortened_owner', 'owner_to_array',
                'memory_reserve', 'insertion_before_moves', 'internal_copy_before_append', 'drain_constructor'}
         self.assertEqual(set(INSTANTIATED_KANI), {'buffer_reserve', 'buffer_push', 'buffer_finish', 'buffer_collect'} | vec)
@@ -663,7 +663,8 @@ class PremiseTests(unittest.TestCase):
         verified |= set(stays)
         for contract in stays:
             self.assertEqual(disposition(contract, verified, closed), STATED_NOT_PROVED)
-        self.assertEqual(len(check_instantiated(ROOT, closed)), 12)
+        # 12 instantiated-kani contracts and 11 instantiated-kani+local heap contracts.
+        self.assertEqual(len(check_instantiated(ROOT, closed)), 23)
         with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
             check_instantiated(ROOT, {'Buffer': dict(closed=False), 'Vec': dict(closed=True)})
         with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
@@ -679,10 +680,8 @@ class PremiseTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'outside a function of the owner'):
                 check_instantiated(ROOT, closed, [(other, 'buffer_push')])
         with tempfile.TemporaryDirectory() as tmp:
-            for name in ('tools/memory-proof/owner-state.verus.rs', 'tools/memory-proof/operation-closure.verus.rs',
-                         'tools/memory-proof/wrapping-memory.verus.rs'):
-                (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(ROOT / name, Path(tmp) / name)
+            shutil.copytree(ROOT / 'tools/memory-proof', Path(tmp) / 'tools/memory-proof')
+            shutil.copytree(ROOT / 'src', Path(tmp) / 'src')
             path = Path(tmp) / 'tools/memory-proof/operation-closure.verus.rs'
             text = path.read_text()
             old = 'fn buffer_finish(len:usize,cap:usize,size:usize,accepted:bool)->(r:Option<OwnerState>)\n    requires len<=cap,byte_valid(cap,size),'
@@ -710,34 +709,113 @@ class PremiseTests(unittest.TestCase):
             dict(site=site, contract='buffer_push', role='state-publication'),
             dict(site=site, contract='buffer_span', role='state-lend')]))
         lookup = (ROOT / BPLUS_ANCESTOR['file']).read_text()
+        import local_acceptance
+        verified |= set(local_acceptance.CONTRACTS) | set(local_acceptance.ENTRIES)
         rows = obligations(owner, dict(bindings=[]), (), verified | {'lookup_path_read'}, lookup, closed)
         self.assertEqual(obligation_counts(rows)[INSTANTIATED], 1)
         self.assertEqual(obligation_counts(rows)[TRUSTED], 0)
         with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
             obligations(owner, dict(bindings=[]), (), verified | {'lookup_path_read'}, lookup, {'Buffer': dict(closed=False)})
 
-    def test_heap_contracts_are_not_accepted_as_instantiated(self):
-        # Issue #16, unit 7: BinaryHeap closes with Vec, but no heap caller's
-        # requires is exactly the Vec invariant and its rows are outside Vec.
+    def test_heap_contracts_take_only_the_local_rule(self):
+        # Issue #16, unit 7: no heap caller is accepted as plain instantiated-kani
+        # (its requires is not exactly the Vec invariant); 11 are
+        # instantiated-kani+local (rule A), two stay stated.
         import premise_status
-        from premise_status import STATED_NOT_PROVED, check_instantiated, disposition
-        heap = ['heap_descend_caller', 'heap_element_caller', 'heap_move_caller', 'heap_peek_caller',
-                'heap_peek_drop_caller', 'heap_pop_caller', 'heap_push_caller', 'heap_rebuild_caller',
-                'heap_rebuild_tail_caller', 'heap_restore_caller', 'heap_sift_bottom_caller',
-                'heap_sift_up_caller', 'heap_sorted_caller']
+        from premise_status import INSTANTIATED_LOCAL, STATED_NOT_PROVED, check_instantiated, disposition
+        import local_acceptance
+        heap = list(local_acceptance.verify_binary_heap_contracts())
         closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=True), 'BinaryHeap': dict(closed=True)}
+        self.assertEqual(set(local_acceptance.LEFT), {'heap_peek_caller', 'heap_restore_caller'})
         for contract in heap:
-            self.assertEqual(disposition(contract, set(heap), closed), STATED_NOT_PROVED)
+            expected = STATED_NOT_PROVED if contract in local_acceptance.LEFT else INSTANTIATED_LOCAL
+            self.assertEqual(disposition(contract, set(heap), closed), expected)
+            if expected == INSTANTIATED_LOCAL:
+                for open_owner in ('Vec', 'BinaryHeap'):
+                    with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
+                        disposition(contract, set(heap), {**closed, open_owner: dict(closed=False)})
             for form in ('requires', 'expanded'):
                 row = dict(owner='Vec', maintained='tools/memory-proof/binary-heap.verus.rs', form=form,
-                           words=dict(s='s', len='len', cap='s.cap', limit='limit'), call_requires=())
+                           words=dict(s='s', len='len', cap='cap', limit='limit'), call_requires=())
                 with patch.dict(premise_status.INSTANTIATED_KANI, {contract: row}):
                     with self.assertRaisesRegex(AssertionError, 'not exactly the owner invariant'):
                         check_instantiated(ROOT, closed)
-        # A heap row is outside every Vec function even with an accepted contract name.
         site = dict(file='src/collections/binary_heap.rs', function='pop', context='BinaryHeap < T , P , L >')
         with self.assertRaisesRegex(AssertionError, 'outside a function of the owner'):
             check_instantiated(ROOT, closed, [(site, 'shortened_owner')])
+
+    def test_local_rule_refuses_each_unsound_case(self):
+        # Rule A (approved 2026-11-28): the controls the owner asked for.
+        import local_acceptance as la
+        import heap_callers
+        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=True), 'BinaryHeap': dict(closed=True)}
+        self.assertEqual(set(la.check(ROOT, closed)), set(la.CONTRACTS))
+
+        def copy(tmp):
+            shutil.copytree(ROOT / 'tools/memory-proof', Path(tmp) / 'tools/memory-proof')
+            shutil.copytree(ROOT / 'src', Path(tmp) / 'src')
+            return Path(tmp)
+
+        def edit(root, file, old, new):
+            path = root / file
+            text = path.read_text()
+            self.assertEqual(text.count(old), 1, (file, old))
+            path.write_text(text.replace(old, new))
+        # (1) An extra, undischarged conjunct in an entry caller's requires.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = copy(tmp)
+            edit(root, la.MODEL, 'paired_storage(s,cap,size),len>0,\n{', 'paired_storage(s,cap,size),len>0,len>1,\n{')
+            with self.assertRaisesRegex(AssertionError, 'undischarged or missing local fact'):
+                la.check(root, closed)
+        # ... and a caller-discharged contract whose requires gains a conjunct
+        # that no accepted caller establishes: the verified set refuses it.
+        with self.assertRaisesRegex(AssertionError, 'not verified'):
+            la.check(ROOT, closed, verified=set(la.CONTRACTS) - {'heap_sift_up_caller'} | set(la.ENTRIES))
+        # (2) A discharging harness removed from its group, its stub weakened,
+        # its stub attribute removed, or a discharging caller that no longer
+        # reaches the contract.
+        import owner_closure
+        groups = owner_closure.harness_groups()
+        groups.pop(la.H + 'push_establishes_its_local_fact')
+        with self.assertRaisesRegex(AssertionError, 'not in a group'):
+            la.check(ROOT, closed, groups=groups)
+        for old, new, message in [('        assert!(data.len() > 0);\n    }', '        assert!(true);\n    }', 'precondition stub changed'),
+                                  ('    #[kani::stub(crate::collections::binary_heap::core::sift_up, sift_up_precondition)]\n', '',
+                                   'does not stub the row callee'),
+                                  ('        let result = heap.try_push(());', '        let result: Result<(), ()> = Ok(());',
+                                   'does not run the product function'),
+                                  ('        let mut heap = closure_heap(Unmetered, limit);\n        let result = heap.try_push(());',
+                                   '        let mut heap = closure_heap(Unmetered, limit);\n        kani::assume(heap.len() > 0);\n        let result = heap.try_push(());',
+                                   'not admissible')]:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                root = copy(tmp)
+                edit(root, la.PROOF, old, new)
+                with self.assertRaisesRegex(AssertionError, message):
+                    la.check(root, closed)
+        weakened = dict(heap_callers.CALLERS, heap_push_caller=['crate::arithmetic::bounded::wrapping_sub(len,1)'])
+        with patch.object(heap_callers, 'CALLERS', weakened), patch('verify_binary_heap.CALLERS', weakened):
+            with self.assertRaisesRegex(AssertionError, 'does not reach the contract'):
+                la.check(ROOT, closed)
+        # (3) The owner or the wrapper not closed.
+        for open_owner in ('Vec', 'BinaryHeap'):
+            with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
+                la.check(ROOT, {**closed, open_owner: dict(closed=False)})
+        # (4) A row outside the pinned functions, or a block that does not call
+        # the product function (the PeekMut::pop set_len block).
+        good = dict(file='src/collections/binary_heap/core.rs', function='pop_nonempty', context='', expression='unsafe { x }')
+        la.check(ROOT, closed, [(good, 'heap_pop_caller')])
+        for site in (dict(good, function='pop_unrelated'), dict(good, file='src/vec.rs'),
+                     dict(file='src/collections/binary_heap.rs', function='pop', context="PeekMut < '_ , T , P , L >",
+                          expression='unsafe { core :: set_len (& mut this . heap . data , len . get ()) }')):
+            with self.assertRaisesRegex(AssertionError, 'outside its pinned functions'):
+                la.check(ROOT, closed, [(site, 'heap_pop_caller')])
+        # The pinned call table refuses a new product call of a kernel.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = copy(tmp)
+            edit(root, 'src/collections/binary_heap.rs', '    pub fn clear(&mut self) {\n        self.data.clear()',
+                 '    pub fn clear(&mut self) {\n        core::rebuild(self.data.as_mut_slice());\n        self.data.clear()')
+            with self.assertRaisesRegex(AssertionError, 'heap files changed|call table changed'):
+                la.check(root, closed)
 
 class OwnerWordTests(unittest.TestCase):
     @staticmethod

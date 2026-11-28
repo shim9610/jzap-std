@@ -19,6 +19,9 @@ fn closure_invariant<T, P: AllocationPolicy, L: LengthPolicy>(owner: &VecDeque<T
         } else {
             owner.head.get() < owner.cap.get()
         }
+        // Rule B pairing at an empty or zero-sized owner, read through probe_ptr.
+        && (mem::size_of::<T>() != 0 && owner.cap.get() != 0
+            || owner.probe_ptr().addr() == mem::align_of::<T>())
 }
 
 /// An arbitrary owner of zero-sized elements: every head, length and capacity
@@ -506,6 +509,8 @@ fn closure_into_vec_case<L: LengthPolicy>(limit: L) {
     // The Vec invariant, read through the reviewed Vec getters.
     assert!(values.len() <= values.capacity() && values.capacity() <= values.max_len());
     assert!(values.len() == len && values.capacity() == cap && values.max_len() == max);
+    // Rule B pairing of the Vec at a zero-sized element, read through as_ptr.
+    assert!(values.as_ptr().addr() == mem::align_of::<()>());
     kani::cover!(len > 0 && cap > len);
 }
 #[kani::proof]
@@ -594,21 +599,61 @@ mod sized {
             align: layout.align(),
         }
     }
-    /// Stands in for `storage::reallocate`: the same address or a refusal.
+    // Rule B (issue #16, unit 7): the single allocation the owner holds, as
+    // (address, layout), as in vec::growth_proofs::sized.
+    static mut LIVE: Option<(usize, Layout)> = None;
+    static mut NEXT: usize = 2;
+    fn fresh(layout: Layout) -> NonNull<u8> {
+        let index = unsafe { NEXT };
+        unsafe { NEXT = index + 1 };
+        NonNull::without_provenance(core::num::NonZeroUsize::new(layout.align() * index).unwrap())
+    }
+    /// The pairing of rule B, read through `probe_ptr`.
+    fn paired<T, L: LengthPolicy>(owner: &VecDeque<T, Unmetered, L>) -> bool {
+        match crate::layout::array::<T>(owner.capacity()) {
+            Ok(layout) if layout.size() != 0 => {
+                (unsafe { LIVE }) == Some((owner.probe_ptr().addr(), layout))
+            }
+            Ok(_) => owner.probe_ptr().addr() == mem::align_of::<T>(),
+            Err(_) => false,
+        }
+    }
+    /// Stands in for `storage::reallocate`: requires the recorded allocation
+    /// of `old`; returns the same or a fresh recorded allocation of `new` (the
+    /// dangling address of an empty `new`), or a refusal that keeps `old`.
     unsafe fn reallocate(
         ptr: NonNull<u8>,
-        _old: Layout,
+        old: Layout,
         new: Layout,
         _budget: Accounting<'_>,
     ) -> Result<NonNull<u8>, Error> {
-        if kani::any() {
-            Ok(ptr)
+        if old.size() != 0 {
+            assert!(unsafe { LIVE } == Some((ptr.as_ptr().addr(), old)));
+        }
+        if !kani::any::<bool>() {
+            return Err(refusal(new));
+        }
+        if new.size() == 0 {
+            unsafe { LIVE = None };
+            return Ok(NonNull::without_provenance(
+                core::num::NonZeroUsize::new(new.align()).unwrap(),
+            ));
+        }
+        let p = if old.size() != 0 && kani::any() {
+            ptr
         } else {
-            Err(refusal(new))
+            fresh(new)
+        };
+        unsafe { LIVE = Some((p.as_ptr().addr(), new)) };
+        Ok(p)
+    }
+    /// Stands in for `storage::deallocate`: requires the recorded allocation.
+    unsafe fn deallocate(ptr: NonNull<u8>, layout: Layout, _budget: Accounting<'_>) {
+        if layout.size() != 0 {
+            assert!(unsafe { LIVE } == Some((ptr.as_ptr().addr(), layout)));
+            unsafe { LIVE = None };
         }
     }
-    /// Stands in for `storage::deallocate`: the fixture owns no allocation.
-    unsafe fn deallocate(_ptr: NonNull<u8>, _layout: Layout, _budget: Accounting<'_>) {}
 
     fn constructors<T>() {
         let capacity: usize = kani::any();
@@ -617,6 +662,7 @@ mod sized {
             Ok(owner) => {
                 assert!(owner.is_empty() && owner.capacity() == capacity);
                 closure_exit(&owner, usize::MAX);
+                assert!(paired(&owner));
                 kani::cover!(capacity > 0);
             }
             Err(error) => {
@@ -632,6 +678,7 @@ mod sized {
             Ok(owner) => {
                 assert!(owner.is_empty() && owner.capacity() == capacity && capacity <= limit);
                 closure_exit(&owner, limit);
+                assert!(paired(&owner));
             }
             Err(error) => assert!(matches!(
                 error,

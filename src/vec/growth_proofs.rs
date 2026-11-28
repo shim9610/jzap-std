@@ -188,8 +188,21 @@ mod sized {
             kani::assume(false);
             unreachable!()
         };
+        // Rule B: a nonempty owner holds the one allocation of its layout, a
+        // fresh address recorded in LIVE; an empty owner holds the dangling pointer.
+        let ptr = match crate::layout::array::<T>(cap.get()) {
+            Ok(layout) if layout.size() != 0 => {
+                let p = fresh(layout);
+                unsafe { LIVE = Some((p.as_ptr().addr(), layout)) };
+                p.cast()
+            }
+            _ => {
+                unsafe { LIVE = None };
+                NonNull::dangling()
+            }
+        };
         let owner = Vec {
-            ptr: NonNull::dangling(),
+            ptr,
             len: Checked::new(kani::any()),
             cap,
             policy: Unmetered,
@@ -200,41 +213,92 @@ mod sized {
         owner
     }
 
+    // Rule B (issue #16, unit 7): the single allocation the fixture owner
+    // holds, as (address, layout). The stubs below allocate fresh distinct
+    // aligned addresses, require the owner's recorded allocation on every
+    // reallocation and deallocation, and record what they return.
+    static mut LIVE: Option<(usize, Layout)> = None;
+    static mut NEXT: usize = 2;
+    fn fresh(layout: Layout) -> NonNull<u8> {
+        let index = unsafe { NEXT };
+        unsafe { NEXT = index + 1 };
+        NonNull::without_provenance(core::num::NonZeroUsize::new(layout.align() * index).unwrap())
+    }
+    /// The pairing of rule B: the pointer is the recorded allocation of
+    /// `layout::array::<T>(cap)`, or dangling when that layout is empty.
+    fn paired<T, L: LengthPolicy>(owner: &Vec<T, Unmetered, L>) -> bool {
+        match crate::layout::array::<T>(owner.capacity()) {
+            Ok(layout) if layout.size() != 0 => {
+                (unsafe { LIVE }) == Some((owner.as_ptr().addr(), layout))
+            }
+            Ok(_) => owner.as_ptr().addr() == mem::align_of::<T>(),
+            Err(_) => false,
+        }
+    }
+
     fn refusal(layout: Layout) -> Error {
         Error::Allocation {
             size: layout.size(),
             align: layout.align(),
         }
     }
-    /// Stands in for `storage::allocate`: an aligned address or a refusal.
+    /// Stands in for `storage::allocate`: the dangling address of an empty
+    /// layout, else a fresh recorded allocation or a refusal.
     fn allocate(layout: Layout, _budget: Accounting<'_>) -> Result<NonNull<u8>, Error> {
-        if kani::any() {
-            Ok(NonNull::without_provenance(
+        if layout.size() == 0 {
+            return Ok(NonNull::without_provenance(
                 core::num::NonZeroUsize::new(layout.align()).unwrap(),
-            ))
+            ));
+        }
+        if kani::any() {
+            let p = fresh(layout);
+            unsafe { LIVE = Some((p.as_ptr().addr(), layout)) };
+            Ok(p)
         } else {
             Err(refusal(layout))
         }
     }
-    /// Stands in for `storage::reallocate`: the same address or a refusal.
+    /// Stands in for `storage::reallocate`: requires the recorded allocation
+    /// of `old`; returns the same or a fresh recorded allocation of `new` (the
+    /// dangling address of an empty `new`), or a refusal that keeps `old`.
     unsafe fn reallocate(
         ptr: NonNull<u8>,
-        _old: Layout,
+        old: Layout,
         new: Layout,
         _budget: Accounting<'_>,
     ) -> Result<NonNull<u8>, Error> {
-        if kani::any() {
-            Ok(ptr)
+        if old.size() != 0 {
+            assert!(unsafe { LIVE } == Some((ptr.as_ptr().addr(), old)));
+        }
+        if !kani::any::<bool>() {
+            return Err(refusal(new));
+        }
+        if new.size() == 0 {
+            unsafe { LIVE = None };
+            return Ok(NonNull::without_provenance(
+                core::num::NonZeroUsize::new(new.align()).unwrap(),
+            ));
+        }
+        let p = if old.size() != 0 && kani::any() {
+            ptr
         } else {
-            Err(refusal(new))
+            fresh(new)
+        };
+        unsafe { LIVE = Some((p.as_ptr().addr(), new)) };
+        Ok(p)
+    }
+    /// Stands in for `storage::deallocate`: requires the recorded allocation.
+    unsafe fn deallocate(ptr: NonNull<u8>, layout: Layout, _budget: Accounting<'_>) {
+        if layout.size() != 0 {
+            assert!(unsafe { LIVE } == Some((ptr.as_ptr().addr(), layout)));
+            unsafe { LIVE = None };
         }
     }
-    /// Stands in for `storage::deallocate`: the fixture owns no allocation.
-    unsafe fn deallocate(_ptr: NonNull<u8>, _layout: Layout, _budget: Accounting<'_>) {}
 
     fn exit<T, L: LengthPolicy>(owner: &Vec<T, Unmetered, L>, limit: usize) {
         closure_exit(owner, limit);
         assert!(closure_byte_bound(owner));
+        assert!(paired(owner));
     }
 
     fn reserve<T, L: LengthPolicy>(limit: L, exact: bool) {

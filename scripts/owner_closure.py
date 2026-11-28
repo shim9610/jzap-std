@@ -53,7 +53,8 @@ TRUST_BOUNDARY = {
 OWNERS = {
     'Vec': dict(struct=('src/vec.rs', 'Vec'), words=('len', 'cap', 'limit'),
                 invariant=('src/vec/query_proofs.rs',
-                           'owner.len.get()<=owner.cap.get()&&owner.cap.get()<=owner.limit.max_len()'),
+                           'owner.len.get()<=owner.cap.get()&&owner.cap.get()<=owner.limit.max_len()'
+                           '&&(mem::size_of::<T>()!=0&&owner.cap.get()!=0||owner.as_ptr().addr()==mem::align_of::<T>())'),
                 constructor_calls=('Vec::from_raw_parts', 'crate::vec::Vec::from_raw_parts', 'super::Vec::from_raw_parts')),
     'Buffer': dict(struct=('src/boxed/buffer.rs', 'Buffer'), words=('len', 'cap', 'layout'),
                    invariant=('src/boxed/buffer_proofs.rs',
@@ -65,7 +66,8 @@ OWNERS = {
                                 'owner.len.get()<=owner.cap.get()&&owner.cap.get()<=owner.limit.max_len()'
                                 '&&crate::layout::array::<T>(owner.cap.get()).is_ok()'
                                 '&&ifmem::size_of::<T>()==0||owner.cap.get()==0{owner.head.get()==0}'
-                                'else{owner.head.get()<owner.cap.get()}'),
+                                'else{owner.head.get()<owner.cap.get()}'
+                                '&&(mem::size_of::<T>()!=0&&owner.cap.get()!=0||owner.probe_ptr().addr()==mem::align_of::<T>())'),
                      constructor_calls=()),
 }
 

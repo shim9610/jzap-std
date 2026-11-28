@@ -305,6 +305,13 @@ EXTRA = {
     'deque-closure': [dict(harnesses=[
         'deque::proofs::closure::sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner',
     ], cfgs=['jzap_closure_stubs'], stubbing=True)],
+    # Issue #16, unit 7 (rule A): the local facts of the heap entry callers at
+    # the call, each by a precondition stub of the callee at the row.
+    'heap-closure': [dict(harnesses=['collections::binary_heap::proofs::closure::local::closure_' + name for name in (
+        'push_establishes_its_local_fact',
+        'pop_establishes_its_local_fact',
+        'peek_drop_establishes_its_local_facts',
+    )], cfgs=['jzap_closure_stubs'], stubbing=True)],
     # The whole try_finish on the path with a retained tail. The empty-tail
     # branch is a loop over the source without a contract.
     'vec-splice-fill': [dict(harnesses=['vec::edit::panic_proofs::closure_' + name for name in (
@@ -1060,6 +1067,18 @@ CONTROLS = [
      '        unsafe { super::core::set_len(&mut heap.data, 0) };',
      '        unsafe { super::core::set_len(&mut heap.data, 1) };',
      'collections::binary_heap::proofs::closure::closure_drain_retires_the_length'),
+    ('closure-heap-local-push-empty', 'heap-closure', 'src/collections/binary_heap.rs',
+     '        self.data.try_push(value)?;\n',
+     '        self.data.try_push(value)?;\n        self.data.clear();\n',
+     'collections::binary_heap::proofs::closure::local::closure_push_establishes_its_local_fact'),
+    ('closure-heap-local-pop-guard', 'heap-closure', 'src/collections/binary_heap.rs',
+     '    pub fn pop(&mut self) -> Option<T> {\n        if self.is_empty() {',
+     '    pub fn pop(&mut self) -> Option<T> {\n        if false {',
+     'collections::binary_heap::proofs::closure::local::closure_pop_establishes_its_local_fact'),
+    ('closure-heap-local-peek-drop-end', 'heap-closure', 'src/collections/binary_heap.rs',
+     '            unsafe { core::sift_down(self.heap.data.as_mut_slice(), 0, len.get()) };',
+     '            unsafe { core::sift_down(self.heap.data.as_mut_slice(), 0, crate::arithmetic::bounded::wrapping_add(len.get(), 1)) };',
+     'collections::binary_heap::proofs::closure::local::closure_peek_drop_establishes_its_local_facts'),
 ]
 CONTROLS_HARNESS = {name: harness for name, _group, _file, _old, _new, harness in CONTROLS}
 # Only negative controls use these small concrete counterexamples. Positive

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from certificate_artifacts import collect, digest, identity, publish
 from link_call_graph import PAIR_WINDOW_PATH, is_pair_window_edge
-from premise_status import (DISPOSITIONS, INSTANTIATED, STATED_NOT_PROVED, UNPROVED,
+from premise_status import (DISPOSITIONS, INSTANTIATED, INSTANTIATED_LOCAL, STATED_NOT_PROVED, UNPROVED,
                             check_instantiated, disposition, verified_function_names)
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -234,7 +234,7 @@ FOUNDATION_GROUPS=(
     'vec-element-loops deque-closure heap-closure '
 ).split()
 
-FOUNDATION_CONTROLS=173
+FOUNDATION_CONTROLS=176
 
 
 def commands(out,profiles):
@@ -323,8 +323,8 @@ def obligations(owner,string,areas,verified,lookup_source,closure=None,root=ROOT
     rows.append((dict(BPLUS_ANCESTOR),'lookup_path_read','initialized-ancestor-prefix'))
     result=[dict(site=site,contract=contract,role=role,disposition=disposition(contract,verified,closure))
             for site,contract,role in rows]
-    if any(row['disposition']==INSTANTIATED for row in result):
-        check_instantiated(root,closure,[(row['site'],row['contract']) for row in result])
+    if any(row['disposition'] in (INSTANTIATED,INSTANTIATED_LOCAL) for row in result):
+        check_instantiated(root,closure,[(row['site'],row['contract']) for row in result],verified)
     return result
 
 
@@ -597,7 +597,7 @@ def main():
     # basis instantiated-kani is refused for an owner that is not closed.
     from owner_closure import report as owner_closure
     closure=owner_closure(ROOT,out/'owner-closure')
-    instantiations=check_instantiated(ROOT,closure)
+    instantiations=check_instantiated(ROOT,closure,verified=verified)
     source_obligations=obligations(owner,string,(shared,btree,hash_map,binary_heap,deque,scratch),verified,(ROOT/BPLUS_ANCESTOR['file']).read_text(),closure)
     counts=obligation_counts(source_obligations)
     # A row whose premise is only stated is open: the certificate is complete

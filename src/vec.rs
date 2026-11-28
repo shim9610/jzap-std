@@ -612,7 +612,7 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> Vec<T, P, L> {
             owner: self,
             original,
         };
-        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= guard.owner.capacity() && guard.owner.capacity() <= guard.owner.max_len() && guard.owner.max_len() == on_entry(guard.owner.max_len()) && !guard.owner.as_ptr().is_null()))]
+        #[cfg_attr(all(kani, jzap_loop_contracts), kani::loop_invariant(original <= guard.owner.len() && guard.owner.len() <= guard.owner.capacity() && guard.owner.capacity() <= guard.owner.max_len() && guard.owner.max_len() == on_entry(guard.owner.max_len()) && !guard.owner.as_ptr().is_null() && (core::mem::size_of::<T>() != 0 || guard.owner.as_ptr().addr() == core::mem::align_of::<T>())))]
         while let Some(item) =
             crate::TryIterator::try_next(&mut iter).map_err(InitError::Initialize)?
         {

@@ -158,7 +158,7 @@ const OWNER_INVARIANTS: [(&str, &str, &str); 5] = [
     (
         "src/vec.rs",
         "try_extend_fallible",
-        "original<=guard.owner.len()&&guard.owner.len()<=guard.owner.capacity()&&guard.owner.capacity()<=guard.owner.max_len()&&guard.owner.max_len()==on_entry(guard.owner.max_len())&&!guard.owner.as_ptr().is_null()",
+        "original<=guard.owner.len()&&guard.owner.len()<=guard.owner.capacity()&&guard.owner.capacity()<=guard.owner.max_len()&&guard.owner.max_len()==on_entry(guard.owner.max_len())&&!guard.owner.as_ptr().is_null()&&(core::mem::size_of::<T>()!=0||guard.owner.as_ptr().addr()==core::mem::align_of::<T>())",
     ),
     (
         "src/vec/convenience.rs",
@@ -173,7 +173,7 @@ const OWNER_INVARIANTS: [(&str, &str, &str); 5] = [
     (
         "src/deque/edit.rs",
         "try_retain_mut",
-        "guard.state.valid_for(guard.owner.len())&&guard.owner.len()<=guard.owner.capacity()&&guard.owner.capacity()<=guard.owner.max_len()&&guard.owner.max_len()==on_entry(guard.owner.max_len())&&!guard.owner.probe_ptr().is_null()",
+        "guard.state.valid_for(guard.owner.len())&&guard.owner.len()<=guard.owner.capacity()&&guard.owner.capacity()<=guard.owner.max_len()&&guard.owner.max_len()==on_entry(guard.owner.max_len())&&!guard.owner.probe_ptr().is_null()&&(core::mem::size_of::<T>()!=0||guard.owner.probe_ptr().addr()==core::mem::align_of::<T>())",
     ),
 ];
 // The getters those predicates call, as their whole reviewed definitions:

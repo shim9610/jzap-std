@@ -224,7 +224,7 @@ def expected_requires(contract):
     return text + ','
 
 
-def check_instantiated(root, closure, rows=()):
+def check_instantiated(root, closure, rows=(), verified=None, groups=None):
     """Refuse the basis instantiated-kani unless it is established mechanically.
 
     `closure` is the report of scripts/owner_closure.py; `rows` are certificate
@@ -245,6 +245,10 @@ def check_instantiated(root, closure, rows=()):
         context = re.sub(r'\s+', '', site.get('context', ''))
         assert site.get('file') in OWNER_INVARIANT[owner]['files'] and context.startswith(owner + '<T,'), \
             ('instantiated-kani row outside a function of the owner generic in its element', contract, site)
+    # Rule A (instantiated-kani+local), checked separately and listed under its name.
+    if _LOCAL_ROWS:
+        for contract, instantiations in _local.check(root, closure, rows, verified, groups).items():
+            listed[contract] = instantiations
     return listed
 
 
@@ -366,10 +370,7 @@ STATED = {
               f'scripts/owner_closure.py reports BinaryHeap closed as a wrapper of its one Vec word, but no '
               f'maintained requires is exactly the Vec invariant (each adds raw_valid storage and local index '
               f'facts) and every row is in a heap function, so instantiated-kani does not apply',
-              ['heap_descend_caller', 'heap_element_caller', 'heap_move_caller', 'heap_peek_caller',
-               'heap_peek_drop_caller', 'heap_pop_caller', 'heap_push_caller', 'heap_rebuild_caller',
-               'heap_rebuild_tail_caller', 'heap_restore_caller', 'heap_sift_bottom_caller',
-               'heap_sift_up_caller', 'heap_sorted_caller']),
+              ['heap_peek_caller', 'heap_restore_caller']),
     **_stated(f'Ring premises (ring(head, len, cap), reservation results, target capacities) are stated; '
               f'{MIGRATION}:2644-2652',
               ['deque_append_caller', 'deque_clone_slice_caller', 'deque_clone_slices_caller',
@@ -412,20 +413,32 @@ STATED = {
 
 INSTANTIATED = 'instantiated-kani'
 TRUSTED = 'trust-boundary'
+# Rule A of issue #16 (approved by the owner on 2026-11-28), its own name.
+INSTANTIATED_LOCAL = 'instantiated-kani+local'
+import local_acceptance as _local
+_LOCAL_EVIDENCE = ('scripts/local_acceptance.py: the Vec invariant and the storage pairing of rule B (closed in '
+                   'scripts/owner_closure.py, BinaryHeap a wrapper of Vec), local facts discharged at every row by '
+                   'verified maintained callers (tools/memory-proof/binary-heap.verus.rs, whole product bodies '
+                   'pinned in scripts/heap_callers.py) or by actual-Rust Kani precondition-stub harnesses '
+                   '(src/collections/binary_heap/closure_proofs.rs, module local)')
+_LOCAL_ROWS = {name: dict(status=INSTANTIATED_LOCAL, basis=INSTANTIATED_LOCAL, owner='Vec', wrapper='BinaryHeap',
+                          instantiations=['T = () (zero-sized element) for every heap method; the Vec closure '
+                                          'instantiations'], evidence=_LOCAL_EVIDENCE)
+               for name in _local.CONTRACTS}
 _INSTANTIATED_ROWS = {name: dict(status=INSTANTIATED, basis=INSTANTIATED, owner=row['owner'],
                                  instantiations=OWNER_INVARIANT[row['owner']]['instantiations'],
                                  evidence=_EVIDENCE[row['owner']] or _BUFFER_EVIDENCE) for name, row in INSTANTIATED_KANI.items()}
 _TRUSTED_ROWS = {name: dict(status=TRUSTED, basis=TRUSTED, item=item, evidence=TRUST_BOUNDARY_ITEMS[item])
                  for name, item in TRUST_BOUNDARY.items()}
-_tables = (ESTABLISHED, STATED, _INSTANTIATED_ROWS, _TRUSTED_ROWS)
+_tables = (ESTABLISHED, STATED, _INSTANTIATED_ROWS, _TRUSTED_ROWS, _LOCAL_ROWS)
 assert sum(map(len, _tables)) == len(set().union(*_tables)), 'a contract has two premise statuses'
-PREMISES = {**ESTABLISHED, **STATED, **_INSTANTIATED_ROWS, **_TRUSTED_ROWS}
+PREMISES = {**ESTABLISHED, **STATED, **_INSTANTIATED_ROWS, **_TRUSTED_ROWS, **_LOCAL_ROWS}
 
 PROVED = 'solver-and-source-connected'
 STATED_NOT_PROVED = 'premise-stated-not-proved'
 UNPROVED = 'unproved'
 # Every disposition, in report order. The two approved bases are separate.
-DISPOSITIONS = (PROVED, INSTANTIATED, TRUSTED, STATED_NOT_PROVED, UNPROVED)
+DISPOSITIONS = (PROVED, INSTANTIATED, INSTANTIATED_LOCAL, TRUSTED, STATED_NOT_PROVED, UNPROVED)
 
 
 def premise(contract):
@@ -454,6 +467,10 @@ def disposition(contract, verified, closure=None):
         assert closure is not None and closure.get(owner, {}).get('closed') is True, \
             ('instantiated-kani contract whose owner is not closed', contract, owner)
         return INSTANTIATED
+    if status == INSTANTIATED_LOCAL:
+        assert closure is not None and all(closure.get(o, {}).get('closed') is True for o in ('Vec', 'BinaryHeap')), \
+            ('instantiated-kani+local contract whose owner is not closed', contract)
+        return INSTANTIATED_LOCAL
     if status == TRUSTED:
         return TRUSTED
     return STATED_NOT_PROVED

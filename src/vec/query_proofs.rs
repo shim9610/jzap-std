@@ -43,11 +43,18 @@ fn every_valid_zst_owner_query_and_spare_partition() {
 // owner with `closure_owner`, whose only assumption is `closure_invariant`,
 // runs actual owner methods and asserts `closure_invariant` on every return.
 
-/// `len <= cap <= limit`, read from the owner's own words.
+/// `len <= cap <= limit`, read from the owner's own words, and the pointer
+/// pairing of issue #16 rule B at an empty or zero-sized owner: the pointer is
+/// `NonNull::dangling()` (address `align_of::<T>()`), read through `as_ptr`.
+/// The pairing of a nonempty sized owner with its allocation is checked by the
+/// stubbed sized harnesses (`growth_proofs::sized`).
 pub(super) fn closure_invariant<T, P: AllocationPolicy, L: LengthPolicy>(
     owner: &Vec<T, P, L>,
 ) -> bool {
-    owner.len.get() <= owner.cap.get() && owner.cap.get() <= owner.limit.max_len()
+    owner.len.get() <= owner.cap.get()
+        && owner.cap.get() <= owner.limit.max_len()
+        && (mem::size_of::<T>() != 0 && owner.cap.get() != 0
+            || owner.as_ptr().addr() == mem::align_of::<T>())
 }
 
 /// An arbitrary owner of zero-sized elements: every length and capacity word

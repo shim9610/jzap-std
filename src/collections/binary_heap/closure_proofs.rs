@@ -25,6 +25,8 @@ fn closure_heap<P: AllocationPolicy, L: LengthPolicy>(policy: P, limit: L) -> Bi
 fn closure_exit<P: AllocationPolicy, L: LengthPolicy>(heap: &BinaryHeap<(), P, L>, limit: usize) {
     assert!(heap.len() <= heap.capacity() && heap.capacity() <= heap.max_len());
     assert!(heap.max_len() == limit);
+    // Rule B pairing of the Vec word at a zero-sized element, read through as_ptr.
+    assert!(heap.data.as_ptr().addr() == mem::align_of::<()>());
 }
 
 fn closure_valid<T, P: AllocationPolicy, L: LengthPolicy>(heap: &BinaryHeap<T, P, L>) -> bool {
@@ -176,4 +178,86 @@ fn closure_drain_case<L: LengthPolicy>(limit: L) {
 fn closure_drain_retires_the_length() {
     closure_drain_case(LengthLimit::new(kani::any()));
     closure_drain_case(Unlimited);
+}
+
+// Rule A (issue #16, unit 7; approved by the owner on 2026-11-28): the local
+// facts of the heap callers that the product enters with a Vec, shown at the
+// call by a precondition stub. Each harness runs the real product function
+// from an arbitrary heap under the Vec invariant; `-Z stubbing` replaces the
+// callee at the row by a stub whose only check is the pinned fact. The module
+// compiles only with `--cfg jzap_closure_stubs`.
+#[cfg(jzap_closure_stubs)]
+mod local {
+    use super::*;
+
+    /// `heap_push_caller`, local fact `len > 0`: the slice handed to sift_up.
+    unsafe fn sift_up_precondition<T: Ord>(data: &mut [T], _start: usize, _pos: usize) {
+        assert!(data.len() > 0);
+    }
+    /// `heap_pop_caller`, local fact `len > 0`: the Vec handed to pop_nonempty.
+    unsafe fn pop_nonempty_precondition<T: Ord, P: AllocationPolicy, L: LengthPolicy>(
+        data: &mut Vec<T, P, L>,
+    ) -> T {
+        assert!(data.len() > 0);
+        // SAFETY: only instantiated at a zero-sized element; no byte is read.
+        unsafe { data.as_ptr().read() }
+    }
+    /// `heap_peek_drop_caller`, local facts `0 < len` and `len <= vlen`: the
+    /// end handed to sift_down and the length of the restored slice.
+    unsafe fn sift_down_precondition<T: Ord>(data: &mut [T], _pos: usize, end: usize) {
+        assert!(0 < end && end <= data.len());
+    }
+
+    fn push_case<L: LengthPolicy>(limit: L) {
+        let mut heap = closure_heap(Unmetered, limit);
+        let result = heap.try_push(());
+        kani::cover!(result.is_ok());
+    }
+    #[kani::proof]
+    #[kani::stub(crate::collections::binary_heap::core::sift_up, sift_up_precondition)]
+    fn closure_push_establishes_its_local_fact() {
+        push_case(LengthLimit::new(kani::any()));
+        push_case(Unlimited);
+    }
+
+    fn pop_case<L: LengthPolicy>(limit: L) {
+        let mut heap = closure_heap(Unmetered, limit);
+        let popped = heap.pop();
+        kani::cover!(popped.is_some());
+        let mut heap = closure_heap(Unmetered, Unlimited);
+        if let Some(mut guard) = heap.peek_mut() {
+            if kani::any() {
+                let _root: &mut () = &mut guard;
+            }
+            let _value: () = PeekMut::pop(guard);
+        }
+    }
+    #[kani::proof]
+    #[kani::stub(
+        crate::collections::binary_heap::core::pop_nonempty,
+        pop_nonempty_precondition
+    )]
+    fn closure_pop_establishes_its_local_fact() {
+        pop_case(LengthLimit::new(kani::any()));
+        pop_case(Unlimited);
+    }
+
+    fn peek_drop_case<L: LengthPolicy>(limit: L) {
+        let mut heap = closure_heap(Unmetered, limit);
+        if let Some(mut guard) = heap.peek_mut() {
+            if kani::any() {
+                let _root: &mut () = &mut guard;
+            }
+            drop(guard);
+        }
+    }
+    #[kani::proof]
+    #[kani::stub(
+        crate::collections::binary_heap::core::sift_down,
+        sift_down_precondition
+    )]
+    fn closure_peek_drop_establishes_its_local_facts() {
+        peek_drop_case(LengthLimit::new(kani::any()));
+        peek_drop_case(Unlimited);
+    }
 }

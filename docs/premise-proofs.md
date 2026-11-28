@@ -36,6 +36,77 @@ a function of the owner generic in its element type; the certificate fails
 otherwise. The certificate reports the two bases under their own names and
 counts; their rows do not block completion.
 
+### Extended acceptance and storage validity (approved by the owner on 2026-11-28)
+
+Two rule changes were proposed for unit 7 and approved by the owner on
+2026-11-28 ("승인"). They are reported under their own name and are never
+merged into `instantiated-kani` or any other basis.
+
+**B. Storage validity.** The storage premise `raw_valid(s)` of the maintained
+models (`tools/memory-proof/storage.verus.rs`: a non-null, aligned base, a size
+that is a multiple of the alignment, `cap * size <= isize::MAX` and no address
+wrap) is split into:
+
+1. the fixed trust-boundary item "a successful allocation or reallocation
+   returns storage valid for the requested layout" (the allocator), together
+   with item 1 of the list (the compiler: alignment is a power of two and the
+   size of a type is a multiple of its alignment);
+2. the *pairing* of the owner's pointer with its capacity: the pointer is the
+   one returned by the allocation of `layout::array::<T>(cap)`, or it is
+   `NonNull::dangling()` when `cap == 0` or `T` is zero-sized.
+
+In the models, (2) is the spec `paired_storage(s, cap, size)` and (1) is the
+one `external_body` lemma `allocation_item`; the lemma `paired_raw` derives
+`raw_valid(s)` from (1), (2) and the byte bound of the owner invariant. (2) is
+proved as part of the owner closure, reading the pointer only through reviewed
+getters (`Vec::as_ptr`, `VecDeque::probe_ptr`). What that proves, and for which
+instantiations, is recorded with the closure (unit 7, step B): at `T = ()` the
+pointer of every reachable owner is the dangling pointer; on the sized capacity
+paths, which run with the storage functions stubbed, the pointer is the one the
+stub returned for exactly `layout::array::<T>(cap)` (or dangling at `cap == 0`).
+It is not a statement about the real allocator beyond item (1).
+
+**A. Extended acceptance (`instantiated-kani+local`).** A contract has this
+basis only when `scripts/premise_status.py` (`check_instantiated`) establishes
+all of the following; otherwise it stays `premise-stated-not-proved`.
+
+1. *Owner.* The contract names an owner of `scripts/owner_closure.py` (or a
+   wrapper of one), and the report has that owner (and the wrapper) closed,
+   with the pairing invariant of B in its closure.
+2. *Exact split.* The compacted maintained `requires` is a list of conjuncts,
+   each of which is exactly one of: (i) one accepted text form of the closed
+   owner invariant under the contract's word mapping (at most once); (ii) the
+   storage text `paired_storage({s},{cap},size)` of B under the same mapping (at
+   most once); (iii) a local fact listed for the contract. Every listed local
+   fact occurs exactly once; any other conjunct refuses the contract.
+3. *Discharge.* Every local fact is discharged at every bound row by one of:
+   - *verified caller*: every product call of the contract's product function
+     in the owner's or wrapper's non-proof files (a pinned call table, checked
+     against the files and valid only for their reviewed sha256) is inside a
+     product function that has a maintained caller which is verified (in the
+     certificate's verified set), whose whole product body is pinned and
+     matches, whose maintained text reaches the contract (directly or through
+     other maintained callers, pinned call lists), and which is itself
+     accepted under this rule. Verus then proves the whole `requires` at that
+     call from the caller's own `requires`;
+   - *actual-Rust Kani*: a harness registered in a group the certificate runs,
+     admissible by the rules of `owner_closure.py` (its owner from a pinned
+     fixture helper, no other assumption), runs the real product function that
+     holds the row from an arbitrary closed owner, with the product callee at
+     the row replaced by a precondition stub (`-Z stubbing`) whose pinned
+     assertion is the fact, and that harness verifies. A text match of a guard
+     alone is not a discharge.
+4. *Rows.* Every bound row is in a non-proof file of the owner or wrapper,
+   inside a function of the contract's pinned function list.
+5. *Report.* The rows are reported as `instantiated-kani+local` with the owner
+   instantiations and the instantiation of each Kani discharge; the certificate
+   counts them separately and they do not block completion.
+
+Trusted, and stated with every such row: the correspondence of a maintained
+caller to its pinned product body is a text comparison, not a solver proof of
+Rust semantics (as for every maintained caller); the precondition stub is
+compared to its pinned text; items (1) of B and the compiler item.
+
 Every other row is `premise-stated-not-proved` and keeps the certificate
 incomplete. Baseline at `c9c61b7`, from the binding lists without solvers:
 93 connected, 1,078 stated and not proved (1,064 and the 14 String rows),

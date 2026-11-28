@@ -249,7 +249,14 @@ EXTRA = {
     'buffer': [dict(harnesses=['boxed::buffer::proofs::sized::closure_' + name for name in (
         'reserve_preserves_the_invariant_for_every_sized_owner',
         'finish_transfers_exactly_the_length_of_every_sized_owner',
-    )], cfgs=['jzap_closure_stubs'], stubbing=True)],
+    )], cfgs=['jzap_closure_stubs'], stubbing=True),
+        # The two lends of the owner length to init::collection::fill, each made
+        # by its harness (caller_bindings.LEND_HARNESSES pins the statement), for
+        # a source without a bound: the cursor loop runs under its contract.
+        dict(harnesses=['boxed::buffer::proofs::closure_' + name for name in (
+            'collect_lend_preserves_the_invariant_for_every_unit_owner_and_open_source',
+            'collect_rest_lend_preserves_the_invariant_for_every_unit_owner_and_open_source',
+        )], cfgs=['jzap_init_loop_contracts'])],
     'vec-layout-growth': [dict(harnesses=['vec::growth_proofs::sized::closure_' + name for name in (
         'reserve_preserves_the_invariant_of_every_sized_owner',
         'reserve_exact_preserves_the_invariant_of_every_sized_owner',
@@ -581,6 +588,15 @@ CONTROLS = [
      'NonNull::slice_from_raw_parts(self.ptr, self.len.get())',
      'NonNull::slice_from_raw_parts(self.ptr, self.cap.get())',
      'boxed::buffer::proofs::closure_finish_transfers_exactly_the_length_of_every_unit_owner'),
+    # The lend harnesses run the product fill on the lent length: a reservation
+    # that admits one more than it reserved, and a driver that publishes a
+    # length past the span, must each end in a counterexample.
+    ('closure-buffer-collect-lend-end', 'buffer', 'src/boxed/buffer.rs',
+     '            return Ok(needed);', '            return Ok(needed.wrapping_add(1));',
+     'boxed::buffer::proofs::closure_collect_lend_preserves_the_invariant_for_every_unit_owner_and_open_source'),
+    ('closure-buffer-collect-rest-lend-publication', 'buffer', 'src/init/collection.rs',
+     '        *self.output = *self.current;', '        *self.output = Checked::new(usize::MAX);',
+     'boxed::buffer::proofs::closure_collect_rest_lend_preserves_the_invariant_for_every_unit_owner_and_open_source'),
     ('closure-buffer-sized-reserve-layout', 'buffer', 'src/boxed/buffer.rs',
      'let layout = crate::layout::array::<T>(proposed)?;', 'let layout = crate::layout::array::<T>(needed)?;',
      'boxed::buffer::proofs::sized::closure_reserve_preserves_the_invariant_for_every_sized_owner'),

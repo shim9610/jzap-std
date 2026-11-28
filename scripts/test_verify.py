@@ -628,6 +628,43 @@ class OwnerWordTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'unbound owner-word borrow'):
             lend_bindings(list(reversed(rows)), proof)
 
+    def test_lend_harnesses_repeat_the_pinned_product_statements(self):
+        from caller_bindings import LEND_HARNESSES, LENDS, lend_harness_texts
+        rows = lend_harness_texts(ROOT)
+        self.assertEqual([(r['file'], r['function']) for r in rows],
+                         [('src/boxed/buffer.rs', 'collect'), ('src/boxed/buffer.rs', 'collect_rest')])
+        self.assertTrue(set(LEND_HARNESSES) <= set(LENDS))
+        files = ('src/boxed/buffer.rs', 'src/boxed/buffer_proofs.rs')
+        for file, old, new, message in [
+                # The product lend changes its end, its pointer or its order.
+                (files[0], 'fill(self.ptr, &mut self.len, reserved_end, &mut iter)',
+                 'fill(self.ptr, &mut self.len, reserved_end.wrapping_add(0), &mut iter)', 'exactly once'),
+                (files[0], 'fill(self.ptr, &mut self.len, self.cap.get(), &mut iter)',
+                 'fill(self.ptr, &mut self.len, self.len.get(), &mut iter)', 'exactly once'),
+                (files[0], 'let reserved_end = self.reserve(lower, lower)', 'let reserved_end = self.reserve(lower, 0)',
+                 'exactly once'),
+                # The harness lends something else, or lends twice.
+                (files[1], 'fill(owner.ptr, &mut owner.len, owner.cap.get(), &mut iter)',
+                 'fill(owner.ptr, &mut owner.len, owner.cap.get().wrapping_sub(0), &mut iter)', 'exactly once'),
+                (files[1], 'let result = unsafe {\n        crate::init::collection::fill(owner.ptr, &mut owner.len, reserved_end, &mut iter)\n    };',
+                 'let result = unsafe {\n        crate::init::collection::fill(owner.ptr, &mut owner.len, reserved_end, &mut iter);\n'
+                 '        crate::init::collection::fill(owner.ptr, &mut owner.len, reserved_end, &mut iter)\n    };',
+                 'exactly once'),
+                # The reservation moves after the lend in the harness.
+                (files[1], '    let Ok(reserved_end) = owner.reserve(lower, lower) else {',
+                 '    let _ = crate::init::collection::fill(owner.ptr, &mut owner.len, reserved_end, &mut iter);\n'
+                 '    let Ok(reserved_end) = owner.reserve(lower, lower) else {', 'exactly once')]:
+            with tempfile.TemporaryDirectory() as tmp:
+                for name in files:
+                    (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
+                    (Path(tmp) / name).write_text((ROOT / name).read_text())
+                path = Path(tmp) / file
+                text = path.read_text()
+                self.assertEqual(text.count(old), 1, old)
+                path.write_text(text.replace(old, new))
+                with self.assertRaisesRegex(AssertionError, message):
+                    lend_harness_texts(tmp)
+
     def test_borrows_of_other_fields_are_counted_not_bound(self):
         from caller_bindings import lend_bindings
         rows = self.product() + [self.borrow('src/vec/edit.rs', 'try_retain_mut', '&mutg.state'),

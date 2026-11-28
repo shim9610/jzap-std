@@ -139,6 +139,52 @@ LENDS={
 }
 
 
+# The closure harnesses that make a lend themselves (issue #16, unit 1 step 9).
+# A harness cannot enter `collect` or `collect_rest` at the lend, so it repeats
+# the product statement on a `closure_owner`. Each pair is (product text,
+# harness text), compacted and without comments; each occurs exactly once in
+# its function, in this order. The statement that holds the lend is the
+# product statement with `owner.` for `self.`; the other pairs pin the producer
+# of the end argument.
+LEND_HARNESSES={
+ ('src/boxed/buffer.rs','collect'):dict(product='fn collect<',proof='src/boxed/buffer_proofs.rs',
+   harness='boxed::buffer::proofs::closure_collect_lend_preserves_the_invariant_for_every_unit_owner_and_open_source',
+   statements=[('letreserved_end=self.reserve(lower,lower)','letOk(reserved_end)=owner.reserve(lower,lower)else{'),
+               ('crate::init::collection::fill(self.ptr,&mutself.len,reserved_end,&mutiter)',
+                'crate::init::collection::fill(owner.ptr,&mutowner.len,reserved_end,&mutiter)')]),
+ ('src/boxed/buffer.rs','collect_rest'):dict(product='fn collect_rest<',proof='src/boxed/buffer_proofs.rs',
+   harness='boxed::buffer::proofs::closure_collect_rest_lend_preserves_the_invariant_for_every_unit_owner_and_open_source',
+   statements=[('crate::init::collection::fill(self.ptr,&mutself.len,self.cap.get(),&mutiter)',
+                'crate::init::collection::fill(owner.ptr,&mutowner.len,owner.cap.get(),&mutiter)')]),
+}
+
+
+def lend_harness_texts(root):
+    """Check LEND_HARNESSES against the product and proof source; return the rows."""
+    from verify_edit_loops import block
+    root=Path(root);checked=[]
+    def body(text,marker):return compact(re.sub(r'//[^\n]*','',block(text,marker)))
+    def ordered(text,parts,where):
+        position=0
+        for part in parts:
+            assert text.count(part)==1,('lend statement must occur exactly once',where,part)
+            assert text.index(part)>=position,('lend statements out of order',where,part)
+            position=text.index(part)
+    for (file,function),row in LEND_HARNESSES.items():
+        contract,lends=LENDS[(file,function)]
+        product=body((root/file).read_text(),row['product'])
+        harness=body((root/row['proof']).read_text(),'fn '+row['harness'].rsplit('::',1)[1]+'(')
+        ordered(product,[p for p,_ in row['statements']],(file,function))
+        ordered(harness,[h for _,h in row['statements']],row['harness'])
+        holding=[(p,h) for p,h in row['statements'] if any(lend in p for lend in lends)]
+        assert len(holding)==1,('one pinned statement holds the lend',file,function)
+        p,h=holding[0]
+        assert h==p.replace('self.','owner.'),('the harness lend differs from the product lend',file,function)
+        assert all(lend in p and lend.replace('self.','owner.') in h for lend in lends),(file,function)
+        checked.append(dict(file=file,function=function,contract=contract,harness=row['harness'],statements=row['statements']))
+    return checked
+
+
 def area(row):
     """The binding domain of one row; `foundation` is the domain of this file."""
     from verify_string import is_string
@@ -328,6 +374,7 @@ def check(root,generated,rows,unsafe_rows,kani_harnesses):
     for key,(contract,expected) in WRITES.items():assert seen.get(key)==len(expected),('missing expected publication',key)
     lends,other_borrows=lend_bindings(inventory_rows,proof)
     bindings+=lends
+    lend_harness_texts(root)
     assert not [r for r in rows if r['kind']=='compaction_driver_import'], 'unbound compaction driver import'
     entries=[r for r in rows if r['kind']=='compaction_driver_reference']
     expected_entries={

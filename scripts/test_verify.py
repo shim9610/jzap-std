@@ -4,6 +4,9 @@ import contextlib,io,json,sys,tempfile,unittest
 from unittest.mock import patch
 from pathlib import Path
 from verify import ROOT,AREAS,CHECKS,FULL,execute,plan,prepare_python_modules
+import re,shutil
+def compact_text(text):
+    return re.sub(r'\s+', '', text)
 class ReplayTests(unittest.TestCase):
     def test_throughput_profiles_keep_loop_alignment_opt_in(self):
         import importlib.util
@@ -748,9 +751,20 @@ class OwnerWordTests(unittest.TestCase):
         result = owner_closure.report(ROOT, ROOT / 'target/verification/test-owner-closure')
         self.assertTrue(result['Buffer']['closed'])
         self.assertEqual(result['Buffer']['counts'], {'harness': 8})
+        # Issue #16, unit 4: the retain store has no harness (step C), so
+        # VecDeque is not closed, and through the joint closure neither is Vec.
         self.assertFalse(result['Vec']['closed'])
+        self.assertFalse(result['VecDeque']['closed'])
         self.assertEqual([(b['file'], b['function'], b['disposition']) for b in result['Vec']['blocking']],
-                         [('src/deque.rs', 'into_vec', 'other-unit:4'), ('src/deque.rs', 'try_from_std_in', 'other-unit:4')])
+                         [('src/deque.rs', 'into_vec', 'uncovered')])
+        self.assertEqual([(b['file'], b['function'], b['disposition']) for b in result['VecDeque']['blocking']],
+                         [('src/deque.rs', 'from_vec', 'uncovered'), ('src/deque/edit.rs', 'drop', 'uncovered')])
+        self.assertEqual(result['VecDeque']['counts'], {'harness': 40, 'uncovered': 2, 'unobservable': 2})
+        self.assertEqual(sum(bool(s.get('dead')) for s in result['VecDeque']['sites']), 15)
+        calls = {s['function']: s for s in result['Vec']['sites'] if s['kind'] == 'call' and s['file'] == 'src/deque.rs'}
+        self.assertEqual(sorted(calls), ['into_vec', 'try_from_std_in'])
+        self.assertEqual(calls['try_from_std_in']['disposition'], 'harness')
+        self.assertIn('from_vec', calls['try_from_std_in']['observed'])
         finish = [s for s in result['Vec']['sites'] if s['function'] == 'try_finish']
         self.assertEqual(len(finish), 1)
         self.assertEqual(finish[0]['path_assumption']['assumption'], 'tail_len != 0')
@@ -782,11 +796,72 @@ class OwnerWordTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, message):
                 owner_closure.report(ROOT, out, table=change)
 
+    def test_owner_closure_checks_the_deque_pins(self):
+        import owner_closure
+        site = lambda file, line, function, expression: dict(file=file, line=line, function=function,
+                                                           expression=expression, key=(file, function, expression))
+        files = ('src/deque.rs', 'src/deque/iter.rs', 'src/vec/ownership.rs', 'src/vec.rs')
+        for file, old, new, check, message in [
+                # A dead store whose guard is dropped, or a return that no longer precedes it.
+                ('src/deque.rs', '        if mem::size_of::<T>() != 0 {\n            self.head = Checked::new(geometry::retreat(',
+                 '        if true {\n            self.head = Checked::new(geometry::retreat(',
+                 ('dead', 'try_push_front', 'self.head=Checked::new(geometry::retreat(self.head.get(),1,self.capacity()))',
+                  owner_closure.ZST_GUARD), 'not inside its guard'),
+                ('src/deque.rs', '        if mem::size_of::<T>() == 0 || new >= self.capacity() {',
+                 '        if new >= self.capacity() {',
+                 ('dead', 'try_shrink_to', 'self.cap=cap', owner_closure.ZST_RETURN), 'no early return'),
+                # IntoIter::fold uses self after the guard.
+                ('src/deque/iter.rs', '        b.iter().fold(value, consume)\n    }',
+                 '        let _ = self.len();\n        b.iter().fold(value, consume)\n    }', ('fold',), 'shape changed'),
+                # from_vec no longer copies the words verbatim.
+                ('src/deque.rs', '            len: Checked::new(len),\n            head: Checked::new(0),',
+                 '            len: Checked::new(len.min(1)),\n            head: Checked::new(0),',
+                 ('observed',), 'pinned body changed'),
+                # A Vec getter that closure_vec_owner reads changes.
+                ('src/vec.rs', '    pub fn capacity(&self) -> usize {\n        self.cap.get()',
+                 '    pub fn capacity(&self) -> usize {\n        self.len.get()', ('getters',), 'Vec getter')]:
+            with tempfile.TemporaryDirectory() as tmp:
+                shutil.copytree(ROOT / 'src', Path(tmp) / 'src')
+                path = Path(tmp) / file
+                text = path.read_text()
+                self.assertEqual(text.count(old), 1, old)
+                path.write_text(text.replace(old, new))
+                lines = (ROOT / file).read_text().split('\n')
+                with self.assertRaisesRegex(AssertionError, message):
+                    if check[0] == 'dead':
+                        start = next(i for i, l in enumerate(lines) if 'fn ' + check[1] + '(' in l)
+                        line = next(i + 1 for i, l in enumerate(lines) if i > start and compact_text(l).startswith(check[2][:12]))
+                        owner_closure.check_dead(tmp, site(file, line, check[1], check[2]), check[3])
+                    elif check[0] == 'fold':
+                        owner_closure.check_retire_fold(tmp)
+                    elif check[0] == 'observed':
+                        line = next(i + 1 for i, l in enumerate(lines) if 'pub fn try_from_std_in(' in l) + 5
+                        owner_closure.check_observed(tmp, site(file, line, 'try_from_std_in', 'Vec::from_raw_parts'), 'from_vec')
+                    else:
+                        owner_closure.check_fixtures(tmp)
+
+    def test_owner_closure_is_a_joint_fixpoint(self):
+        # Mechanism only: with the retain store mapped to an unrelated VecDeque
+        # harness both owners close, each through the other's invariant.
+        import owner_closure
+        out = ROOT / 'target/verification/test-owner-closure'
+        table = dict(owner_closure.SITES)
+        table[owner_closure.RETAIN_SITE] = owner_closure.h(owner_closure.Q + 'truncate_preserves_the_invariant')
+        result = owner_closure.report(ROOT, out, table=table)
+        self.assertTrue(result['Vec']['closed'] and result['VecDeque']['closed'])
+        self.assertEqual((result['Vec']['depends_on'], result['VecDeque']['depends_on']), (['VecDeque'], ['Vec']))
+        # A trust-boundary or other-unit entry for the Vec call still opens both.
+        table[('Vec', 'call', 'src/deque.rs', 'VecDeque', 'into_vec', 'Vec::from_raw_parts', 1)] = owner_closure.d('other-unit:4', 'x')
+        result = owner_closure.report(ROOT, out, table=table)
+        self.assertFalse(result['Vec']['closed'] or result['VecDeque']['closed'])
+
     def test_owner_closure_defect_controls_are_detected(self):
         import owner_closure
         results = owner_closure.controls(ROOT, ROOT / 'target/verification/test-owner-closure')
         self.assertEqual([r['name'] for r in results],
-                         ['unmapped-write', 'harness-assumption', 'harness-out-of-group', 'other-unit-site'])
+                         ['unmapped-write', 'harness-assumption', 'harness-out-of-group', 'other-unit-site',
+                          'deque-unmapped-write', 'retain-uncovered', 'into-vec-harness-assumption',
+                          'from-vec-harness-assumption'])
         self.assertTrue(all(r['detected'] for r in results), results)
 
     def test_borrows_of_other_fields_are_counted_not_bound(self):

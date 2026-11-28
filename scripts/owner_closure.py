@@ -24,6 +24,13 @@ A harness whose body assumes more is admissible only when it is listed in
 `EXTRA_ASSUMPTION`, and then it is evidence only for the site that its entry
 names under `path_assumption` with a checked reason.
 
+Owners are decided jointly (issue #16, unit 4): a harness that takes its
+state from the helper of another owner (the VecDeque `into_vec` harness
+assumes the VecDeque invariant to show the Vec invariant, its `from_vec`
+harness the converse) counts only while that owner is closed; the closed set
+is the greatest fixpoint. A store that cannot execute at T = () is mapped to
+the harness of its function with a checked guard (`check_dead`).
+
 Not decided here: an early `return` on a nondeterministic value restricts the
 inputs like an assumption and is not detected by this text check; the
 scanner's own channel limits (docs/premise-proofs.md, step 3) apply.
@@ -52,12 +59,22 @@ OWNERS = {
                    invariant=('src/boxed/buffer_proofs.rs',
                               'owner.len.get()<=owner.cap.get()&&crate::layout::array::<T>(owner.cap.get())==Ok(owner.layout)'),
                    constructor_calls=()),
+    # Issue #16, unit 4. `ptr` is not an invariant word; `limit` is never assigned.
+    'VecDeque': dict(struct=('src/deque.rs', 'VecDeque'), words=('head', 'len', 'cap', 'limit'),
+                     invariant=('src/deque/closure_proofs.rs',
+                                'owner.len.get()<=owner.cap.get()&&owner.cap.get()<=owner.limit.max_len()'
+                                '&&crate::layout::array::<T>(owner.cap.get()).is_ok()'
+                                '&&ifmem::size_of::<T>()==0||owner.cap.get()==0{owner.head.get()==0}'
+                                'else{owner.head.get()<owner.cap.get()}'),
+                     constructor_calls=()),
 }
 
 
 def owner_file(owner, file):
     if owner == 'Vec':
         return file == 'src/vec.rs' or file.startswith('src/vec/')
+    if owner == 'VecDeque':
+        return file == 'src/deque.rs' or file.startswith('src/deque/')
     return file == 'src/boxed/buffer.rs'
 
 
@@ -67,6 +84,7 @@ PROOF_FILES = {
     'vec::growth_proofs::': 'src/vec/growth_proofs.rs',
     'vec::edit::panic_proofs::': 'src/vec/edit_proofs.rs',
     'vec::ownership::panic_proofs::': 'src/vec/ownership_proofs.rs',
+    'deque::proofs::closure::': 'src/deque/closure_proofs.rs',
 }
 # The fixture helpers a closure harness may take its owner (or guard) from,
 # each with the exact assumptions it makes: the owner invariant, or the pair
@@ -78,7 +96,29 @@ HELPERS = {
     ('src/vec/edit_proofs.rs', 'closure_drain'): ['kani::assume(span.is_ok())', 'kani::assume(closure_drain_invariant(&drain))'],
     ('src/vec/edit_proofs.rs', 'closure_extract'): ['kani::assume(state.is_ok())', 'kani::assume(closure_extract_invariant(&extract))'],
     ('src/boxed/buffer_proofs.rs', 'closure_owner'): ['kani::assume(layout.is_ok())', 'kani::assume(closure_invariant(&owner))'],
+    ('src/deque/closure_proofs.rs', 'closure_deque'): ['kani::assume(closure_invariant(&owner))'],
+    # A Vec under the Vec invariant, read through the getters pinned in VEC_GETTERS.
+    ('src/deque/closure_proofs.rs', 'closure_vec_owner'):
+        ['kani::assume(owner.len()<=owner.capacity()&&owner.capacity()<=owner.max_len())'],
 }
+# The owner whose invariant each helper assumes. A harness that uses a helper
+# is evidence for a site only while that owner is closed (the joint closure in
+# `report`): the deque's into_vec harness assumes the VecDeque invariant to
+# show the Vec invariant, its from_vec harness the converse.
+HELPER_OWNERS = {
+    ('src/vec/query_proofs.rs', 'closure_owner'): 'Vec',
+    ('src/vec/growth_proofs.rs', 'closure_sized_owner'): 'Vec',
+    ('src/vec/ownership_proofs.rs', 'closure_iter'): 'Vec',
+    ('src/vec/edit_proofs.rs', 'closure_drain'): 'Vec',
+    ('src/vec/edit_proofs.rs', 'closure_extract'): 'Vec',
+    ('src/boxed/buffer_proofs.rs', 'closure_owner'): 'Buffer',
+    ('src/deque/closure_proofs.rs', 'closure_deque'): 'VecDeque',
+    ('src/deque/closure_proofs.rs', 'closure_vec_owner'): 'Vec',
+}
+# The Vec getters closure_vec_owner reads, as whole compacted definitions in src/vec.rs.
+VEC_GETTERS = ['#[inline]pubfnlen(&self)->usize{self.len.get()}',
+               '#[inline]pubfncapacity(&self)->usize{self.cap.get()}',
+               '#[inline]pubfnmax_len(&self)->usize{self.limit.max_len()}']
 # The pair invariants the guard helpers assume, pinned as text.
 PAIR_INVARIANTS = {
     ('src/vec/edit_proofs.rs', 'closure_drain_invariant'):
@@ -116,11 +156,15 @@ O = 'vec::ownership::panic_proofs::closure_'
 SIZED_TYPES = ['u8', 'u64', '[u64; 200]', 'Aligned']
 
 
-def h(*names, sized=(), note=None, path_assumption=None, fresh=None):
+def h(*names, sized=(), note=None, path_assumption=None, fresh=None, dead=None, observed=None):
     # `fresh`: the written owner is created in the same function by the pinned
     # statement, so a harness of that function needs no fixture helper.
+    # `dead`: the store does not execute at T = () (checked by `check_dead`);
+    # the harness runs its function there, but no mutation of the store can be
+    # detected at this instantiation. `observed`: the words the call produces
+    # are read by the harness through the pinned function named here.
     return dict(disposition='harness', harnesses=list(names), sized=list(sized), note=note,
-                path_assumption=path_assumption, fresh=fresh)
+                path_assumption=path_assumption, fresh=fresh, dead=dead, observed=observed)
 
 
 def d(disposition, reason, item=None):
@@ -138,6 +182,18 @@ PUSH_SIZED = ['vec::growth_proofs::sized::closure_push_growth_preserves_the_inva
 EXCHANGE = [M + 'buffer_exchange_preserves_the_invariant_of_both_owners',
             M + 'buffer_exchange_preserves_the_invariant_of_both_unlimited_owners']
 UNIT_STORAGE = M + 'adopting_constructors_establish_the_invariant_for_unit_storage'
+Q = 'deque::proofs::closure::closure_'
+DEQUE_SIZED = ['deque::proofs::closure::sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner']
+# Stores that do not execute at a zero-sized element: (kind, guard text).
+# 'enclosed': every occurrence of the store is inside the block the guard
+# opens; 'return': a statement `if <guard> || .. { return ..; }` at the top
+# of the function body precedes the store. 'head-zero' guards rest on the
+# invariant itself at T = () (head == 0, so the ring is one segment).
+ZST_GUARD = ('enclosed', 'ifmem::size_of::<T>()!=0{', 'the store is inside `if mem::size_of::<T>() != 0`')
+ZST_RETURN = ('return', 'mem::size_of::<T>()==0', 'the function returns before the store when T is zero-sized')
+KIND_GUARD = ('enclosed', 'ifkind!=0{', 'inside `if kind != 0`; at T = () the invariant gives head == 0, so the '
+              'ring is one segment and contiguous_kind is 0')
+HEAD_GUARD = ('enclosed', 'ifself.head.get()!=0{', 'inside `if self.head.get() != 0`; at T = () the invariant gives head == 0')
 
 # (owner, kind, file, context, function, expression, occurrence) -> entry.
 # Expressions are compacted (no whitespace); occurrences count from 1 among
@@ -164,9 +220,12 @@ SITES = {
     ('Vec', 'call', 'src/vec/convenience.rs', 'Vec', 'try_into_flattened', 'Vec::from_raw_parts', 1):
         h(M + 'flatten_establishes_the_invariant_of_the_element_owner', note='at [(); N], N = 0, 1, 3, usize::MAX'),
     ('Vec', 'call', 'src/deque.rs', 'VecDeque', 'into_vec', 'Vec::from_raw_parts', 1):
-        d('other-unit:4', 'the words are the VecDeque ring words after normalization; their invariant is unit 4'),
+        h(Q + 'into_vec_establishes_the_vec_invariant',
+          note='the deque owner comes from closure_deque (owner VecDeque); the harness asserts the Vec invariant'),
     ('Vec', 'call', 'src/deque.rs', 'VecDeque', 'try_from_std_in', 'Vec::from_raw_parts', 1):
-        d('other-unit:4', 'the words come from the VecDeque adoption of a std value; unit 4'),
+        h(Q + 'adopting_constructor_establishes_the_invariant_for_unit_storage', observed='from_vec',
+          note='at (); for a sized value vec.len() and cap = source.capacity() rest on the trust boundary '
+               'std-adoption'),
     ('Vec', 'call', 'src/string/convert.rs', 'String', 'from_raw_parts', 'Vec::from_raw_parts', 1):
         d('not-instantiable', 'builds a Vec<u8> only (String::from_raw_parts takes NonNull<u8>); it forwards the '
           'words of the public unsafe fn String::from_raw_parts, whose contract states that every '
@@ -257,6 +316,110 @@ SITES = {
     ('Vec', 'lend', 'src/vec/edit.rs', '', 'stage_batch', '&mutextra.len', 1): h(E + 'stage_batch_preserves_the_invariant'),
     **{('Vec', 'lend', 'src/vec.rs', 'Vec', 'try_reuse_larger_buffer', expression, 1): h(*EXCHANGE)
        for expression in ('&mutself.ptr', '&mutother.ptr', '&mutself.len', '&mutother.len', '&mutself.cap', '&mutother.cap')},
+    # VecDeque (issue #16, unit 4). Constructors.
+    ('VecDeque', 'constructor', 'src/deque.rs', 'VecDeque', 'new', 'Self{ptr,cap,head,len,policy,limit,marker}', 1):
+        h(Q + 'empty_constructors_establish_the_invariant', note='instantiated at (), u8, u64, [u64; 200] and a 64-aligned type'),
+    ('VecDeque', 'constructor', 'src/deque.rs', 'VecDeque', 'empty', 'Self{ptr,cap,head,len,policy,limit,marker}', 1):
+        h(Q + 'empty_constructors_establish_the_invariant', Q + 'capacity_constructors_establish_the_invariant',
+          Q + 'split_off_preserves_the_invariant_of_both_owners', sized=DEQUE_SIZED),
+    ('VecDeque', 'constructor', 'src/deque.rs', 'VecDeque', 'from_vec', 'Self{ptr,len,head,cap,policy,limit,marker}', 1):
+        h(Q + 'from_vec_establishes_the_invariant',
+          note='the Vec comes from closure_vec_owner (owner Vec): from_vec is reached with every Vec state'),
+    ('VecDeque', 'constructor', 'src/deque/traits.rs', 'VecDeque', 'clone_to', 'Self{ptr,cap,head,len,policy,limit,marker}', 1):
+        h(Q + 'clone_establishes_the_invariant_of_the_copy', note='the bitwise path at (); the copy is published by its own store'),
+    # VecDeque capacity and head of grow.
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'grow', 'self.head=Checked::new(head)', 1):
+        h(Q + 'reserve_preserves_the_invariant', Q + 'push_preserves_the_invariant', Q + 'insert_preserves_the_invariant',
+          note='at () grown_head(0, len, old, new) is 0'),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'grow', 'self.cap=cap', 1):
+        h(Q + 'reserve_preserves_the_invariant', Q + 'push_preserves_the_invariant', Q + 'insert_preserves_the_invariant',
+          sized=DEQUE_SIZED, note='sized only from an empty owner (old == 0), through the capacity constructors'),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'try_shrink_to', 'self.cap=cap', 1):
+        h(Q + 'shrink_preserves_the_invariant_of_a_unit_owner', dead=ZST_RETURN),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'try_shrink_to', 'self.head=Checked::new(0)', 1):
+        h(Q + 'shrink_preserves_the_invariant_of_a_unit_owner', dead=ZST_RETURN),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'try_shrink_to', 'self.head=Checked::new(head)', 1):
+        h(Q + 'shrink_preserves_the_invariant_of_a_unit_owner', dead=ZST_RETURN),
+    # VecDeque length and head.
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'try_push_back', 'self.len=Checked::new(add(len,1))', 1):
+        h(Q + 'push_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'try_push_front',
+     'self.head=Checked::new(geometry::retreat(self.head.get(),1,self.capacity()))', 1):
+        h(Q + 'push_preserves_the_invariant', dead=ZST_GUARD),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'try_push_front', 'self.len=Checked::new(add(self.len(),1))', 1):
+        h(Q + 'push_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'pop_front',
+     'self.len=Checked::new(geometry::after_pop(self.len(),self.capacity()))', 1): h(Q + 'pop_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'pop_front',
+     'self.head=Checked::new(geometry::allocated_physical(self.head.get(),1,self.capacity(),))', 1):
+        h(Q + 'pop_preserves_the_invariant', dead=ZST_GUARD),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'pop_back', 'self.len=Checked::new(last)', 1): h(Q + 'pop_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'truncate', 'self.len=Checked::new(len)', 1):
+        h(Q + 'truncate_preserves_the_invariant'),
+    **{('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'make_contiguous', expression, occurrence):
+       h(Q + 'make_contiguous_preserves_the_invariant', dead=KIND_GUARD)
+       for expression, occurrence in (('self.head=Checked::new(0)', 1), ('self.head=Checked::new(b)', 1),
+                                      ('self.head=Checked::new(free)', 1), ('self.head=Checked::new(0)', 2))},
+    ('VecDeque', 'write', 'src/deque.rs', 'VecDeque', 'normalize', 'self.head=Checked::new(0)', 1):
+        h(Q + 'into_vec_establishes_the_vec_invariant', dead=HEAD_GUARD),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_insert_mut',
+     'self.head=Checked::new(geometry::retreat(self.head.get(),1,self.capacity()))', 1):
+        h(Q + 'insert_preserves_the_invariant', dead=ZST_GUARD),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_insert_mut', 'self.len=Checked::new(add(self.len(),1))', 1):
+        h(Q + 'insert_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'remove',
+     'self.head=Checked::new(geometry::allocated_physical(self.head.get(),1,self.capacity(),))', 1):
+        h(Q + 'remove_preserves_the_invariant', dead=ZST_GUARD),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'remove', 'self.len=Checked::new(sub(self.len(),1))', 1):
+        h(Q + 'remove_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'rotate_left',
+     'self.head=Checked::new(geometry::allocated_physical(self.head.get(),n,self.capacity(),))', 1):
+        h(Q + 'rotate_preserves_the_invariant', dead=ZST_RETURN),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'rotate_right', 'self.head=Checked::new(head)', 1):
+        h(Q + 'rotate_preserves_the_invariant', dead=ZST_RETURN),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_append', 'self.len=Checked::new(add(len,more))', 1):
+        h(Q + 'append_preserves_the_invariant_of_both_owners'),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_append', 'other.len=Checked::new(0)', 1):
+        h(Q + 'append_preserves_the_invariant_of_both_owners'),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_split_off', 'result.len=Checked::new(count)', 1):
+        h(Q + 'split_off_preserves_the_invariant_of_both_owners',
+          fresh='letmutresult=Self::empty(self.policy.try_clone()?,self.limit);'),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'VecDeque', 'try_split_off', 'self.len=Checked::new(at)', 1):
+        h(Q + 'split_off_preserves_the_invariant_of_both_owners'),
+    ('VecDeque', 'write', 'src/deque/edit.rs', 'Repair', 'drop', 'self.owner.len=Checked::new(self.state.restored_len())', 1):
+        d('uncovered', 'reached after the `while let` of try_retain_mut, which runs for every length at T = (); the '
+          'loop contract of the design (unit 4 step C) does not verify: the inferred loop write set casts the '
+          'owner pointer to the Compaction type and havocs the words at its read and write offsets, ptr and cap; '
+          'only a ptr getter, which VecDeque does not have, could restate ptr (docs/premise-proofs.md, unit 4)'),
+    ('VecDeque', 'write', 'src/deque/iter.rs', 'VecDeque', 'drain', 'self.len=Checked::new(start)', 1):
+        h(Q + 'drain_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque/iter.rs', 'Retire', 'drop',
+     'self.owner.len=Checked::new(sub(self.owner.len(),self.consumed))', 1):
+        d('unobservable', 'reached only at the end of IntoIter::fold, after core slice folds over the whole ring; fold '
+          'consumes the IntoIter, so after the guard only the drop of the consumed owner runs (pinned by '
+          'check_retire_fold)'),
+    ('VecDeque', 'write', 'src/deque/iter.rs', 'Retire', 'drop',
+     'self.owner.head=Checked::new(geometry::physical(self.owner.head.get(),self.consumed,self.owner.capacity(),))', 1):
+        d('unobservable', 'as the length store of Retire::drop; also inside `if mem::size_of::<T>() != 0`'),
+    ('VecDeque', 'write', 'src/deque/iter.rs', 'Finish', 'drop',
+     'd.owner.head=Checked::new(geometry::physical(d.owner.head.get(),removed,d.owner.capacity(),))', 1):
+        h(Q + 'drain_preserves_the_invariant', dead=ZST_GUARD),
+    ('VecDeque', 'write', 'src/deque/iter.rs', 'Finish', 'drop', 'd.owner.len=Checked::new(add(d.start,d.tail))', 1):
+        h(Q + 'drain_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'clone_to', 'result.len=Checked::new(self.len())', 1):
+        h(Q + 'clone_establishes_the_invariant_of_the_copy'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'try_clone_from', 'self.len=Checked::new(0)', 1):
+        h(Q + 'clone_from_preserves_the_invariant_of_both_owners'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'try_clone_from', 'self.head=Checked::new(0)', 1):
+        h(Q + 'clone_from_preserves_the_invariant_of_both_owners'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'try_clone_from', 'self.len=Checked::new(source.len())', 1):
+        h(Q + 'clone_from_preserves_the_invariant_of_both_owners'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'try_extend_copy', 'self.head=Checked::new(0)', 1):
+        h(Q + 'extend_copy_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'try_extend_copy', 'self.len=Checked::new(add(len,values.len()))', 1):
+        h(Q + 'extend_copy_preserves_the_invariant'),
+    ('VecDeque', 'write', 'src/deque/traits.rs', 'VecDeque', 'try_resize', 'self.len=Checked::new(new_len)', 1):
+        h(Q + 'resize_preserves_the_invariant'),
 }
 
 
@@ -315,6 +478,7 @@ PROOF_SETS = {
     'Vec': ['src/vec/query_proofs.rs', 'src/vec/metadata_proofs.rs', 'src/vec/growth_proofs.rs',
             'src/vec/edit_proofs.rs', 'src/vec/ownership_proofs.rs'],
     'Buffer': ['src/boxed/buffer_proofs.rs'],
+    'VecDeque': ['src/deque/closure_proofs.rs'],
 }
 
 
@@ -337,6 +501,10 @@ def check_fixtures(root):
     for (file, name), text in PAIR_INVARIANTS.items():
         bodies = functions(root, file).get(name, [])
         assert len(bodies) == 1 and compact(bodies[0][0]) == text, ('pair invariant changed', file, name)
+    assert set(HELPER_OWNERS) == set(HELPERS) and set(HELPER_OWNERS.values()) <= set(OWNERS), 'helper owner table changed'
+    vec = compact(strip_comments((Path(root) / 'src/vec.rs').read_text()))
+    for getter in VEC_GETTERS:
+        assert vec.count(getter) == 1, ('Vec getter read by closure_vec_owner changed', getter)
 
 
 def check_extra_assumptions(root, groups):
@@ -364,7 +532,8 @@ def check_privacy(root):
         assert fields and not [f for f in fields if f.startswith('pub')], ('owner field not private', owner, fields)
         assert {f.split(':')[0].strip() for f in fields} >= set(row['words']), ('owner words changed', owner, fields)
     # Child modules of the owner modules are proof files only, or files inside them.
-    for path in [Path(root) / 'src/vec.rs', *sorted((Path(root) / 'src/vec').rglob('*.rs')), Path(root) / 'src/boxed/buffer.rs']:
+    for path in [Path(root) / 'src/vec.rs', *sorted((Path(root) / 'src/vec').rglob('*.rs')), Path(root) / 'src/boxed/buffer.rs',
+                 Path(root) / 'src/deque.rs', *sorted((Path(root) / 'src/deque').rglob('*.rs'))]:
         for target in re.findall(r'#\[path\s*=\s*"([^"]+)"\]', strip_comments(path.read_text())):
             assert target.endswith('proofs.rs'), ('owner module includes another file', path, target)
 
@@ -372,11 +541,13 @@ def check_privacy(root):
 ASSUME = r'kani::assume\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)'
 
 
-def admissible(root, harness, kind, cache, fresh=False, allowed=()):
+def admissible(root, harness, kind, cache, fresh=False, allowed=(), uses=None):
     """None when the harness is admissible for a site of this kind, else the reason.
 
     `allowed` lists assumptions (compacted text) that an entry's path
-    assumption accepts; any other assumption makes the harness inadmissible."""
+    assumption accepts; any other assumption makes the harness inadmissible.
+    `uses`, when given, receives the owners of the fixture helpers the harness
+    calls (HELPER_OWNERS)."""
     prefix = max((p for p in PROOF_FILES if harness.startswith(p)), key=len, default=None)
     if prefix is None:
         return 'no proof file is registered for its module'
@@ -401,23 +572,25 @@ def admissible(root, harness, kind, cache, fresh=False, allowed=()):
             for target in resolve(sources, f, scope, called):
                 if (target[0], called) in helpers:
                     used.add(called)
+                    if uses is not None:
+                        uses.add(HELPER_OWNERS[(target[0], called)])
                 else:
                     pending.append(target)
     text = compact(''.join(texts))
     extra = re.findall(ASSUME, text)
     if 'any_where' in text or text.count('kani::assume') != len(extra) or sorted(extra) != sorted(allowed):
         return 'assumes more than a fixture helper'
-    if (re.search(r'(?<![\w:])(Vec|Buffer)(::<[^{}]*>)?\{', text)
+    if (re.search(r'(?<![\w:])(Vec|Buffer|VecDeque)(::<[^{}]*>)?\{', text)
             or re.search(r'(?<![\w:])(Vec|Buffer)(::<.*?>)?::from_raw_parts\(', text) or re.search(r'(?<![\w.])units\(', text)):
         return 'builds an owner outside the fixture helpers'
     # A harness that stores to or lends an owner word itself narrows the state
     # like an assumption; the one exception is the pinned lend statement of a
     # harness in caller_bindings.LEND_HARNESSES, which repeats the product lend.
     from caller_bindings import LEND_HARNESSES
-    lend = r'&mut(?:raw)?\w+(?:\.\w+)*\.(?:len|cap|limit|layout|ptr)\b'
+    lend = r'&mut(?:raw)?\w+(?:\.\w+)*\.(?:len|cap|limit|layout|ptr|head)\b'
     pinned = sorted(x for row in LEND_HARNESSES.values() if row['harness'] == harness
                     for _, h in row['statements'] for x in re.findall(lend, h))
-    if re.search(r'\.(?:len|cap|limit|layout|ptr)[-+*/]?=(?!=)', text):
+    if re.search(r'\.(?:len|cap|limit|layout|ptr|head)[-+*/]?=(?!=)', text):
         return 'stores to an owner word itself'
     if sorted(re.findall(lend, text)) != pinned:
         return 'lends an owner word itself'
@@ -497,6 +670,13 @@ def sites(root, out):
                 found.append(dict(owner=owner, kind='write', file=r['file'], context=compact(r['context']).split('<')[0],
                                   full_context=compact(r['context']),
                                   function=r['function'], expression=compact(r['expression']), line=r['line']))
+    # caller_bindings binds lends of ptr/len/cap/limit/layout and refuses them
+    # outside the foundation files; `head` is a VecDeque word only, so a borrow
+    # or pattern binding of any VecDeque word is refused here.
+    for r in rows:
+        if r['kind'] in ('field_borrow', 'field_pattern') and owner_file('VecDeque', r['file']):
+            members = r['detail'].get('members', [r['detail'].get('member')])
+            assert not set(members) & set(OWNERS['VecDeque']['words']), ('borrow of a VecDeque word', r['file'], r['line'])
     lends, _ = lend_bindings(rows, lambda name: name)
     for b in lends:
         r = b['site']
@@ -536,6 +716,75 @@ def check_path_assumption(root):
             'tail_len != 0 beyond its helpers')
 
 
+def enclosing_body(root, site):
+    """The comment-stripped, compacted body of the function that holds the site."""
+    text = strip_comments((Path(root) / site['file']).read_text())
+    offset = sum(len(line) + 1 for line in text.split('\n')[:site['line'] - 1])
+    heads = [m for m in re.finditer(r'\bfn\s+' + site['function'] + r'\b', text) if m.start() < offset]
+    assert heads, ('enclosing function not found', site['key'])
+    return compact(block(text, heads[-1].end()))
+
+
+def check_dead(root, site, dead):
+    """The store does not execute at T = (): the guard text is checked, the argument recorded."""
+    kind, guard, argument = dead
+    body = enclosing_body(root, site)
+    expression = site['expression']
+    total = body.count(expression)
+    assert total >= 1, ('dead store not found in its function', site['key'])
+    if kind == 'enclosed':
+        guarded, start = 0, 0
+        while (i := body.find(guard, start)) >= 0:
+            guarded += block(body, i + len(guard) - 1).count(expression)
+            start = i + len(guard)
+        assert guarded == total, ('store not inside its guard', site['key'], guard)
+    else:
+        first = body.index(expression)
+        found = False
+        for m in re.finditer(r'if([^{};]*)\{return[^{};]*;\}', body[:first]):
+            depth = body[:m.start()].count('{') - body[:m.start()].count('}')
+            if depth == 0 and guard in m.group(1).split('||'):
+                found = True
+        assert found, ('no early return before the store', site['key'], guard)
+    return 'not executed at T = (): ' + argument
+
+
+def check_retire_fold(root):
+    """IntoIter::fold consumes its iterator and ends with the second slice fold."""
+    text = strip_comments((Path(root) / 'src/deque/iter.rs').read_text())
+    heads = [m for m in re.finditer(r'\bfn\s+fold<B,\s*F:\s*FnMut\(B,\s*T\)\s*->\s*B>\(mut self,', text)]
+    assert len(heads) == 1, 'IntoIter::fold signature changed'
+    body = compact(block(text, heads[0].end()))
+    guard = 'letmutguard=Retire{owner:&mutself.owner,consumed:0,};'
+    assert body.count(guard) == 1 and body.endswith('letvalue=a.iter().fold(initial,&mutconsume);b.iter().fold(value,consume)'), \
+        'IntoIter::fold shape changed'
+    assert 'self' not in body[body.index(guard) + len(guard):], 'IntoIter::fold uses self after the guard'
+    return ('IntoIter::fold takes `mut self`; after `let mut guard = Retire { owner: &mut self.owner, .. }` it uses '
+            'only the slices, and its last expression is `b.iter().fold(value, consume)`, so the guard drop is '
+            'followed only by the drop of the consumed owner')
+
+
+OBSERVED = {'from_vec': [
+    ('src/deque.rs', 'pub fn from_vec(',
+     'let(ptr,len,cap,policy,limit)=source.into_raw_parts();Self{ptr,len:Checked::new(len),head:Checked::new(0),'
+     'cap:unsafe{Capacity::from_validated_raw(cap)},policy,limit,marker:PhantomData,}'),
+    ('src/vec/ownership.rs', 'pub fn into_raw_parts(',
+     'letowner=core::mem::ManuallyDrop::new(self);(owner.ptr,owner.len.get(),owner.cap.get(),'
+     'unsafe{core::ptr::read(&owner.policy)},owner.limit,)')]}
+
+
+def check_observed(root, site, through):
+    """The Vec built at the call goes straight to the pinned functions that copy its words."""
+    body = enclosing_body(root, site)
+    assert body.count('letowner=unsafe{Vec::from_raw_parts(') == 1 and body.endswith('Ok(Self::from_vec(owner))'), \
+        ('the adopted Vec is not handed to from_vec', site['key'])
+    for file, head, expected in OBSERVED[through]:
+        text = strip_comments((Path(root) / file).read_text())
+        assert text.count(head) == 1 and compact(block(text, text.index(head))) == expected, ('pinned body changed', file, head)
+    return ('the Vec is passed only to VecDeque::from_vec, which copies len, cap and limit through Vec::into_raw_parts '
+            'verbatim; the harness reads them from the deque')
+
+
 def report(root=ROOT, out=None, table=None, groups=None):
     root = Path(root)
     out = Path(out or ROOT / 'target/verification/owner-closure')
@@ -546,6 +795,7 @@ def report(root=ROOT, out=None, table=None, groups=None):
     check_fixtures(root)
     check_extra_assumptions(root, groups)
     path_reason = check_path_assumption(root)
+    retire_reason = check_retire_fold(root)
     found = sites(root, out)
     keys = [s['key'] for s in found]
     assert len(keys) == len(set(keys)), 'duplicate site key'
@@ -554,7 +804,7 @@ def report(root=ROOT, out=None, table=None, groups=None):
     stale = sorted(set(table) - set(keys))
     assert not stale, ('entry without a site', stale)
     cache = {}
-    result = {}
+    rows_by_owner = {}
     for owner in OWNERS:
         rows = []
         for s in [s for s in found if s['owner'] == owner]:
@@ -570,29 +820,36 @@ def report(root=ROOT, out=None, table=None, groups=None):
                     head = source.index('fn ' + s['function'])
                     assert compact(strip_comments(block(source, head))).count(fresh) == 1, ('fresh owner statement moved', s['key'])
                     row['fresh_owner'] = fresh
+                if entry.get('dead'):
+                    row['dead'] = check_dead(root, s, entry['dead'])
+                if entry.get('observed'):
+                    row['observed'] = check_observed(root, s, entry['observed'])
                 for name in entry['harnesses']:
                     assert name in groups, ('harness is not in a group that the certificate runs', name)
+                    uses = set()
                     if name in EXTRA_ASSUMPTION:
                         # Admissible for this site only when its path assumption
                         # is the harness's one extra assumption, checked above.
                         accepted = PATH_ASSUMPTIONS.get(entry.get('path_assumption'))
                         if accepted and accepted['site'] == s['key'] and entry['path_assumption'] == EXTRA_ASSUMPTION[name]:
-                            reason = admissible(root, name, s['kind'], cache, fresh=bool(fresh), allowed=accepted['assumes'])
+                            reason = admissible(root, name, s['kind'], cache, fresh=bool(fresh), allowed=accepted['assumes'],
+                                                uses=uses)
                             if reason is None:
                                 row['path_assumption'] = dict(assumption=entry['path_assumption'], reason=path_reason)
                         else:
                             reason = 'extra assumption: ' + EXTRA_ASSUMPTION[name]
                     else:
-                        reason = admissible(root, name, s['kind'], cache, fresh=bool(fresh))
-                    (refused if reason else evidence).append(dict(harness=name, groups=groups[name], reason=reason))
+                        reason = admissible(root, name, s['kind'], cache, fresh=bool(fresh), uses=uses)
+                    (refused if reason else evidence).append(dict(harness=name, groups=groups[name], reason=reason,
+                                                                  uses=sorted(uses)))
                 sized = []
                 for name in entry.get('sized', []):
                     assert name in groups, ('harness is not in a group that the certificate runs', name)
-                    reason = admissible(root, name, s['kind'], cache)
-                    (refused if reason else sized).append(dict(harness=name, groups=groups[name], reason=reason))
+                    uses = set()
+                    reason = admissible(root, name, s['kind'], cache, uses=uses)
+                    (refused if reason else sized).append(dict(harness=name, groups=groups[name], reason=reason,
+                                                               uses=sorted(uses)))
                 row.update(harnesses=evidence, refused=refused, sized=sized, note=entry.get('note'))
-                if not evidence:
-                    row['disposition'] = 'uncovered'
             else:
                 row.update(reason=entry['reason'])
                 if entry['disposition'] == 'trust-boundary':
@@ -610,11 +867,53 @@ def report(root=ROOT, out=None, table=None, groups=None):
                     assert entry['disposition'] in ('unobservable', 'uncovered') or entry['disposition'].startswith('other-unit:'), \
                         ('unknown disposition', s['key'], entry['disposition'])
                     assert s['kind'] != 'constructor' or entry['disposition'] != 'unobservable', s['key']
+                    if entry['disposition'] == 'unobservable' and s['file'] == 'src/deque/iter.rs' and s['context'] == 'Retire':
+                        row['pinned'] = retire_reason
             rows.append(row)
+        rows_by_owner[owner] = rows
+    # Joint closure, a greatest fixpoint: start from every owner closed and
+    # remove an owner while one of its sites has no harness whose helpers all
+    # belong to owners still closed. The invariants then hold together: each
+    # constructor and writer of each closed owner was run assuming only the
+    # invariants of closed owners.
+    # A harness of an owner may assume that owner's own invariant (the
+    # inductive step); the invariants of other owners count only while they
+    # are closed.
+    closed = set(OWNERS)
+
+    def counts(x, owner):
+        return set(x['uses']) - {owner} <= closed
+    while True:
+        still = set()
+        for owner, rows in rows_by_owner.items():
+            blocked = [r for r in rows if r['disposition'].startswith('other-unit:') or r['disposition'] == 'uncovered'
+                       or (r['disposition'] == 'harness' and not any(counts(x, owner) for x in r['harnesses']))
+                       or (r['kind'] == 'constructor' and r['disposition'] not in ('harness', 'trust-boundary'))]
+            if not blocked:
+                still.add(owner)
+        if still == closed:
+            break
+        closed = still
+    result = {}
+    for owner, rows in rows_by_owner.items():
+        for r in rows:
+            if r['disposition'] != 'harness':
+                continue
+            waiting = [x for x in r['harnesses'] if not counts(x, owner)]
+            for x in waiting:
+                x['reason'] = 'assumes the invariant of an owner that is not closed: ' + ', '.join(
+                    o for o in x['uses'] if o not in closed and o != owner)
+            r['refused'] = r['refused'] + waiting
+            r['harnesses'] = [x for x in r['harnesses'] if counts(x, owner)]
+            r['sized'] = [x for x in r['sized'] if counts(x, owner)]
+            if not r['harnesses']:
+                r['disposition'] = 'uncovered'
         blocking = [r for r in rows if r['disposition'] in ('uncovered',) or r['disposition'].startswith('other-unit:')
                     or (r['kind'] == 'constructor' and r['disposition'] not in ('harness', 'trust-boundary'))]
+        assert (not blocking) == (owner in closed), ('joint closure inconsistent', owner)
         sized = sorted({x['harness'] for r in rows for x in r.get('sized', [])})
         result[owner] = dict(closed=not blocking, instantiation='zero-sized element', sites=rows,
+                             depends_on=sorted({o for r in rows for x in r.get('harnesses', []) for o in x['uses']} - {owner}),
                              blocking=[dict(kind=r['kind'], file=r['file'], line=r['line'], function=r['function'],
                                             expression=r['expression'], disposition=r['disposition'],
                                             reason=r.get('reason') or [x['reason'] for x in r.get('refused', [])])
@@ -625,8 +924,12 @@ def report(root=ROOT, out=None, table=None, groups=None):
     return result
 
 
+RETAIN_SITE = ('VecDeque', 'write', 'src/deque/edit.rs', 'Repair', 'drop',
+               'self.owner.len=Checked::new(self.state.restored_len())', 1)
+
+
 def controls(root=ROOT, out=None):
-    """Four defects, each must make the result not closed or fail the script."""
+    """Eight defects, each must make the result not closed or fail the script."""
     import shutil
     import tempfile
     out = Path(out or ROOT / 'target/verification/owner-closure') / 'controls'
@@ -669,6 +972,34 @@ def controls(root=ROOT, out=None):
     table[key] = d('other-unit:9', 'control')
     r = report(root, out / 'other-unit', table=table)
     results.append(dict(name='other-unit-site', detected=not r['Buffer']['closed'], blocking=r['Buffer']['blocking']))
+    # Issue #16, unit 4: the joint closure of Vec and VecDeque.
+    work = copy()
+    mutate(work, 'src/deque/edit.rs', '        self.len = Checked::new(at);\n        Ok(result)',
+           '        self.len = Checked::new(at);\n        self.len = Checked::new(at);\n        Ok(result)')
+    try:
+        report(work, out / 'deque-unmapped')
+        results.append(dict(name='deque-unmapped-write', detected=False))
+    except AssertionError as error:
+        results.append(dict(name='deque-unmapped-write', detected='site without an entry' in str(error), error=str(error)[:300]))
+    # The retain store has no harness, so neither owner is closed. The joint
+    # controls use a stand-in table in which that one store is mapped to an
+    # unrelated VecDeque harness: there both owners must close, and each
+    # defect must open both again.
+    stand_in = dict(SITES)
+    stand_in[RETAIN_SITE] = h(Q + 'truncate_preserves_the_invariant')
+    r = report(root, out / 'stand-in', table=stand_in)
+    assert r['Vec']['closed'] and r['VecDeque']['closed'], ('stand-in table does not close both owners', r['Vec']['blocking'],
+                                                            r['VecDeque']['blocking'])
+    r = report(root, out / 'retain-uncovered')
+    results.append(dict(name='retain-uncovered', detected=not r['VecDeque']['closed'] and not r['Vec']['closed'],
+                        blocking=r['VecDeque']['blocking'] + r['Vec']['blocking']))
+    for name, anchor in [('into-vec-harness-assumption', '    let values = owner.into_vec();'),
+                         ('from-vec-harness-assumption', '    let owner = VecDeque::from_vec(source);')]:
+        work = copy()
+        mutate(work, 'src/deque/closure_proofs.rs', anchor, '    kani::assume(kani::any());\n' + anchor)
+        r = report(work, out / name, table=stand_in)
+        results.append(dict(name=name, detected=not r['Vec']['closed'] and not r['VecDeque']['closed'],
+                            blocking=r['Vec']['blocking'] + r['VecDeque']['blocking']))
     shutil.rmtree(out, ignore_errors=True)
     return results
 
@@ -676,15 +1007,17 @@ def controls(root=ROOT, out=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / 'target/verification/owner-closure')
-    parser.add_argument('--controls', action='store_true', help='Also run the four defect controls')
+    parser.add_argument('--controls', action='store_true', help='Also run the eight defect controls')
     args = parser.parse_args()
     result = report(ROOT, args.output)
     for owner, row in result.items():
-        print(f"{owner}: closed={str(row['closed']).lower()} at the {row['instantiation']}; sites by disposition {row['counts']}")
+        print(f"{owner}: closed={str(row['closed']).lower()} at the {row['instantiation']}; sites by disposition {row['counts']}"
+              + (f"; harnesses assume the invariant of {', '.join(row['depends_on'])}" if row['depends_on'] else ''))
         for site in row['sites']:
             evidence = ', '.join(x['harness'].rsplit('::', 1)[1] for x in site.get('harnesses', [])) or site.get('reason', '')
+            marks = ' [not executed at T = ()]' if site.get('dead') else ''
             print(f"  {site['disposition']:<16} {site['kind']:<11} {site['file']}:{site['line']} {site['function']} "
-                  f"`{site['expression']}`#{site['occurrence']}: {evidence}")
+                  f"`{site['expression']}`#{site['occurrence']}: {evidence}{marks}")
         if row['sized_capacity_harnesses']:
             print(f"  sized capacity paths ({', '.join(row['sized_types'])}): "
                   + ', '.join(x.rsplit('::', 1)[1] for x in row['sized_capacity_harnesses']))

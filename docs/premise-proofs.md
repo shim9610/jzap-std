@@ -1547,7 +1547,7 @@ on every return. Kani 0.68.0, CBMC 6.11.0, CaDiCaL, `--object-bits 10`,
 **Cause, isolated.** `goto-instrument --show-goto-functions` on the kept
 program lists the loop's inferred write set: `guard.state.read` and
 `guard.state.write`, and, for each of five pointers to the owner (`&*self` and
-the loads of `guard.owner` for the slot call and the invariant's getters), the
+four pointers loaded from `guard.owner`), the
 owner pointer cast to the `Compaction` type with the fields `read` (offset 0)
 and `write` (offset 8), eight bytes each. Under this toolchain
 `VecDeque<(), Unmetered, L>` has `ptr` at offset 0, `cap` at 8, `head` at 16,
@@ -1572,4 +1572,91 @@ getter, the predicate would be the design's with `!guard.owner.<getter>().is_nul
 added, as for `try_extend_fallible` in unit 1 step 8.
 
 The harness and the attribute are kept locally
-(`target/verification/i16/unit4/c/kept/`), with the three logs.
+(`target/verification/i16/unit4/c/kept/`); the logs and the write-set listing
+are in `target/verification/i16/unit4/c/`.
+
+### Step D: the closure check for VecDeque and the joint closure
+
+Done on 2026-11-28. No product file changed.
+
+**`scripts/owner_closure.py`.**
+
+- `OWNERS['VecDeque']`: struct `src/deque.rs`, words `head`, `len`, `cap`,
+  `limit`, the invariant text of `closure_invariant` pinned. `owner_file` and
+  `check_privacy` cover `src/deque.rs` and `src/deque/`. The struct-literal
+  and store checks of `admissible` include `VecDeque` and `head`.
+- A borrow or pattern binding of a VecDeque word in the deque files fails
+  (`caller_bindings` refuses `len`, `cap` and `limit` outside the foundation
+  area; `head` is checked here).
+- `HELPERS` adds `closure_deque` (assumes `closure_invariant`) and
+  `closure_vec_owner` (assumes the Vec invariant through the getters); the
+  three Vec getters it reads are pinned as whole definitions of `src/vec.rs`.
+  `HELPER_OWNERS` names the owner each helper assumes.
+- **Joint closure.** A harness counts for a site of owner O only if every other
+  owner whose helper it uses is closed (a harness may assume O's own
+  invariant: the inductive step). The closed set is the greatest fixpoint,
+  starting from all owners.
+- **Dead stores.** 15 stores cannot execute at `T = ()`. Each is mapped to the
+  harness of its function with a `dead` guard that the script checks in the
+  comment-stripped body: `enclosed` (every occurrence inside
+  `if mem::size_of::<T>() != 0 {`, or inside `if kind != 0 {` /
+  `if self.head.get() != 0 {` for `make_contiguous` and `normalize`, where
+  `head == 0` at `T = ()` makes the ring one segment) or `return` (an
+  `if .. mem::size_of::<T>() == 0 .. { return ..; }` at the top level of the
+  body precedes the store: `try_shrink_to`, `rotate_left`, `rotate_right`).
+  The output marks them `[not executed at T = ()]`: no mutation of such a
+  store is detectable at this instantiation.
+- **`Retire::drop`** (both stores): `unobservable`, pinned by
+  `check_retire_fold`: `IntoIter::fold` takes `mut self`, uses no `self` after
+  `let mut guard = Retire { owner: &mut self.owner, .. }`, and ends with
+  `b.iter().fold(value, consume)`.
+- **V1** (`into_vec`) is mapped to `closure_into_vec_establishes_the_vec_invariant`
+  (helper of VecDeque); **V2** (`try_from_std_in`) to the adopting harness
+  with `observed='from_vec'`: the script checks that the Vec built at the call
+  is handed only to `Ok(Self::from_vec(owner))` and pins the bodies of
+  `VecDeque::from_vec` and `Vec::into_raw_parts`, which copy `len`, `cap` and
+  `limit` verbatim.
+- **The `from_vec` literal** is mapped to `closure_from_vec_establishes_the_invariant`
+  only (helper of Vec): `from_vec` is reached with every Vec state
+  (`try_from_array_in`, `clone_to`, `try_clone_in`, `try_from_std_in`).
+- **W30** (`Repair::drop`) is `uncovered` (step C).
+
+**Output** of `python3 scripts/owner_closure.py --controls`:
+
+| Owner | Closed at `T = ()` | Sites | Dispositions | Blocking |
+| --- | --- | ---: | --- | --- |
+| `Buffer` | yes | 8 | 8 harness | none |
+| `Vec` | **no** | 54 | 48 harness, 2 unobservable, 2 not-instantiable, 1 trust-boundary, 1 uncovered | `src/deque.rs:522` `into_vec` calls `Vec::from_raw_parts`: its harness assumes the VecDeque invariant, and VecDeque is not closed |
+| `VecDeque` | **no** | 44 | 40 harness (15 of them not executed at `T = ()`), 2 unobservable, 2 uncovered | `src/deque/edit.rs:249` `Repair::drop` (no harness, step C); `src/deque.rs:509` the `from_vec` literal: its harness assumes the Vec invariant, and Vec is not closed |
+
+The VecDeque sites with a harness: the literals of `new`, `empty` and
+`clone_to`; the stores of `grow` (`head`, `cap`), `try_push_back`,
+`try_push_front` (`len`; `head` dead), `pop_front` (`len`; `head` dead),
+`pop_back`, `truncate`, `make_contiguous` (4, dead), `normalize` (dead),
+`try_shrink_to` (`cap` and two `head`, dead), `try_insert_mut` (`len`;
+`head` dead), `remove` (`len`; `head` dead), `rotate_left`, `rotate_right`
+(dead), `try_append` (2), `try_split_off` (2, the fresh `result` pinned),
+`drain`, `Finish::drop` (`len`; `head` dead), `clone_to`, `try_clone_from`
+(3), `try_extend_copy` (2), `try_resize`. Sized capacity path:
+`sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner`
+for the `empty` literal and the `cap` store of `grow`.
+
+**Controls**, each detected (8 of 8): the four of step 9; an unmapped second
+`self.len = Checked::new(at)` in `try_split_off` (the script fails); the
+product table (W30 uncovered: both not closed). Two controls use a stand-in
+table in which W30 alone is mapped to an unrelated VecDeque harness, where
+both owners close (asserted before the controls run): a `kani::assume` added
+to the into_vec harness, and one added to the from_vec harness; each leaves
+both owners not closed. Unit tests (`scripts/test_verify.py`): the product
+result above; the joint fixpoint on the stand-in table, and both opened again
+by an `other-unit` entry for the into_vec call; the checks of a dead guard
+(dropped `if`, dropped early return), of `IntoIter::fold` (a use of `self`
+after the guard), of `from_vec` (a changed word) and of a Vec getter (changed
+body) each fail.
+
+**Run.** `python3 scripts/owner_closure.py --controls`: the output above,
+8 of 8 controls detected. `python3 scripts/test_verify.py`: 66 OK.
+`cargo fmt --all --check`: clean (no Rust file changed in this step).
+
+**Step E is not applied.** Vec is not closed, so no Vec contract moves to
+`instantiated-kani` and `scripts/premise_status.py` is unchanged (below).

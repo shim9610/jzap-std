@@ -229,7 +229,10 @@ FOUNDATION_GROUPS=(
     'vec-geometry vec-conversion layout vec-queries init-prefix '
     'buffer owner-metadata vec-cursors vec-layout-growth vec-compaction '
     'vec-compaction-values vec-extraction vec-extraction-values vec-splice-fill vec-staging '
+    'vec-element-loops '
 ).split()
+
+FOUNDATION_CONTROLS=144
 
 
 def commands(out,profiles):
@@ -423,7 +426,11 @@ def main():
     foundation=json.loads(evidence(ROOT/'target/verification/direct-source/summary.json').read_text())
     assert foundation['status']=='pass' and foundation['source_unchanged'] and foundation['mutations_run']
     assert {row['group'] for row in foundation['groups']}==set(FOUNDATION_GROUPS)
-    assert len(foundation['controls'])==57 and all(row['detected'] for row in foundation['controls'])
+    # The pin was 57 and stayed so while issue #16 (unit 1 steps 1 to 9) added
+    # controls to these groups (58 at step 1, 136 at step 8). FOUNDATION_CONTROLS
+    # is the count of verify_source.CONTROLS in FOUNDATION_GROUPS;
+    # test_verify.py fails when the two differ.
+    assert len(foundation['controls'])==FOUNDATION_CONTROLS and all(row['detected'] for row in foundation['controls'])
     assert run('direct-verus')==0
     direct_verus=json.loads(evidence(ROOT/'target/verification/direct-verus/summary.json').read_text())
     assert direct_verus['status']=='pass' and direct_verus['source_unchanged'] and direct_verus['mutations_run']

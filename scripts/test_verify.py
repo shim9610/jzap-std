@@ -85,6 +85,18 @@ class ReplayTests(unittest.TestCase):
             self.assertIn('btree-node-spans',plan(area,['verus'],ROOT/'target/probe')[0]['command'])
         with self.assertRaises(ValueError):plan('hash-map',['direct-source'],ROOT/'target/probe')
 
+    def test_certificate_runs_every_closure_group_and_pins_its_controls(self):
+        import verify_source
+        from source_certificate import FOUNDATION_CONTROLS, FOUNDATION_GROUPS
+        self.assertIn('vec-element-loops', FOUNDATION_GROUPS)
+        self.assertTrue(set(FOUNDATION_GROUPS) <= set(verify_source.GROUPS))
+        self.assertEqual(FOUNDATION_CONTROLS,
+                         sum(row[1] in FOUNDATION_GROUPS for row in verify_source.CONTROLS))
+        # Every group that holds a closure harness is one the certificate runs.
+        self.assertTrue(set(verify_source.CLOSURE) | set(verify_source.EXTRA) <= set(FOUNDATION_GROUPS))
+        for area in ('vec', 'foundation', 'all'):
+            self.assertIn('vec-element-loops', plan(area, ['direct-source'], ROOT/'target/probe')[0]['command'])
+
     def test_actual_source_negative_control_requires_a_solver_result(self):
         from types import SimpleNamespace
         from verify_source import kani

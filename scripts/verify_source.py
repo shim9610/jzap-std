@@ -143,6 +143,7 @@ GROUPS = {
         'clone::proofs::nested_array_adapter_checks_arbitrary_word_lengths',
     ], verus=['clone','array-caller'], scope='Actual count admission for every usize length and width and typed-array extent composition in both Verus word domains; actual nested-array adapter for arbitrary word lengths at widths 0, 1, 3 and usize::MAX and nonzero u8 payload equality/mismatch preservation (Kani).'),
     'deque-closure': dict(harnesses=[], scope='Closure harnesses of the VecDeque owner invariant (issue #16, unit 4): every constructor, writer and the two Vec::from_raw_parts calls of src/deque.rs run from an arbitrary owner that satisfies len <= cap <= limit, the byte bound and the ring bound on head (or a Vec under its invariant), asserting the invariant on every return. Actual Rust at a zero-sized element for every word under both length policies; the capacity constructors also at four sized elements with the storage functions stubbed. Not a proof for sized ring paths that touch storage.'),
+    'heap-closure': dict(harnesses=[], scope='Closure harnesses of the BinaryHeap wrapper (issue #16, unit 7): its one word is a Vec, so its invariant is the Vec invariant of that field (scripts/owner_closure.py, WRAPPERS). The six struct literals, try_push, pop, PeekMut (deref_mut, drop, pop, forget) and Drain (new, next, next_back, drop, forget) run from an arbitrary heap under the Vec invariant, asserting it and the guard state (the hidden length and its restoration, the drained length) on every return. Actual Rust at a zero-sized element for every word under both length policies. Not a proof for sized elements, nor of try_append, try_retain, try_extend and into_sorted_vec, whose rebuild loops have no bound at a zero-sized element.'),
     'vec-element-loops': dict(harnesses=[], scope='Closure harnesses of the Vec loops that run under a loop contract added for them (issue #16, unit 1 step 8): try_resize_owned, try_extend_from_within and try_extend_fallible with its iterator entry points. Actual Rust at a zero-sized element, every length, capacity and limit word under both length policies, requests and sources without a bound, clone and source results chosen on every call. The for loop runs as the Kani model of the range. Not a proof for sized elements.'),
 }
 # Closure harnesses (issue #16, docs/premise-proofs.md): each builds its owner
@@ -259,6 +260,12 @@ CLOSURE = {
         # The retain loop under its loop contract (src/deque/edit.rs).
         'deque::proofs::closure::loops::closure_retain_preserves_the_invariant',
     ],
+    'heap-closure': ['collections::binary_heap::proofs::closure::closure_' + name for name in (
+        'constructors_establish_the_invariant',
+        'push_pop_preserve_the_invariant',
+        'peek_mut_restores_the_length',
+        'drain_retires_the_length',
+    )],
     'vec-element-loops': ['vec::metadata_proofs::closure_' + name for name in (
         'resize_owned_preserves_the_invariant',
         'extend_from_within_preserves_the_invariant',
@@ -1028,6 +1035,31 @@ CONTROLS = [
      '        let new = if exact {\n            needed\n        } else {',
      '        let new = if exact {\n            add(needed, 1)\n        } else {',
      'deque::proofs::closure::sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner'),
+    # Issue #16, unit 7: the BinaryHeap wrapper and its guards.
+    ('closure-heap-clone-length', 'heap-closure', 'src/collections/binary_heap.rs',
+     '        self.data.try_clone().map(|data| Self { data })',
+     '        self.data.try_clone().map(|mut data| {\n            data.clear();\n            Self { data }\n        })',
+     'collections::binary_heap::proofs::closure::closure_constructors_establish_the_invariant'),
+    ('closure-heap-pop-length', 'heap-closure', 'src/collections/binary_heap/core.rs',
+     '    unsafe { set_len(data, last) };',
+     '    unsafe { set_len(data, crate::arithmetic::bounded::wrapping_add(last, 2)) };',
+     'collections::binary_heap::proofs::closure::closure_push_pop_preserve_the_invariant'),
+    ('closure-heap-peek-hidden-length', 'heap-closure', 'src/collections/binary_heap.rs',
+     '            unsafe { core::set_len(&mut self.heap.data, 1) };',
+     '            unsafe { core::set_len(&mut self.heap.data, 2) };',
+     'collections::binary_heap::proofs::closure::closure_peek_mut_restores_the_length'),
+    ('closure-heap-peek-restore-length', 'heap-closure', 'src/collections/binary_heap.rs',
+     '            unsafe { core::set_len(&mut self.heap.data, len.get()) };',
+     '            unsafe { core::set_len(&mut self.heap.data, crate::arithmetic::bounded::wrapping_sub(len.get(), 1)) };',
+     'collections::binary_heap::proofs::closure::closure_peek_mut_restores_the_length'),
+    ('closure-heap-peek-pop-restore', 'heap-closure', 'src/collections/binary_heap.rs',
+     '            unsafe { core::set_len(&mut this.heap.data, len.get()) };',
+     '            unsafe { core::set_len(&mut this.heap.data, 1) };',
+     'collections::binary_heap::proofs::closure::closure_peek_mut_restores_the_length'),
+    ('closure-heap-drain-length', 'heap-closure', 'src/collections/binary_heap/iter.rs',
+     '        unsafe { super::core::set_len(&mut heap.data, 0) };',
+     '        unsafe { super::core::set_len(&mut heap.data, 1) };',
+     'collections::binary_heap::proofs::closure::closure_drain_retires_the_length'),
 ]
 CONTROLS_HARNESS = {name: harness for name, _group, _file, _old, _new, harness in CONTROLS}
 # Only negative controls use these small concrete counterexamples. Positive

@@ -1,5 +1,7 @@
 //! Actual product kernels; no extracted or rewritten function bodies.
 use super::*;
+#[path = "closure_proofs.rs"]
+mod closure;
 #[kani::proof]
 fn geometry_all_words() {
     let pos: usize = kani::any();

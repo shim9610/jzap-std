@@ -231,10 +231,10 @@ FOUNDATION_GROUPS=(
     'vec-geometry vec-conversion layout vec-queries init-prefix '
     'buffer owner-metadata vec-cursors vec-layout-growth vec-compaction '
     'vec-compaction-values vec-extraction vec-extraction-values vec-splice-fill vec-staging '
-    'vec-element-loops deque-closure '
+    'vec-element-loops deque-closure heap-closure '
 ).split()
 
-FOUNDATION_CONTROLS=167
+FOUNDATION_CONTROLS=173
 
 
 def commands(out,profiles):

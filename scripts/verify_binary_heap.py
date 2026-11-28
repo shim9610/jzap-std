@@ -98,7 +98,8 @@ def main():
  if a.mutations:
   more,caller_controls=maintained_callers.controls(verus,ROOT,out,'jzap_heap_proof',MODEL,SOLVER_CONTROLS,TEXT_CONTROLS,correspondence,'BinaryHeap',kernel);results+=more
  if a.kani:
-  r,log=run('kani',['cargo','kani','--lib','--harness','collections::binary_heap::proofs::','-Z','unstable-options','--cbmc-args','--object-bits','12'])
+  # By exact name: the closure harnesses of proofs::closure (issue #16, unit 7) are in the heap-closure group.
+  r,log=run('kani',['cargo','kani','--lib','--exact',*[a for n in HARNESSES for a in ('--harness',n)],'-Z','unstable-options','--cbmc-args','--object-bits','12'])
   expected=f'Complete - {len(HARNESSES)} successfully verified harnesses, 0 failures, {len(HARNESSES)} total.'
   assert r.returncode==0 and expected in log,log[-5000:]
  if a.mutations:

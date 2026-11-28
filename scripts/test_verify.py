@@ -101,6 +101,8 @@ class ReplayTests(unittest.TestCase):
             self.assertIn('vec-element-loops', plan(area, ['direct-source'], ROOT/'target/probe')[0]['command'])
         for area in ('deque', 'foundation', 'all'):
             self.assertIn('deque-closure', plan(area, ['direct-source'], ROOT/'target/probe')[0]['command'])
+        for area in ('binary-heap', 'foundation', 'all'):
+            self.assertIn('heap-closure', plan(area, ['direct-source'], ROOT/'target/probe')[0]['command'])
 
     def test_deque_model_harnesses_are_selected_by_exact_name(self):
         # The closure harnesses of deque::proofs::closure (issue #16, unit 4)
@@ -116,6 +118,24 @@ class ReplayTests(unittest.TestCase):
         closure = verify_source.CLOSURE['deque-closure']
         self.assertTrue(closure and all(n.startswith('deque::proofs::closure::') for n in closure))
         self.assertFalse(set(closure) & set(verify_deque.HARNESSES))
+
+    def test_heap_model_harnesses_are_selected_by_exact_name(self):
+        # The closure harnesses of collections::binary_heap::proofs::closure
+        # (issue #16, unit 7) must not change the selection or count of the six.
+        import verify
+        import verify_binary_heap
+        import verify_source
+        self.assertEqual(['collections::binary_heap::proofs::' + n for n in verify.HEAP_MODEL_HARNESSES],
+                         verify_binary_heap.HARNESSES)
+        [job] = plan('binary-heap', ['kani'], ROOT/'target/probe')
+        self.assertIn('--exact', job['command'])
+        self.assertEqual([job['command'][i + 1] for i, a in enumerate(job['command']) if a == '--harness'],
+                         verify_binary_heap.HARNESSES)
+        closure = verify_source.CLOSURE['heap-closure']
+        self.assertTrue(closure and all(n.startswith('collections::binary_heap::proofs::closure::') for n in closure))
+        self.assertFalse(set(closure) & set(verify_binary_heap.HARNESSES))
+        source = (ROOT / 'scripts/verify_binary_heap.py').read_text()
+        self.assertIn("'--exact',*[a for n in HARNESSES for a in ('--harness',n)]", source)
 
     def test_actual_source_negative_control_requires_a_solver_result(self):
         from types import SimpleNamespace
@@ -696,6 +716,29 @@ class PremiseTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
             obligations(owner, dict(bindings=[]), (), verified | {'lookup_path_read'}, lookup, {'Buffer': dict(closed=False)})
 
+    def test_heap_contracts_are_not_accepted_as_instantiated(self):
+        # Issue #16, unit 7: BinaryHeap closes with Vec, but no heap caller's
+        # requires is exactly the Vec invariant and its rows are outside Vec.
+        import premise_status
+        from premise_status import STATED_NOT_PROVED, check_instantiated, disposition
+        heap = ['heap_descend_caller', 'heap_element_caller', 'heap_move_caller', 'heap_peek_caller',
+                'heap_peek_drop_caller', 'heap_pop_caller', 'heap_push_caller', 'heap_rebuild_caller',
+                'heap_rebuild_tail_caller', 'heap_restore_caller', 'heap_sift_bottom_caller',
+                'heap_sift_up_caller', 'heap_sorted_caller']
+        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=True), 'BinaryHeap': dict(closed=True)}
+        for contract in heap:
+            self.assertEqual(disposition(contract, set(heap), closed), STATED_NOT_PROVED)
+            for form in ('requires', 'expanded'):
+                row = dict(owner='Vec', maintained='tools/memory-proof/binary-heap.verus.rs', form=form,
+                           words=dict(s='s', len='len', cap='s.cap', limit='limit'), call_requires=())
+                with patch.dict(premise_status.INSTANTIATED_KANI, {contract: row}):
+                    with self.assertRaisesRegex(AssertionError, 'not exactly the owner invariant'):
+                        check_instantiated(ROOT, closed)
+        # A heap row is outside every Vec function even with an accepted contract name.
+        site = dict(file='src/collections/binary_heap.rs', function='pop', context='BinaryHeap < T , P , L >')
+        with self.assertRaisesRegex(AssertionError, 'outside a function of the owner'):
+            check_instantiated(ROOT, closed, [(site, 'shortened_owner')])
+
 class OwnerWordTests(unittest.TestCase):
     @staticmethod
     def borrow(file, function, expression, kind='field_borrow'):
@@ -796,6 +839,12 @@ class OwnerWordTests(unittest.TestCase):
         finish = [s for s in result['Vec']['sites'] if s['function'] == 'try_finish']
         self.assertEqual(len(finish), 1)
         self.assertEqual(finish[0]['path_assumption']['assumption'], 'tail_len != 0')
+        # Issue #16, unit 7: BinaryHeap is a wrapper of one Vec word, closed with Vec.
+        heap = result['BinaryHeap']
+        self.assertTrue(heap['closed'])
+        self.assertEqual((heap['wrapper_of'], heap['depends_on']), ('Vec', ['Vec']))
+        self.assertEqual(heap['counts'], {'harness': 12, 'inner-closure': 4})
+        self.assertEqual(sorted({s['kind'] for s in heap['sites']}), ['constructor', 'lend', 'swap'])
 
     def test_owner_closure_refuses_stale_entries_and_extra_assumptions_elsewhere(self):
         import owner_closure
@@ -886,7 +935,9 @@ class OwnerWordTests(unittest.TestCase):
         self.assertEqual([r['name'] for r in results],
                          ['unmapped-write', 'harness-assumption', 'harness-out-of-group', 'other-unit-site',
                           'deque-unmapped-write', 'retain-harness-assumption', 'into-vec-harness-assumption',
-                          'from-vec-harness-assumption', 'retain-uncovered'])
+                          'from-vec-harness-assumption', 'retain-uncovered', 'heap-inner-not-closed',
+                          'heap-harness-assumption', 'heap-unmapped-lend', 'heap-second-field', 'heap-field-write',
+                          'heap-helper-changed'])
         self.assertTrue(all(r['detected'] for r in results), results)
 
     def test_borrows_of_other_fields_are_counted_not_bound(self):

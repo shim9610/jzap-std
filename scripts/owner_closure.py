@@ -85,6 +85,7 @@ PROOF_FILES = {
     'vec::edit::panic_proofs::': 'src/vec/edit_proofs.rs',
     'vec::ownership::panic_proofs::': 'src/vec/ownership_proofs.rs',
     'deque::proofs::closure::': 'src/deque/closure_proofs.rs',
+    'collections::binary_heap::proofs::closure::': 'src/collections/binary_heap/closure_proofs.rs',
 }
 # The fixture helpers a closure harness may take its owner (or guard) from,
 # each with the exact assumptions it makes: the owner invariant, or the pair
@@ -100,6 +101,9 @@ HELPERS = {
     # A Vec under the Vec invariant, read through the getters pinned in VEC_GETTERS.
     ('src/deque/closure_proofs.rs', 'closure_vec_owner'):
         ['kani::assume(owner.len()<=owner.capacity()&&owner.capacity()<=owner.max_len())'],
+    # Issue #16, unit 7: a BinaryHeap whose one word is a Vec under the Vec invariant.
+    ('src/collections/binary_heap/closure_proofs.rs', 'closure_heap'):
+        ['kani::assume(owner.len()<=owner.capacity()&&owner.capacity()<=owner.max_len())'],
 }
 # The owner whose invariant each helper assumes. A harness that uses a helper
 # is evidence for a site only while that owner is closed (the joint closure in
@@ -114,6 +118,7 @@ HELPER_OWNERS = {
     ('src/boxed/buffer_proofs.rs', 'closure_owner'): 'Buffer',
     ('src/deque/closure_proofs.rs', 'closure_deque'): 'VecDeque',
     ('src/deque/closure_proofs.rs', 'closure_vec_owner'): 'Vec',
+    ('src/collections/binary_heap/closure_proofs.rs', 'closure_heap'): 'Vec',
 }
 # The Vec getters closure_vec_owner reads, as whole compacted definitions in src/vec.rs.
 VEC_GETTERS = ['#[inline]pubfnlen(&self)->usize{self.len.get()}',
@@ -479,6 +484,7 @@ PROOF_SETS = {
             'src/vec/edit_proofs.rs', 'src/vec/ownership_proofs.rs'],
     'Buffer': ['src/boxed/buffer_proofs.rs'],
     'VecDeque': ['src/deque/closure_proofs.rs'],
+    'BinaryHeap': ['src/collections/binary_heap/closure_proofs.rs'],
 }
 
 
@@ -580,7 +586,7 @@ def admissible(root, harness, kind, cache, fresh=False, allowed=(), uses=None):
     extra = re.findall(ASSUME, text)
     if 'any_where' in text or text.count('kani::assume') != len(extra) or sorted(extra) != sorted(allowed):
         return 'assumes more than a fixture helper'
-    if (re.search(r'(?<![\w:])(Vec|Buffer|VecDeque)(::<[^{}]*>)?\{', text)
+    if (re.search(r'(?<![\w:])(Vec|Buffer|VecDeque|BinaryHeap)(::<[^{}]*>)?\{', text)
             or re.search(r'(?<![\w:])(Vec|Buffer)(::<.*?>)?::from_raw_parts\(', text) or re.search(r'(?<![\w.])units\(', text)):
         return 'builds an owner outside the fixture helpers'
     # A harness that stores to or lends an owner word itself narrows the state
@@ -785,7 +791,189 @@ def check_observed(root, site, through):
             'verbatim; the harness reads them from the deque')
 
 
-def report(root=ROOT, out=None, table=None, groups=None):
+# Issue #16, unit 7. A wrapper is a struct whose one private word is a value of
+# a closed owner; its invariant is that owner's invariant of the field. The
+# field's words are private to the inner owner's module (check_privacy), so a
+# wrapper changes them only through the inner owner's methods, which are its
+# sites. `check_wrapper` pins this and maps the wrapper's own sites: every
+# struct literal, every lend of the field, every whole-value swap; a write of
+# the field or a pattern binding of it fails.
+HP = 'collections::binary_heap::proofs::closure::closure_'
+HEAP_FILES = ('src/collections/binary_heap.rs', 'src/collections/binary_heap/core.rs',
+              'src/collections/binary_heap/geometry.rs', 'src/collections/binary_heap/iter.rs')
+
+
+def vc(via, reason):
+    # `via`: compacted text that occurs exactly once in the enclosing function
+    # and hands the field to a method of the inner owner (or exchanges whole values).
+    return dict(disposition='inner-closure', via=via, reason=reason)
+
+
+WRAPPERS = {
+    'BinaryHeap': dict(
+        struct=('src/collections/binary_heap.rs', 'BinaryHeap'), field='data:Vec<T,P,L>', inner='Vec', files=HEAP_FILES,
+        # The two heap helpers that receive the field: only Vec methods touch it.
+        helpers={('src/collections/binary_heap/core.rs', 'unsafe fn set_len<'): 'let_=unsafe{data.try_set_len(len)};',
+                 ('src/collections/binary_heap/core.rs', 'unsafe fn pop_nonempty<'):
+                     'letlast=sub(data.len(),1);letvalue=unsafe{data.as_ptr().add(last).read()};unsafe{set_len(data,last)};'
+                     'iflast==0{returnvalue;}letresult=unsafe{data.as_mut_ptr().replace(value)};'
+                     'unsafe{sift_bottom(data.as_mut_slice(),0,last)};result'},
+        # The kernels that the heap runs on the field's elements take a slice, never the Vec.
+        kernels=('unsafefnsift_up<T:Ord>(data:&mut[T],', 'unsafefnsift_down<T:Ord>(data:&mut[T],',
+                 'unsafefnsift_bottom<T:Ord>(data:&mut[T],', 'fnrebuild<T:Ord>(data:&mut[T])',
+                 'fnrebuild_tail<T:Ord>(data:&mut[T],'),
+        # (kind, file, context, function, expression, occurrence) -> entry.
+        sites={
+            ('constructor', 'src/collections/binary_heap.rs', 'BinaryHeap', 'new', 'Self{data}', 1):
+                h(HP + 'constructors_establish_the_invariant'),
+            ('constructor', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_with_capacity', 'Self{data}', 1):
+                h(HP + 'constructors_establish_the_invariant'),
+            ('constructor', 'src/collections/binary_heap.rs', 'BinaryHeap', 'new_in', 'Self{data}', 1):
+                h(HP + 'constructors_establish_the_invariant'),
+            ('constructor', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_with_capacity_in', 'Self{data}', 1):
+                h(HP + 'constructors_establish_the_invariant'),
+            ('constructor', 'src/collections/binary_heap.rs', 'BinaryHeap', 'from_vec', 'Self{data}', 1):
+                h(HP + 'constructors_establish_the_invariant',
+                  note='run at N = 3 through try_from_array; the field is the moved-in Vec value, and '
+                       'rebuild(data.as_mut_slice()) before the literal takes &mut [T]'),
+            ('constructor', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_clone', 'Self{data}', 1):
+                h(HP + 'constructors_establish_the_invariant'),
+            ('lend', 'src/collections/binary_heap.rs', 'BinaryHeap', 'pop', '&mutself.data', 1):
+                h(HP + 'push_pop_preserve_the_invariant'),
+            ('lend', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_append', '&mutother.data', 1):
+                vc('self.data.try_reuse_larger_buffer(&mutother.data)', 'a Vec method (Vec site, the exchange harnesses)'),
+            ('lend', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_append', '&mutother.data', 2):
+                vc('self.data.try_append(&mutother.data)', 'a Vec method (Vec site, the append harnesses)'),
+            ('swap', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_append', '::core::mem::swap(self,other)', 1):
+                vc('pubfntry_append(&mutself,other:&mutSelf)', 'exchanges two whole BinaryHeap values'),
+            ('swap', 'src/collections/binary_heap.rs', 'BinaryHeap', 'try_append', '::core::mem::swap(self,other)', 2):
+                vc('pubfntry_append(&mutself,other:&mutSelf)', 'exchanges two whole BinaryHeap values'),
+            ('lend', 'src/collections/binary_heap.rs', 'PeekMut', 'deref_mut', '&mutself.heap.data', 1):
+                h(HP + 'peek_mut_restores_the_length'),
+            ('lend', 'src/collections/binary_heap.rs', 'PeekMut', 'drop', '&mutself.heap.data', 1):
+                h(HP + 'peek_mut_restores_the_length'),
+            ('lend', 'src/collections/binary_heap.rs', 'PeekMut', 'pop', '&mutthis.heap.data', 1):
+                h(HP + 'peek_mut_restores_the_length'),
+            ('lend', 'src/collections/binary_heap.rs', 'PeekMut', 'pop', '&mutthis.heap.data', 2):
+                h(HP + 'peek_mut_restores_the_length'),
+            ('lend', 'src/collections/binary_heap/iter.rs', 'Drain', 'new', '&mutheap.data', 1):
+                h(HP + 'drain_retires_the_length'),
+        }),
+}
+
+
+def wrapper_sites(root, out, name, row):
+    """The sites of a wrapper from the scanner inventory, with the structural pins."""
+    from caller_bindings import inventory
+    root = Path(root)
+    file, struct = row['struct']
+    text = strip_comments((root / file).read_text())
+    m = re.search(r'\bstruct\s+' + struct + r'\s*<', text)
+    assert m, ('wrapper struct missing', name)
+    fields = compact(block(text, m.end())).rstrip(',')
+    assert fields == row['field'], ('wrapper fields changed', name, fields)
+    actual = {str(p.relative_to(root)) for p in [root / file, *(root / file[:-3]).rglob('*.rs')]
+              if not p.name.endswith('proofs.rs')}
+    assert actual == set(row['files']), ('wrapper files changed', name, sorted(actual))
+    for f in row['files']:
+        for target in re.findall(r'#\[path\s*=\s*"([^"]+)"\]', strip_comments((root / f).read_text())):
+            assert target.endswith('proofs.rs'), ('wrapper module includes another file', f, target)
+    for (f, head), body in row['helpers'].items():
+        source = strip_comments((root / f).read_text())
+        assert source.count(head) == 1 and compact(block(source, source.index(head))) == body, \
+            ('wrapper helper changed', name, head)
+    kernels = compact(strip_comments((root / 'src/collections/binary_heap/core.rs').read_text()))
+    for head in row['kernels']:
+        assert kernels.count(head) == 1, ('kernel no longer takes a slice', name, head)
+    word = row['field'].split(':')[0]
+    rows = inventory(root, Path(out) / ('wrapper-' + name))
+    found = []
+    for r in rows:
+        if r['file'] not in row['files']:
+            continue
+        context = compact(r.get('context', '')).split('<')[0]
+        if r['kind'] == 'field':
+            ctor = compact(r['detail']['constructor'])
+            if (ctor == 'Self' and context == struct) or ctor == struct:
+                assert compact(r['detail']['field']) == word, ('wrapper literal with another field', r)
+                found.append(dict(kind='constructor', file=r['file'], context=context, function=r['function'],
+                                  expression=ctor + '{' + word + '}', line=r['line']))
+        elif r['kind'] == 'write':
+            target = compact(r['detail']['target'])
+            assert target.lstrip('*').split('.')[-1] != word, ('write of a wrapper word', r['file'], r['line'])
+        elif r['kind'] == 'field_pattern':
+            assert r['detail'].get('member') != word, ('pattern binding of a wrapper word', r['file'], r['line'])
+        elif r['kind'] == 'field_borrow':
+            members = r['detail'].get('members', [r['detail'].get('member')])
+            if members[-1] == word:
+                found.append(dict(kind='lend', file=r['file'], context=context, function=r['function'],
+                                  expression=compact(r['expression']), line=r['line']))
+        elif r['kind'] == 'protocol_call' and re.search(r'mem::(swap|replace|take)$', compact(r['detail']['callee'])):
+            found.append(dict(kind='swap', file=r['file'], context=context, function=r['function'],
+                              expression=compact(r['expression']), line=r['line']))
+    count = {}
+    for s in sorted(found, key=lambda s: (s['file'], s['line'])):
+        base = (s['kind'], s['file'], s['context'], s['function'], s['expression'])
+        count[base] = count.get(base, 0) + 1
+        s['occurrence'] = count[base]
+        s['key'] = base + (count[base],)
+    return found
+
+
+def wrapper_report(root, out, closed, groups, cache, wrappers=None):
+    """A wrapper is closed while its inner owner is closed and every site is mapped."""
+    result = {}
+    for name, row in (WRAPPERS if wrappers is None else wrappers).items():
+        found = wrapper_sites(root, out, name, row)
+        keys = [s['key'] for s in found]
+        assert len(keys) == len(set(keys)), ('duplicate wrapper site', name)
+        missing = [s['key'] + (s['line'],) for s in found if s['key'] not in row['sites']]
+        assert not missing, ('wrapper site without an entry', missing)
+        stale = sorted(set(row['sites']) - set(keys))
+        assert not stale, ('wrapper entry without a site', stale)
+        rows = []
+        for s in found:
+            entry = row['sites'][s['key']]
+            r = dict(kind=s['kind'], file=s['file'], line=s['line'], context=s['context'], function=s['function'],
+                     expression=s['expression'], occurrence=s['occurrence'], disposition=entry['disposition'])
+            if entry['disposition'] == 'harness':
+                evidence, refused = [], []
+                for harness in entry['harnesses']:
+                    assert harness in groups, ('harness is not in a group that the certificate runs', harness)
+                    uses = set()
+                    reason = admissible(Path(root), harness, s['kind'], cache, uses=uses)
+                    if reason is None and not uses <= closed:
+                        reason = 'assumes the invariant of an owner that is not closed: ' + ', '.join(sorted(uses - closed))
+                    (refused if reason else evidence).append(dict(harness=harness, groups=groups[harness], reason=reason,
+                                                                  uses=sorted(uses)))
+                r.update(harnesses=evidence, refused=refused, note=entry.get('note'))
+                if not evidence:
+                    r['disposition'] = 'uncovered'
+            elif entry['disposition'] == 'inner-closure':
+                assert s['kind'] != 'constructor', ('a wrapper literal needs a harness', s['key'])
+                assert enclosing_body(root, s).count(entry['via']) == 1 or \
+                    compact(strip_comments((Path(root) / s['file']).read_text())).count(entry['via']) == 1, \
+                    ('pinned hand-over moved', s['key'], entry['via'])
+                r.update(via=entry['via'], reason=entry['reason'])
+            else:
+                raise AssertionError(('unknown wrapper disposition', s['key'], entry['disposition']))
+            rows.append(r)
+        blocking = [r for r in rows if r['disposition'] == 'uncovered']
+        inner = row['inner'] in closed
+        result[name] = dict(closed=inner and not blocking, instantiation='zero-sized element', wrapper_of=row['inner'],
+                            sites=rows, depends_on=[row['inner']],
+                            blocking=[dict(kind=r['kind'], file=r['file'], line=r['line'], function=r['function'],
+                                           expression=r['expression'], disposition=r['disposition'],
+                                           reason=[x['reason'] for x in r.get('refused', [])]) for r in blocking]
+                            + ([] if inner else [dict(kind='inner', file=row['struct'][0], line=0, function='',
+                                                      expression=row['field'], disposition='inner-not-closed',
+                                                      reason=row['inner'] + ' is not closed')]),
+                            sized_capacity_harnesses=[], sized_types=[],
+                            counts={k: sum(r['disposition'] == k for r in rows) for k in sorted({r['disposition'] for r in rows})})
+    return result
+
+
+def report(root=ROOT, out=None, table=None, groups=None, wrappers=None):
     root = Path(root)
     out = Path(out or ROOT / 'target/verification/owner-closure')
     out.mkdir(parents=True, exist_ok=True)
@@ -920,6 +1108,7 @@ def report(root=ROOT, out=None, table=None, groups=None):
                                        for r in blocking],
                              sized_capacity_harnesses=sized, sized_types=SIZED_TYPES if sized else [],
                              counts={k: sum(r['disposition'] == k for r in rows) for k in sorted({r['disposition'] for r in rows})})
+    result.update(wrapper_report(root, out, closed, groups, cache, wrappers))
     (out / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
 
@@ -929,7 +1118,7 @@ RETAIN_SITE = ('VecDeque', 'write', 'src/deque/edit.rs', 'Repair', 'drop',
 
 
 def controls(root=ROOT, out=None):
-    """Nine defects, each must make the result not closed or fail the script."""
+    """Defects, each must make the result not closed or fail the script."""
     import shutil
     import tempfile
     out = Path(out or ROOT / 'target/verification/owner-closure') / 'controls'
@@ -997,6 +1186,32 @@ def controls(root=ROOT, out=None):
     r = report(root, out / 'retain-uncovered', table=table)
     results.append(dict(name='retain-uncovered', detected=not r['VecDeque']['closed'] and not r['Vec']['closed'],
                         blocking=r['VecDeque']['blocking'] + r['Vec']['blocking']))
+    # Issue #16, unit 7: the BinaryHeap wrapper.
+    r = report(root, out / 'heap-vec-open', table=table)
+    results.append(dict(name='heap-inner-not-closed', detected=not r['BinaryHeap']['closed'] and r['Vec']['closed'] is False,
+                        blocking=r['BinaryHeap']['blocking']))
+    work = copy()
+    mutate(work, 'src/collections/binary_heap/closure_proofs.rs', '    let touch: bool = kani::any();',
+           '    kani::assume(kani::any());\n    let touch: bool = kani::any();')
+    r = report(work, out / 'heap-assume')
+    results.append(dict(name='heap-harness-assumption', detected=not r['BinaryHeap']['closed'] and r['Vec']['closed'],
+                        blocking=r['BinaryHeap']['blocking']))
+    for name, file, old, new, expected in [
+            ('heap-unmapped-lend', 'src/collections/binary_heap.rs', '        self.data.clear()',
+             '        (&mut self.data).clear()', 'wrapper site without an entry'),
+            ('heap-second-field', 'src/collections/binary_heap.rs', '    data: Vec<T, P, L>,\n}',
+             '    data: Vec<T, P, L>,\n    spare: usize,\n}', 'wrapper fields changed'),
+            ('heap-field-write', 'src/collections/binary_heap.rs', '        self.data.clear()',
+             '        self.data = Vec::new_in(unsafe { core::ptr::read(self.data.allocation_policy()) })', 'write of a wrapper word'),
+            ('heap-helper-changed', 'src/collections/binary_heap/core.rs', '    let _ = unsafe { data.try_set_len(len) };',
+             '    let _ = unsafe { data.try_set_len(len) };\n    data.clear();', 'wrapper helper changed')]:
+        work = copy()
+        mutate(work, file, old, new)
+        try:
+            report(work, out / name)
+            results.append(dict(name=name, detected=False))
+        except AssertionError as error:
+            results.append(dict(name=name, detected=expected in str(error), error=str(error)[:300]))
     shutil.rmtree(out, ignore_errors=True)
     return results
 
@@ -1004,7 +1219,7 @@ def controls(root=ROOT, out=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / 'target/verification/owner-closure')
-    parser.add_argument('--controls', action='store_true', help='Also run the nine defect controls')
+    parser.add_argument('--controls', action='store_true', help="Also run the defect controls")
     args = parser.parse_args()
     result = report(ROOT, args.output)
     for owner, row in result.items():

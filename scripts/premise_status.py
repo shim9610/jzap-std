@@ -362,7 +362,10 @@ STATED = {
                'hash_probe_caller', 'hash_rehash_pending', 'hash_reset_caller', 'hash_resize_caller',
                'hash_retire_caller', 'hash_scan_caller', 'hash_set_control_caller', 'hash_slot_caller']),
     **_stated(f'Heap premises (raw_valid storage, slice length equals the heap length, at most '
-              f'isize::MAX elements) are stated; {MIGRATION}:2570-2574, 2771-2775',
+              f'isize::MAX elements) are stated; {MIGRATION}:2570-2574, 2771-2775. Issue #16 unit 7: '
+              f'scripts/owner_closure.py reports BinaryHeap closed as a wrapper of its one Vec word, but no '
+              f'maintained requires is exactly the Vec invariant (each adds raw_valid storage and local index '
+              f'facts) and every row is in a heap function, so instantiated-kani does not apply',
               ['heap_descend_caller', 'heap_element_caller', 'heap_move_caller', 'heap_peek_caller',
                'heap_peek_drop_caller', 'heap_pop_caller', 'heap_push_caller', 'heap_rebuild_caller',
                'heap_rebuild_tail_caller', 'heap_restore_caller', 'heap_sift_bottom_caller',

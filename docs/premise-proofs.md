@@ -131,7 +131,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Steps B to E done (below): every VecDeque constructor and writer has a closure harness at `T = ()` (the retain loop under a loop contract that uses the owner-approved `cfg(kani)` getter `probe_ptr`); `owner_closure.py` closes Vec and VecDeque jointly; 8 Vec contracts moved to `instantiated-kani` (21 rows); no deque contract moves (none requires exactly the ring invariant) |
 | 5 | Hash table | 19 | Table shape, credit, tag and ownership | Not started |
 | 6 | Shared ownership | 19 | Counter words of a live owner, allocation and payload extents | Not started |
-| 7 | Binary heap | 13 | Storage and length (on unit 1) | Not started |
+| 7 | Binary heap | 13 | Storage and length (on unit 1) | Done under the constraint (below): BinaryHeap is a wrapper of its one Vec word; `owner_closure.py` reports it closed with Vec (12 sites with a closure harness at `T = ()`, 4 handed to Vec methods or whole-value swaps); no contract moves: no heap `requires` is exactly the Vec invariant (each adds `raw_valid` storage and local index facts) and every row is in a heap function. Heap order is not a premise of any of the 13 |
 | 8 | Scratch | 7 | Length at most the fixed capacity (on unit 1) | Not started |
 | 9 | String | 6 | Byte-extent premises (on unit 1); UTF-8 invariant over every mutator | Not started |
 | 10 | Bounded Kani scenarios and the B+ ancestor read | 9 | Replace concrete-state scenarios by all-state proofs; verify `descend` against the initialized prefix | Not started |
@@ -1864,3 +1864,180 @@ Not run: `scripts/source_certificate.py`, `scripts/verify_panic_paths.py`,
 `58fab39`; step C changed only `cfg(kani)` code, and the machine code of the
 five executables is identical).
 
+## Unit 7: BinaryHeap
+
+Done on 2026-11-28. No product file changed: `git diff e16d0c6 -- src
+':!src/**/*proofs.rs'` is empty. No contract changed status. The design report
+(`target/verification/i16/designs/unit-7-no-product-change.md`, local) was
+written from reading the source and the scanner inventory; the runs are below.
+
+### The 13 contracts and their premises
+
+The 13 are the maintained callers of `tools/memory-proof/binary-heap.verus.rs`
+(`heap_element_caller`, `heap_move_caller`, `heap_restore_caller`,
+`heap_peek_caller`, `heap_sift_up_caller`, `heap_descend_caller`,
+`heap_sift_bottom_caller`, `heap_rebuild_caller`, `heap_rebuild_tail_caller`,
+`heap_pop_caller`, `heap_peek_drop_caller`, `heap_push_caller`,
+`heap_sorted_caller`), bound by `scripts/verify_binary_heap.py` to 43 of the
+50 unsafe-block rows of the four heap files. Their `requires` are over a
+`RawStorage` `s`, not over an owner:
+
+| Premise | Where it comes from in the product |
+| --- | --- |
+| `raw_valid(s)` | the Vec storage is a valid allocation of `cap` elements: the allocator (trust boundary) and the pairing of `ptr` with `cap`, which no closure invariant states (`ptr` is not an invariant word) |
+| `end <= s.cap` | the slice lies in the storage: for `Vec::as_mut_slice`, the Vec invariant `len <= cap`; for the `core.rs` kernels, which take any `&mut [T]`, the validity of a safe slice |
+| `pos < end`, `index != pos`, `len > 0` | local facts of the product caller (`pop` tests `is_empty`, `try_push` sifts after a successful push, the geometry kernels in the sift loops); connected by whole-body text (`heap_callers.BODIES`), not by a solver |
+| `!zst ==> end <= isize::MAX` | the slice layout of a sized element |
+| `0 < len <= s.cap` at `PeekMut::drop` and `PeekMut::pop` | the guard's `original_len`: `core::set_len` discards the result of `Vec::try_set_len`, so the length is restored only if `original_len <= capacity` holds there |
+| lengths of `replies`, `choices`, `stops` | oracles of the model for comparison results; no product counterpart |
+
+**Heap order is not a premise of any of the 13.** Every comparison in the model
+is an arbitrary oracle bit, so the memory facts hold for every result of `Ord`.
+The comment "Prefix [start,pos) has heap order" on `sift_up` is a functional
+precondition, not a memory premise. There is no separate question to report.
+
+### BinaryHeap is a wrapper of one Vec word
+
+`BinaryHeap<T, P, L>` has one private field, `data: Vec<T, P, L>`. The Vec words
+are private to `vec` (`check_privacy`), so heap code changes them only through
+Vec methods, which are Vec sites of the Vec closure. The scanner inventory of
+the four non-proof heap files has these sites of the field:
+
+| Kind | Function | Expression | Disposition |
+| --- | --- | --- | --- |
+| literal | `new`, `try_with_capacity`, `new_in`, `try_with_capacity_in`, `from_vec`, `try_clone` | `Self { data }` | harness (constructors; `from_vec` at N = 3 through `try_from_array`) |
+| lend | `pop` | `&mut self.data` (to `core::pop_nonempty`) | harness (push and pop) |
+| lend | `PeekMut::deref_mut`, `PeekMut::drop`, `PeekMut::pop` (2) | `&mut self.heap.data`, `&mut this.heap.data` (to `core::set_len`, `core::pop_nonempty`) | harness (peek_mut) |
+| lend | `Drain::new` | `&mut heap.data` (to `core::set_len`) | harness (drain) |
+| lend | `try_append` (2) | `&mut other.data` to `Vec::try_reuse_larger_buffer` and `Vec::try_append` | inner-closure: a Vec method |
+| swap | `try_append` (2) | `mem::swap(self, other)` of two `&mut Self` | inner-closure: two whole values exchanged |
+| write of `data`, pattern binding of `data` | none | | the script fails on one |
+
+`scripts/owner_closure.py` has a new table `WRAPPERS` and the check
+`wrapper_sites`: the struct is exactly `data: Vec<T, P, L>` and private, the
+four heap files are the module's only non-proof files and include no other
+file, the bodies of `core::set_len` (`let _ = unsafe { data.try_set_len(len) };`)
+and `core::pop_nonempty` (only `len`, `as_ptr`, `as_mut_ptr`, `as_mut_slice`
+and `set_len` on the Vec) are pinned, the five element kernels take
+`&mut [T]` (pinned signatures), and every literal, lend of the field and
+`mem::swap`/`replace`/`take` in the heap files has an entry and every entry a
+site. A harness counts only if it is admissible (the rules of step 9; `BinaryHeap`
+literals are now also refused outside a helper) and every owner whose helper it
+uses is closed; an `inner-closure` entry names a text that occurs once in the
+function and hands the field to a Vec method or exchanges whole values. The
+wrapper is closed exactly when its inner owner is closed and no site is
+uncovered. It is not an owner of its own words in the joint fixpoint.
+
+Auto-reference method calls on the field (`self.data.try_push(value)` and the
+other delegations) are a scanner channel that step 3 lists as not recorded;
+they are Vec methods by type. The raw writes of the heap files go to element
+pointers or the Hole's stack value; the files are pinned by sha256
+(`verify_binary_heap.REVIEWED`).
+
+### Harnesses
+
+`src/collections/binary_heap/closure_proofs.rs` (included by
+`#[path] mod closure;` in `src/collections/binary_heap/proofs.rs`). The helper
+`closure_heap` builds `BinaryHeap { data }` from a Vec of `()` made by
+`Vec::from_raw_parts` with arbitrary length and capacity words and assumes only
+the Vec invariant through the pinned getters (as `closure_vec_owner` of unit 4;
+its owner is Vec). Every length is a heap of `()`.
+
+| Harness (`collections::binary_heap::proofs::closure::`) | Runs | Asserts | Solver time |
+| --- | --- | --- | ---: |
+| `closure_constructors_establish_the_invariant` | `new`, `new_in`, `Default`, `TryDefault`, `try_with_capacity(_in)` for any request, `try_from_array(_in)` at N = 3, `try_clone` and `into_vec` of an arbitrary heap | Vec invariant; capacity at least the request; clone length equal | 2.0 s |
+| `closure_push_pop_preserve_the_invariant` | `try_push`, `pop` under `LengthLimit` (any word) and `Unlimited`, `kani::unwind(70)` | invariant and limit; `Ok` gives `len + 1`, refusal unchanged; `pop` is `None` iff empty, else `len - 1` | 92.4 s |
+| `closure_peek_mut_restores_the_length` | `peek_mut`, optionally `deref_mut`, then drop, `PeekMut::pop` or `mem::forget`, both policies, `kani::unwind(70)` | after `deref_mut`: `original_len == len`, heap length 1, `original_len <= capacity` unchanged (the PeekMut premise above); drop restores `len`; pop gives `len - 1`; forget after mutation leaves the root only | 102.9 s |
+| `closure_drain_retires_the_length` | `drain`, optionally `next` and `next_back`, then drop or forget, both policies | the drain length is the old length less the values taken; heap empty and capacity unchanged afterwards | 1.2 s |
+
+The unwinding assertions of the descent loop of `sift_bottom` (at most 64
+iterations at `T = ()`) succeed at bound 70. Covers satisfied: a refused push,
+a push on a nonempty heap, a pop of more than two, a mutated peek over more than
+two (drop and pop), a nonempty clone, a drain of more than two.
+
+Not harnessed: `try_append`, `try_retain`, `try_extend`, `into_sorted_vec` and
+`from_vec` at an arbitrary length. Each runs `rebuild` or `rebuild_tail`, a loop
+over the length with no bound at `T = ()`; a loop invariant there would be a
+product attribute and is not needed for the Vec invariant, because these loops
+take `&mut [T]` and write no Vec word. The Vec writes of these functions are
+Vec methods with Vec closure harnesses, and their whole-value swaps are the
+`inner-closure` entries above.
+
+**Registration.** `scripts/verify_source.py`: group `heap-closure` (loop
+contracts on, as every group; four harnesses) and six controls, each a mutation
+of one heap product statement in a disposable copy that must end in a solver
+counterexample of the named harness:
+
+| Control | Mutation | Harness |
+| --- | --- | --- |
+| `closure-heap-clone-length` | `try_clone` clears the copied Vec | constructors |
+| `closure-heap-pop-length` | `pop_nonempty` sets the length to `last + 2` | push and pop |
+| `closure-heap-peek-hidden-length` | `deref_mut` hides the tail behind length 2 | peek_mut |
+| `closure-heap-peek-restore-length` | `PeekMut::drop` restores `len - 1` | peek_mut |
+| `closure-heap-peek-pop-restore` | `PeekMut::pop` restores length 1 | peek_mut |
+| `closure-heap-drain-length` | `Drain::new` sets the length to 1 | drain |
+
+`scripts/source_certificate.py`: `heap-closure` is in `FOUNDATION_GROUPS`,
+`FOUNDATION_CONTROLS = 173`. `scripts/verify.py`: `heap-closure` is in the
+direct-source plans of `binary-heap`, `foundation` and `all`; the heap area's
+Kani job and `scripts/verify_binary_heap.py` select the six model harnesses by
+exact name (`HEAP_MODEL_HARNESSES`), so the closure harnesses do not change
+their selection or count.
+
+### Closure check
+
+Output of `python3 scripts/owner_closure.py --controls`:
+
+| Owner | Closed at `T = ()` | Dispositions | Uses the invariant of |
+| --- | --- | --- | --- |
+| `Buffer` | yes | 8 harness | — |
+| `Vec` | yes | 49 harness, 2 unobservable, 2 not-instantiable, 1 trust-boundary | VecDeque |
+| `VecDeque` | yes | 42 harness (15 not executed at `T = ()`), 2 unobservable | Vec |
+| `BinaryHeap` (wrapper of Vec) | yes | 12 harness, 4 inner-closure | Vec |
+
+Controls, 15 of 15 detected: the nine of units 1 and 4 and six new ones. With
+the retain store of VecDeque uncovered (Vec not closed), BinaryHeap is not
+closed; a `kani::assume` added to the peek harness leaves BinaryHeap not closed
+and Vec closed; a new lend `(&mut self.data).clear()`, a second struct field, a
+write `self.data = ..` and a changed `core::set_len` body each fail the script.
+
+### Status moves: none
+
+`check_instantiated` accepts a contract only if its maintained `requires` is
+exactly an owner invariant text and every row is in a function of that owner
+generic in its element. No heap contract qualifies on either count: each
+`requires` adds `raw_valid(s)`, the slice bound and local index facts (and the
+model's oracle lengths) to anything an owner invariant states, and every row
+is in `BinaryHeap<..>`, `PeekMut<..>`, `Hole<..>`, `Drain<..>` or a free kernel
+of the heap files. `trust-boundary` does not apply either: no contract rests on
+exactly one item of the fixed list. `scripts/premise_status.py` records this in
+the reason of the heap entry; no status changed. A unit test
+(`test_heap_contracts_are_not_accepted_as_instantiated`) keeps each of the 13
+stated with BinaryHeap closed, and registers each under Vec in both accepted
+forms: `check_instantiated` refuses all 26 registrations, and refuses a heap row
+bound to an accepted Vec contract.
+
+What would move them is an owner decision, not taken here: a restatement of the
+heap callers over the Vec owner state with a rule that admits local facts
+discharged by a pinned guard (`is_empty` before `pop`, a successful push before
+`sift_up`), and a basis for `raw_valid` of Vec storage.
+
+### Run
+
+One at a time on this tree (Kani 0.68.0, CBMC 6.11.0, CaDiCaL, `--object-bits 10`
+for the group, 12 for the heap model harnesses):
+
+- Each new harness alone first (`cargo kani --lib --exact`, loop contracts on):
+  constructors 1.9 s and drain 1.2 s (71 s with the build), push and pop
+  93.9 s (101 s), peek_mut 106.5 s (113 s); all verified.
+- `python3 scripts/verify_source.py --group heap-closure --mutations`: pass,
+  782 s; 4 of 4 harnesses verified, 6 of 6 controls detected.
+- `python3 scripts/verify_binary_heap.py --kani --mutations`: pass, 1,180 s,
+  `complete=True`; 6 of 6 model harnesses by exact name, maintained callers 372
+  verified and 0 errors, 24 caller controls and 9 compiled controls detected,
+  50 bindings.
+- `python3 scripts/owner_closure.py --controls`: the table above, 15 of 15.
+- `python3 scripts/test_verify.py`: 68 OK. `cargo fmt --all --check`: clean.
+
+Pending at this commit: `scripts/verify_owner_protocol.py --mutations` and the
+row counts.

@@ -352,6 +352,88 @@ two widths, three input seeds, 64 cases and four implementations. The compact
 These are observations at the `GlobalAlloc` boundary. Handles are reported
 separately from payload allocation. Timing builds exclude this instrumentation.
 
+## Empty-ring shrink defect (fixed 2026-11-28)
+
+**Defect.** Up to `c7bb981`, `try_shrink_to` moved the ring only when
+`head > new - len`. With `len == 0 && head == new` the ring was not moved, the
+capacity became `new` and `head` stayed equal to it, which breaks the ring
+invariant `cap > 0 => head < cap`. Reproduction: capacity 8, four push/pop
+pairs (`head == 4, len == 0`), then `try_shrink_to(4)`, `try_push_back(42)` and
+`pop_front()`. The push wrote physical slot 0 and the pop read `ptr.add(4)`, one
+element past the 4-element allocation. Natively the pop returned `Some(0)`
+instead of `Some(42)`; Miri reported an out-of-bounds read in `pop_front`. When
+`len > 0`, `head + len <= new` implies `head < new`, and `head > new` with
+`len == 0` was already moved, so `len == 0 && head == new` was the only missing
+case.
+
+**Fix.** Only `try_shrink_to` changed. After a successful reallocation the head
+is reset when the ring moved or is empty: `if moved || len == 0`. An empty ring
+has no live slot, so no copy is needed. The refusal path is unchanged: the empty
+case does not move, and a refused reallocation leaves `head`, length, capacity,
+pointer and accounting as they were. The alternative `moved = head > new - len
+|| head == new` calls `normalize` for an empty ring and produced more machine
+code (unbudgeted `u64` shrink task 394 to 409 instructions, against 394 to 393
+for the chosen form). Rust 1.95 `VecDeque::shrink_to` (`alloc/src/collections/vec_deque/mod.rs`
+lines 1204-1227) sets `self.head = 0` when `self.len == 0` before it reallocates.
+
+**Why the earlier evidence missed it.** The maintained Verus caller
+`deque_shrink_caller` required `ring(head, len, cap)` and checked only the copies
+inside the old allocation; it stated no postcondition on the published head.
+Every other caller (for example `pop_front`) assumes `ring` as a precondition,
+so the unestablished premise after a shrink was not visible. The Kani refusal
+harness covers lengths 1 to 3, and the native refusal and differential tests did
+not reach `len == 0 && head == new` followed by a push and pop.
+
+**Changes to the evidence.** The model now returns the published head and
+ensures `ring(out, len, new)` after a successful shrink and `out == head` after
+an early return or refusal. The solver control `shrink_empty_head_kept`
+(the decision without `|| len == 0`) is rejected by Verus (387 verified, 1
+error), so the new postcondition detects the old decision. The pinned body,
+the reviewed `src/deque.rs` hash, the text control `shrink-empty-head` and the
+compiled mutation `shrink-empty-head` (detected by the new test) were added or
+updated. New tests `empty_shrink_to_head_resets_head` (exact sequence, then every
+head and target for capacities 1 to 6 under Miri and 1 to 14 natively, for `u8`
+and `String`, compared with std) and `empty_shrink_refusal_restores_head` (allocator and
+budget refusal) pass natively and under Miri. The first fails on `c7bb981`.
+
+**Machine code.** Both builds used Rust 1.95.0 with
+`-C symbol-mangling-version=v0` and source directories of equal path length.
+In the `jzap-throughput-analysis`, `string`, `binary_heap` and `scratch_slice`
+executables no function differs. In `deque` only the six shrink-task
+instantiations differ (`try_shrink_to` is inlined there). The unbudgeted forms
+add `test len; je` before the head store. The budgeted forms replace one
+`test; je` with `test; sete; test; setne; test; jne`. The other differences in
+those functions are register and stack-slot assignment. Calls are the same.
+
+| Shrink task instance | Instructions before | After |
+| --- | ---: | ---: |
+| `u64`, unbudgeted | 394 | 393 |
+| `u64`, local budget | 422 | 426 |
+| `u64`, concurrent budget | 421 | 424 |
+| `[u64; 32]`, unbudgeted | 351 | 351 |
+| `[u64; 32]`, local budget | 489 | 483 |
+| `[u64; 32]`, concurrent budget | 474 | 478 |
+
+**Timing.** `compare.py`, tasks `deque_shrink_8` and `deque_shrink_256`, 3
+seeds, CPUs 2, every interval at least 1 s, 60 measurements. Values are
+call-weighted ns per call.
+
+| Task | Label | Before | After | std (same executable) before / after |
+| --- | --- | ---: | ---: | ---: |
+| `deque_shrink_8` | unlimited | 401.7 | 413.4 | 425.5 / 432.3 |
+| `deque_shrink_8` | local | 409.2 | 406.2 | |
+| `deque_shrink_8` | concurrent | 416.9 | 409.7 | |
+| `deque_shrink_8` | std_control | 420.8 | 432.0 | |
+| `deque_shrink_256` | unlimited | 36,797.9 | 34,172.8 | 29,282.5 / 30,382.9 |
+| `deque_shrink_256` | local | 36,149.5 | 36,583.0 | |
+| `deque_shrink_256` | concurrent | 38,136.9 | 35,972.0 | |
+| `deque_shrink_256` | std_control | 27,878.0 | 29,101.1 | |
+
+The std and std_control code is identical in both executables. It moved by
++1.6% to +4.4% between the two runs, and the product labels moved by -7.1% to
++2.9%. This run cannot resolve differences of that size. The machine-code change
+is at most four instructions after the reallocation call, once per shrink call.
+
 ## Usage and selective reproduction
 
 Import `VecDeque` from `jzap::collections`. Import named iterator types such as

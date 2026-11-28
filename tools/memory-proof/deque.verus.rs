@@ -179,30 +179,42 @@ fn deque_normalize_caller(s:RawStorage,head:usize,len:usize,cap:usize,zst:bool)
   overlapping_copy_caller(s,head,0,len);
  }
 }
-// try_shrink_to: the move decision and the restoration after a refused
-// reallocation (the old capacity is still owned).
-fn deque_shrink_caller(s:RawStorage,head:usize,len:usize,cap:usize,min:usize,refused:bool)
+// try_shrink_to: the move decision, the published head and the restoration
+// after a refused reallocation (the old capacity is still owned).
+pub open spec fn shrink_target(min:usize,len:usize)->usize { if min>len {min} else {len} }
+fn deque_shrink_caller(s:RawStorage,head:usize,len:usize,cap:usize,min:usize,refused:bool)->(out:usize)
  requires raw_valid(s),s.cap==cap,ring(head,len,cap,false),
+ ensures shrink_target(min,len)>=cap || refused ==> out==head,
+  shrink_target(min,len)<cap && !refused ==> ring(out,len,shrink_target(min,len),false),
 {
  let new=if min>len {min} else {len};
  if new>=cap {
-  return;
+  return head;
  }
  let (a,b)=crate::deque::geometry::split(head,len,cap);
  let moved=head>crate::arithmetic::bounded::wrapping_sub(new,len);
  if moved {
   deque_normalize_caller(s,head,len,cap,false);
  }
- if refused && moved {
-  if b==0 {
-   // `copy(ptr, ptr.add(head), len)`.
-   overlapping_copy_caller(s,0,head,len);
-  } else {
-   // `from_raw_parts_mut(ptr, len).rotate_left(a)`, `copy(ptr.add(b), ptr.add(head), a)`.
-   let _rotated=slice_caller(s,0,len);
-   assert(a<=len);
-   overlapping_copy_caller(s,b,head,a);
+ if refused {
+  if moved {
+   if b==0 {
+    // `copy(ptr, ptr.add(head), len)`.
+    overlapping_copy_caller(s,0,head,len);
+   } else {
+    // `from_raw_parts_mut(ptr, len).rotate_left(a)`, `copy(ptr.add(b), ptr.add(head), a)`.
+    let _rotated=slice_caller(s,0,len);
+    assert(a<=len);
+    overlapping_copy_caller(s,b,head,a);
+   }
   }
+  // `self.head = Checked::new(head)`, or the head left unchanged.
+  head
+ } else if moved || len==0 {
+  // `if moved || len == 0 { self.head = Checked::new(0) }`.
+  0
+ } else {
+  head
  }
 }
 // grow: relocation of the wrapped ring inside the larger allocation.

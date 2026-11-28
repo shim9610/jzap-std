@@ -478,7 +478,8 @@ impl<T, P: AllocationPolicy, L: LengthPolicy> VecDeque<T, P, L> {
             Ok(ptr) => {
                 self.ptr = ptr.cast();
                 self.cap = cap;
-                if moved {
+                // An empty ring may keep `head == new`; reset it so `head < cap` holds.
+                if moved || len == 0 {
                     self.head = Checked::new(0)
                 };
                 Ok(())

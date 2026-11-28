@@ -223,6 +223,97 @@ fn grow_and_shrink_refusal_preserves_exact_split() {
         }
     }
 }
+fn empty_at<T>(cap: usize, head: usize, make: &impl Fn(usize) -> T) -> VecDeque<T> {
+    let mut d = VecDeque::try_with_capacity(cap).unwrap();
+    assert_eq!(d.capacity(), cap);
+    for i in 0..head {
+        assert!(d.try_push_back(make(i)).is_ok());
+        assert!(d.pop_front().is_some());
+    }
+    d
+}
+fn empty_shrink_keeps_head_inside<T: PartialEq + std::fmt::Debug>(make: impl Fn(usize) -> T) {
+    // Regression: an empty ring with `head == new` kept `head` at the new
+    // capacity, so the next push and pop used different physical slots.
+    let mut d = empty_at(8, 4, &make);
+    d.try_shrink_to(4).unwrap();
+    assert_eq!((d.len(), d.capacity()), (0, 4));
+    assert!(d.try_push_back(make(42)).is_ok());
+    assert_eq!(d.front(), Some(&make(42)));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d.pop_front(), Some(make(42)));
+    assert_eq!((d.len(), d.capacity()), (0, 4));
+    for i in 0..6 {
+        assert!(d.try_push_back(make(i)).is_ok());
+    }
+    assert!(d.try_push_front(make(9)).is_ok());
+    let got: Vec<_> = d.iter().collect();
+    let want: Vec<_> = [9, 0, 1, 2, 3, 4, 5].map(&make).into_iter().collect();
+    assert_eq!(got, want.iter().collect::<Vec<_>>());
+    for cap in 1..bounds() {
+        for head in 0..cap {
+            for min in 0..=cap {
+                let mut d = empty_at(cap, head, &make);
+                let mut e = Std::<T>::with_capacity(cap);
+                d.try_shrink_to(min).unwrap();
+                e.shrink_to(min);
+                assert_eq!(d.capacity(), min.min(cap), "{cap}/{head}/{min}");
+                for i in 0..=cap {
+                    assert!(d.try_push_back(make(i)).is_ok());
+                    e.push_back(make(i));
+                    assert_eq!(d.front(), e.front(), "{cap}/{head}/{min}/{i}");
+                }
+                assert!(d.iter().eq(e.iter()), "{cap}/{head}/{min}");
+                while let Some(v) = e.pop_front() {
+                    assert_eq!(d.pop_front(), Some(v));
+                }
+                assert_eq!(d.len(), 0);
+            }
+        }
+    }
+}
+#[test]
+fn empty_shrink_to_head_resets_head() {
+    empty_shrink_keeps_head_inside(|i| i as u8);
+    empty_shrink_keeps_head_inside(|i| format!("owned-{i}"));
+}
+#[test]
+fn empty_shrink_refusal_restores_head() {
+    for (cap, head, min) in [(8, 4, 4), (8, 5, 5), (8, 6, 3), (8, 2, 4)] {
+        // Allocator refusal keeps the old words: the next push lands at `head`.
+        let mut d = empty_at(cap, head - 1, &|i| i as u8);
+        assert!(d.try_push_back(0).is_ok());
+        let slot = d.as_slices().0.as_ptr();
+        assert_eq!(d.pop_front(), Some(0));
+        let (result, _) = common::track(1, || d.try_shrink_to(min));
+        assert!(matches!(result, Err(Error::Allocation { .. })));
+        assert_eq!((d.len(), d.capacity()), (0, cap));
+        assert!(d.try_push_back(42).is_ok());
+        assert_eq!(d.as_slices().0.as_ptr(), slot.wrapping_add(1));
+        assert_eq!(d.pop_front(), Some(42));
+        d.try_shrink_to(min).unwrap();
+        assert_eq!(d.capacity(), min);
+        assert!(d.try_push_back(7).is_ok());
+        assert_eq!(d.front(), Some(&7));
+        assert_eq!(d.pop_front(), Some(7));
+        // Budget refusal: the reallocation reserves the new size before release.
+        let bytes = cap * std::mem::size_of::<String>();
+        let budget = MemoryBudget::new(bytes);
+        let mut d = VecDeque::try_with_capacity_in(cap, Budget::Limited(&budget)).unwrap();
+        for i in 0..head {
+            assert!(d.try_push_back(format!("{i}")).is_ok());
+            assert!(d.pop_front().is_some());
+        }
+        assert!(matches!(d.try_shrink_to(min), Err(Error::Budget { .. })));
+        assert_eq!((d.len(), d.capacity()), (0, cap));
+        assert_eq!((budget.occupied(), budget.reserved()), (bytes, 0));
+        assert!(d.try_push_back(String::from("kept")).is_ok());
+        assert_eq!(d.front().map(String::as_str), Some("kept"));
+        assert_eq!(d.pop_front().as_deref(), Some("kept"));
+        drop(d);
+        assert_eq!(budget.occupied(), 0);
+    }
+}
 #[test]
 fn limits_budgets_and_failures() {
     let budget = MemoryBudget::new(256);

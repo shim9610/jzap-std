@@ -33,6 +33,7 @@ bash scripts/verify.sh --check sbom
 bash scripts/verify.sh --check inventory
 bash scripts/verify.sh --area btree --check models
 bash scripts/verify.sh --check link
+bash scripts/verify.sh --check verifast   # auxiliary, local only: verifast.md
 bash scripts/verify.sh --profile full --plan
 bash scripts/verify.sh --profile full
 ```

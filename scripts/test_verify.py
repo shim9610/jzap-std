@@ -816,4 +816,101 @@ impl V {
         self.assertEqual(patterns, [(12, 'V', 'len', False), (12, 'V', 'cap', True)])
 
 
+def load_verifast_check():
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('verifast_check',ROOT/'tools/verifast/check.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+class VeriFastTests(unittest.TestCase):
+    """Manifest, identity and comment-strip logic of tools/verifast/check.py (no VeriFast run)."""
+    def setUp(self):
+        self.vf=load_verifast_check()
+
+    def fixture(self,tmp,annotated,product='pub fn f(x: usize) -> usize {\n    x\n}\n// tail\nfn g() {}\n',cut=None):
+        import hashlib
+        tmp=Path(tmp);(tmp/'src').mkdir();(tmp/'proof'/'verified').mkdir(parents=True)
+        (tmp/'src'/'m.rs').write_text(product);(tmp/'proof'/'lib.rs').write_text('mod m;\n')
+        (tmp/'proof'/'verified'/'m.rs').write_text(annotated)
+        data=product.encode();original={'kind':'product'}
+        if cut:
+            lines=data.splitlines(keepends=True)
+            original={'kind':'product-cut','keep_lines':[1,cut],'dropped_sha256':hashlib.sha256(b''.join(lines[cut:])).hexdigest()}
+        manifest={'root':{'path':'lib.rs','stored':'lib.rs'},'modules':[{'path':'m.rs','product':'src/m.rs',
+            'product_sha256':hashlib.sha256(data).hexdigest(),'original':original,
+            'verified':{'kind':'annotations-only','stored':'verified/m.rs'}}]}
+        return tmp,manifest
+
+    def test_identity_and_strip_accept_annotations_only(self):
+        annotated='pub fn f(x: usize) -> usize \n//@ req x < 10;\n/*@ ens result == x; @*/\n{\n    x\n}\n// tail\nfn g() {}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp,manifest=self.fixture(tmp,annotated)
+            sides=self.vf.assemble(tmp/'out',manifest,product_root=tmp,proof=tmp/'proof')
+            self.assertEqual(sides['original']['m.rs'],(tmp/'src'/'m.rs').read_bytes())
+            self.assertEqual(self.vf.check_identity(tmp/'out',manifest,product_root=tmp),[])
+            self.assertTrue(self.vf.check_strip(manifest,sides)['m.rs']['passed'])
+
+    def test_changed_product_fails_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp,manifest=self.fixture(tmp,'pub fn f(x: usize) -> usize {\n    x\n}\n// tail\nfn g() {}\n')
+            (tmp/'src'/'m.rs').write_text('pub fn f(x: usize) -> usize {\n    x + 0\n}\n// tail\nfn g() {}\n')
+            self.vf.assemble(tmp/'out',manifest,product_root=tmp,proof=tmp/'proof')
+            errors=self.vf.check_identity(tmp/'out',manifest,product_root=tmp)
+            self.assertEqual(len(errors),1);self.assertIn('changed',errors[0])
+
+    def test_cut_keeps_a_prefix_and_pins_the_dropped_part(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp,manifest=self.fixture(tmp,'pub fn f(x: usize) -> usize {\n    x\n}\n',cut=3)
+            sides=self.vf.assemble(tmp/'out',manifest,product_root=tmp,proof=tmp/'proof')
+            self.assertEqual(sides['original']['m.rs'],b'pub fn f(x: usize) -> usize {\n    x\n}\n')
+            self.assertTrue(self.vf.check_strip(manifest,sides)['m.rs']['passed'])
+            manifest['modules'][0]['original']['dropped_sha256']='0'*64
+            with self.assertRaises(self.vf.CheckError):self.vf.original_side(manifest['modules'][0],tmp)
+
+    def test_strip_rejects_code_changes(self):
+        same=self.vf.annotation_only_equal
+        original='fn f() -> u8 { let s = "a"; s.len() as u8 } // note\n'
+        self.assertTrue(same('fn f() -> u8 /*@ req true; @*/ { let s = "a";\n s.len() as u8 } // note\n',original))
+        for edited in ['#[inline(never)] fn f() -> u8 { let s = "a"; s.len() as u8 } // note\n',
+                       'fn f() - > u8 { let s = "a"; s.len() as u8 } // note\n',
+                       'fn f() -> u8 { let s = "a/*@ x @*/"; s.len() as u8 } // note\n',
+                       'fn f() -> u8 { let s = "a"; s.len() as u8 } // changed note\n',
+                       'fn f() -> u8 { let s = "a"; /*@ /* nested */ @*/ s.len() as u8 + 0 } // note\n']:
+            self.assertFalse(same(edited,original),edited)
+        # Block comments nest as in rustc: the whole nested annotation is removed, and text
+        # after the point where rustc closes the comment is code.
+        self.assertTrue(same('fn f() -> u8 /*@ a /* b */ c @*/ { let s = "a"; s.len() as u8 } // note\n',original))
+        self.assertFalse(same('fn f() -> u8 /*@ a /* b @*/ c */ @*/ { let s = "a"; s.len() as u8 } // note\n',original))
+        self.assertEqual(self.vf.strip_annotations("let c = '/'; let r = r#\"//@\"#; //@ x\n"),"let c = '/'; let r = r#\"//@\"#; \n")
+
+    def test_function_inventory_and_trusted_assumes(self):
+        text='fn a() {}\nstruct S(PhantomData<fn() -> u8>);\n// fn hidden()\nconst X: &str = "fn quoted";\nmacro_rules! m { () => { fn $name() {} } }\nfn a2<\'x>(c: char) { let _ = \'f\'; }\n'
+        self.assertEqual(self.vf.fn_names(text),{'a':1,'$name':1,'a2':1})
+        ghost='/*@\nlem ok()\n    req true;\n    ens true;\n{ assume(false); }\nlem other() req true; ens true; {}\n@*/\nfn f() { /*@ assume(x); @*/ }\n'
+        self.assertEqual(self.vf.assumes_in_lemmas(ghost),['ok',None])
+
+    def test_repository_manifest_is_complete(self):
+        manifest=self.vf.load_manifest()
+        proof=ROOT/'tools/verifast/proofs/capacity'
+        kinds={m['verified']['kind'] for m in manifest['modules']}
+        self.assertLessEqual(kinds,{'product','annotations-only','rewrite'})
+        for module in manifest['modules']:
+            self.assertTrue(module['product'].startswith('src/'))
+            self.assertFalse((proof/module['path']).exists(),'no copies of product files beside the manifest')
+            if module['verified']['kind']!='product':self.assertTrue((proof/module['verified']['stored']).is_file())
+        classes={f['class'] for f in manifest['functions']}
+        self.assertLessEqual(classes,{'verified','verified-rewrite-refined','skipped-specless','not-compiled'})
+        self.assertTrue(all(('vf_name' in f)==f['class'].startswith('verified') for f in manifest['functions']))
+        controls=json.loads((proof/'controls.json').read_text())
+        self.assertTrue({'refinement','verifast','strip','identity'}<={c for row in controls for c in row['expect']})
+
+    def test_verifast_check_is_local_and_outside_the_profiles(self):
+        from verify import QUICK
+        self.assertNotIn('verifast',FULL);self.assertNotIn('verifast',QUICK)
+        job=plan('all',['verifast'],ROOT/'target/probe')[0]
+        self.assertEqual(job['command'][1],'tools/verifast/check.py');self.assertTrue((ROOT/job['command'][1]).is_file())
+        with self.assertRaises(ValueError):plan('btree',['verifast'],ROOT/'target/probe')
+
+
 if __name__=='__main__':unittest.main()

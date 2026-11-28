@@ -1,0 +1,40 @@
+[
+  {
+    "name": "refinement-array-returns-capacity",
+    "description": "Behaviour-changing rewrite of layout::array: the Err arm returns Error::Capacity instead of Error::Layout. VeriFast's spec allows any owned Error, so only the refinement checker can reject it.",
+    "file": "layout.rs",
+    "old": "            //@ close <error::Error>.own(t, error::Error::Layout);\n            Err(Error::Layout)",
+    "new": "            //@ close <error::Error>.own(t, error::Error::Capacity);\n            Err(Error::Capacity)",
+    "expect": ["refinement"]
+  },
+  {
+    "name": "verifast-array-spec-count-below-5",
+    "description": "Strengthened postcondition of layout::array (Ok implies count < 5), false for most counts.",
+    "file": "layout.rs",
+    "old": "l.align() == std::mem::align_of::<T>(), Result::Err(e) => <error::Error>.own(t, e) };",
+    "new": "l.align() == std::mem::align_of::<T>() &*& count < 5, Result::Err(e) => <error::Error>.own(t, e) };",
+    "expect": ["verifast"]
+  },
+  {
+    "name": "verifast-capacity-invariant-dropped",
+    "description": "The ownership predicate of Capacity<T> no longer carries the byte bound; Capacity::layout must then fail to prove its postcondition.",
+    "file": "capacity.rs",
+    "old": "pred<T> <Capacity<T>>.own(t, c) = std::alloc::is_valid_layout(c.count.0 * std::mem::size_of::<T>(), std::mem::align_of::<T>()) == true;",
+    "new": "pred<T> <Capacity<T>>.own(t, c) = true;",
+    "expect": ["verifast"]
+  },
+  {
+    "name": "strip-non-comment-edit",
+    "description": "A non-comment edit (#[inline] -> #[inline(never)]) in the annotations-only file capacity.rs. The comment-strip check and the refinement checker must both reject it.",
+    "file": "capacity.rs",
+    "old": "    #[inline]\n    pub(crate) fn layout(self) -> Layout ",
+    "new": "    #[inline(never)]\n    pub(crate) fn layout(self) -> Layout ",
+    "expect": ["strip", "refinement"]
+  },
+  {
+    "name": "identity-product-changed",
+    "description": "A one-character edit to a temporary copy of src/capacity.rs. The identity check must fail, which is the signal to re-review the proof.",
+    "product_edit": {"path": "src/capacity.rs", "old": "if size == 0 { limit } else { stored }\n}", "new": "if size == 0 { limit } else { stored }\n }"},
+    "expect": ["identity"]
+  }
+]

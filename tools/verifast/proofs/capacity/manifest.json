@@ -1,0 +1,129 @@
+{
+  "name": "capacity",
+  "description": "Subset crate for the VeriFast proof of Capacity<T> and layout::array for every T. Supplementary evidence only; it does not change any certificate disposition.",
+  "rustc_args": "--edition=2024 --cfg feature=\"alloc\"",
+  "root": {
+    "path": "lib.rs",
+    "stored": "lib.rs",
+    "kind": "subset-root",
+    "note": "New file, not a product file. Declares only the product modules Capacity needs. Used unchanged for both sides."
+  },
+  "modules": [
+    {
+      "path": "arithmetic.rs",
+      "product": "src/arithmetic.rs",
+      "product_sha256": "4f3fc0ac9dddbdc45e923326dcb2d00759706bde86748971a40cbcd71c05ffda",
+      "original": {"kind": "product"},
+      "verified": {"kind": "product"}
+    },
+    {
+      "path": "arithmetic/checked.rs",
+      "product": "src/arithmetic/checked.rs",
+      "product_sha256": "225ee5995032d040c908d2541443ad4a86ee016fac73c99e5ab7f0977e8c7b91",
+      "original": {
+        "kind": "product-cut",
+        "keep_lines": [1, 137],
+        "dropped_sha256": "fefa18aa699503e10ee412b74fd199faa36c27dfcd706ebb3e88bd9bffaecbff",
+        "reason": "Drops the trailing TryClone and TryCloneIn impls for Checked<T>; they name crate::clone and crate::budget, which are outside the subset."
+      },
+      "verified": {"kind": "annotations-only", "stored": "verified/arithmetic/checked.rs", "over": "original side of src/arithmetic/checked.rs"}
+    },
+    {
+      "path": "arithmetic/bounded.rs",
+      "product": "src/arithmetic/bounded.rs",
+      "product_sha256": "de2df5f069488302be0e1171f979f69fd2eb45e9d5cd0cd5b165966c2587c187",
+      "original": {"kind": "product"},
+      "verified": {"kind": "annotations-only", "stored": "verified/arithmetic/bounded.rs", "over": "src/arithmetic/bounded.rs"}
+    },
+    {
+      "path": "capacity.rs",
+      "product": "src/capacity.rs",
+      "product_sha256": "a642eaae19857bd3065d74fc1d93078b40a3a5eb5fa409950c9b036d09315414",
+      "original": {"kind": "product"},
+      "verified": {"kind": "annotations-only", "stored": "verified/capacity.rs", "over": "src/capacity.rs"}
+    },
+    {
+      "path": "error.rs",
+      "product": "src/error.rs",
+      "product_sha256": "21f62e67b7fb448c80ddfbfe878b042952687565348a7b2ed6e6733886a444e3",
+      "original": {"kind": "product"},
+      "verified": {"kind": "product"}
+    },
+    {
+      "path": "layout.rs",
+      "product": "src/layout.rs",
+      "product_sha256": "6ff850ef5a50a99ee0465421bc66d31327443d804a880141bcd724060e0438ae",
+      "original": {"kind": "product"},
+      "verified": {
+        "kind": "rewrite",
+        "stored": "verified/layout.rs",
+        "over": "src/layout.rs",
+        "reason": "VeriFast 26.10 cannot verify the closure passed to Result::map_err. The verified side replaces `.map_err(|_| Error::Layout)` by an equivalent match; the refinement checker shows that the original function refines the rewrite."
+      }
+    },
+    {
+      "path": "layout/numeric.rs",
+      "product": "src/layout/numeric.rs",
+      "product_sha256": "a6bbca2e431a96f17651245c5d4e873cf1cffda9cdbfdabdfe138112b1a792e2",
+      "original": {"kind": "product"},
+      "verified": {"kind": "annotations-only", "stored": "verified/layout/numeric.rs", "over": "src/layout/numeric.rs"}
+    }
+  ],
+  "functions": [
+    {"file": "layout.rs", "name": "array", "count": 1, "class": "verified-rewrite-refined", "vf_name": "layout::array"},
+    {"file": "layout/numeric.rs", "name": "array_ceiling", "count": 1, "class": "verified", "vf_name": "layout::numeric::array_ceiling"},
+    {"file": "layout/numeric.rs", "name": "array_bytes", "count": 1, "class": "verified", "vf_name": "layout::numeric::array_bytes"},
+    {"file": "capacity.rs", "name": "logical_capacity", "count": 1, "class": "verified", "vf_name": "capacity::logical_capacity"},
+    {"file": "capacity.rs", "name": "empty", "count": 1, "class": "verified", "vf_name": "capacity::Capacity::<T>::empty"},
+    {"file": "capacity.rs", "name": "try_new", "count": 1, "class": "verified", "vf_name": "capacity::Capacity::<T>::try_new"},
+    {"file": "capacity.rs", "name": "from_validated_raw", "count": 1, "class": "verified", "vf_name": "capacity::Capacity::<T>::from_validated_raw"},
+    {"file": "capacity.rs", "name": "layout", "count": 1, "class": "verified", "vf_name": "capacity::Capacity::<T>::layout"},
+    {"file": "capacity.rs", "name": "for_slice", "count": 1, "class": "skipped-specless", "note": "A constructor of Capacity<T>; VeriFast does not check that it establishes the invariant. Covered elsewhere only by the Kani harness closure_slice_capacity_matches_the_slice_layout for named instantiations."},
+    {"file": "capacity.rs", "name": "get", "count": 1, "class": "skipped-specless"},
+    {"file": "capacity.rs", "name": "clone", "count": 1, "class": "skipped-specless", "note": "Returns *self (Copy)."},
+    {"file": "capacity.rs", "name": "sub", "count": 1, "class": "skipped-specless", "note": "Returns Checked<usize>, not a Capacity."},
+    {"file": "capacity.rs", "name": "adopted_capacity", "count": 1, "class": "skipped-specless"},
+    {"file": "capacity.rs", "name": "constructors_and_reconstructed_layout_preserve_each_byte_bound", "count": 1, "class": "not-compiled", "note": "cfg(kani) harness"},
+    {"file": "arithmetic/checked.rs", "name": "new", "count": 1, "class": "verified", "vf_name": "arithmetic::checked::Checked::<T>::new"},
+    {"file": "arithmetic/checked.rs", "name": "get", "count": 1, "class": "verified", "vf_name": "arithmetic::checked::Checked::<T>::get"},
+    {"file": "arithmetic/checked.rs", "name": "$operator", "count": 1, "class": "skipped-specless", "note": "Macro-generated Add/Sub/Mul/Div/Rem operators."},
+    {"file": "arithmetic/checked.rs", "name": "view", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "math_new", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "obeys_add_spec", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "add_req", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "add_spec", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "obeys_sub_spec", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "sub_req", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "sub_spec", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "obeys_mul_spec", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "mul_req", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/checked.rs", "name": "mul_spec", "count": 1, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic/bounded.rs", "name": "wrapping_mul", "count": 1, "class": "verified", "vf_name": "arithmetic::bounded::wrapping_mul"},
+    {"file": "arithmetic/bounded.rs", "name": "wrapping_add", "count": 1, "class": "skipped-specless"},
+    {"file": "arithmetic/bounded.rs", "name": "wrapping_sub", "count": 1, "class": "skipped-specless"},
+    {"file": "arithmetic.rs", "name": "fmt", "count": 3, "class": "skipped-specless", "note": "Display impls"},
+    {"file": "arithmetic.rs", "name": "from", "count": 1, "class": "skipped-specless"},
+    {"file": "arithmetic.rs", "name": "try_add", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "try_sub", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "try_mul", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "try_div", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "try_rem", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "wrap_add", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "wrap_sub", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "wrap_mul", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "try_wrap_div", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "try_wrap_rem", "count": 2, "class": "skipped-specless", "note": "Trait declaration and macro-generated impls"},
+    {"file": "arithmetic.rs", "name": "numeric_value", "count": 2, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic.rs", "name": "numeric_min", "count": 2, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic.rs", "name": "numeric_max", "count": 2, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic.rs", "name": "numeric_from_int", "count": 2, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "arithmetic.rs", "name": "numeric_identity", "count": 2, "class": "not-compiled", "note": "verus_keep_ghost"},
+    {"file": "error.rs", "name": "fmt", "count": 1, "class": "skipped-specless", "note": "Display impl"},
+    {"file": "error.rs", "name": "from", "count": 1, "class": "skipped-specless"}
+  ],
+  "derived_not_checked": "Derived impls (Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash) of Checked<T>, Error, ArithmeticError, DivisionError, DivisionError64 and the other derives in the subset are not specified and not checked.",
+  "trusted_lemmas": [
+    {"name": "Capacity_own_mono", "file": "verified/capacity.rs", "body": "assume(false)", "reason": "Variance obligation of Capacity<T>::own; VeriFast's own RawVec proof discharges it the same way (verifast issue #610)."},
+    {"name": "arithmetic::checked::Checked_own_mono", "file": "verified/arithmetic/checked.rs", "body": "assume(false)", "reason": "Variance obligation of Checked<T>::own; same as above."}
+  ]
+}

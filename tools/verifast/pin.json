@@ -1,0 +1,17 @@
+{
+  "tool": "VeriFast",
+  "tag": "26.10",
+  "commit": "f76012fb518703b1d98e243ac4f487f16877cfcb",
+  "archive": "verifast-26.10-linux.tar.gz",
+  "url": "https://github.com/verifast/verifast/releases/download/26.10/verifast-26.10-linux.tar.gz",
+  "sha256": "5ad2a65997457fd5996a27f93107ef7e52c90c0d12b63b6e67f7acbc73e90efd",
+  "sha256_source": "Recorded from the archive downloaded on 2026-11-28; the release publishes no checksum.",
+  "top_directory": "verifast-26.10",
+  "toolchain": "nightly-2026-09-25",
+  "toolchain_components": ["rustc-dev", "llvm-tools"],
+  "overlay": "std-spec-overlay.patch",
+  "overlay_base_sha256": {
+    "bin/rust/prelude.rsspec": "d7058d43557a2b5147eb1377e85bb67d04b94c83594b6c1c27650c9c571841b5",
+    "bin/rust/std/lib.rsspec": "2da7acfb6596f8abec90c103ef7f294152c18f974b88124669882fc051272999"
+  }
+}

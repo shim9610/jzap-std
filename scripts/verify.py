@@ -52,6 +52,7 @@ CHECKS={
     'audit':'Locked dependency security/license checks', 'sbom':'CycloneDX software bill of materials',
     'link':'Concrete whole-library call graph; retained guards may need the certificate',
     'certificate':'Fresh global source/model/link composition and negative controls',
+    'verifast':'Auxiliary VeriFast proof of the Capacity subset crate (local only; supplementary, no disposition)',
 }
 QUICK=['runner','format','tests','clippy']
 FULL=['runner','format','api','tests','release','overflow','clippy','docs','builds',
@@ -190,6 +191,11 @@ def plan(area,checks,out,test_targets=None):
                        kind='concrete-call-graph-check')
             # The no_std fixture cannot link default std entropy; walk that root separately.
             if area in ('all','hash-map','hash-set'):script('link-seed','check_seed_link.py','--profiles','release,release-lto,release-checked','--output',str(out/'link-seed'),kind='concrete-call-graph-check')
+        elif check=='verifast':
+            # Local only: downloads the pinned VeriFast release to a cache outside the
+            # repository. Not in QUICK or FULL; supplementary evidence (docs/verification/verifast.md).
+            if area not in ('all','foundation','vec'):raise ValueError('The VeriFast subset crate covers Capacity and layout::array; use --area all, foundation or vec.')
+            add(check,[sys.executable,'tools/verifast/check.py','--output',str(out/'verifast')],'auxiliary-subset-proof')
         elif check=='certificate':
             if area!='all':raise ValueError('The combined certificate is global. Use --area all --check certificate; partial checks cannot replace it.')
             script(check,'source_certificate.py','--output',str(out/'certificate'),kind='combined-model-source-link-evidence')

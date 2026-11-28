@@ -89,6 +89,35 @@ A contract whose every row rests only on one of these items has the basis
 (`TRUST_BOUNDARY_ITEMS` is this list; `TRUST_BOUNDARY` maps a contract to one
 item). No contract has it yet (step 9).
 
+## Supplementary evidence
+
+VeriFast was adopted as an auxiliary tool (owner decision); the Kani-based
+closure stays the primary method. [`docs/verification/verifast.md`](verification/verifast.md)
+records a VeriFast proof, for every element type `T`, on a subset crate
+assembled from the current `src/` (`tools/verifast/check.py`): every
+`Capacity<T>` returned by `empty`, `try_new` or `from_validated_raw` (under
+its `req`) satisfies `is_valid_layout(count * size_of::<T>(), align_of::<T>())`,
+and `Capacity::layout` under that invariant has `count * size_of::<T>() <=
+isize::MAX`, so its `wrapping_mul` does not wrap and the
+`from_size_align_unchecked` precondition holds. This speaks to the premise of
+`capacity_bytes` (the byte bound of `Capacity` for every `T`) and to the byte
+bound of `layout::array`. The other contracts bound at `src/capacity.rs`
+(`empty_owner`, `external_count_before_allocation`) are already `no-premise`.
+
+It does not change any disposition in `scripts/premise_status.py` or the
+certificate, and is not a basis:
+
+- the `capacity_bytes` rows rest on the callers of
+  `Capacity::from_validated_raw` (`src/deque.rs`, `src/vec/ownership.rs`),
+  which are outside the subset; VeriFast proves the function under its `req`
+  and does not show that those callers establish it;
+- `Capacity::for_slice` is specless and not checked by VeriFast;
+- the refinement checker that connects the rewritten `layout::array` to the
+  product ignores unwind paths and storage liveness;
+- the result is on a subset crate, connected to `src/` by sha256 pins and a
+  comment-strip comparison, with a trusted overlay of std specifications and
+  two `assume(false)` variance lemmas.
+
 ## Units
 
 Each unit proves the invariants a group of contracts requires, so that its rows

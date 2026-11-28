@@ -1,0 +1,72 @@
+--- a/bin/rust/prelude.rsspec
++++ b/bin/rust/prelude.rsspec
+@@ -37,6 +37,13 @@
+     req <(T1, T2, T3, T4)>.own(t, v);
+     ens <T1>.own(t, v.0) &*& <T2>.own(t, v.1) &*& <T3>.own(t, v.2) &*& <T4>.own(t, v.3);
+ 
++// JZAP-OVERLAY (trusted axiom; not in the VeriFast 26.10 prelude). Mirrors the shipped
++// close_tuple_4_own axiom for pairs. Needed by the safety proof of Capacity::try_new, which
++// returns (Capacity<T>, Layout). VeriFast does not prove it.
++lem close_tuple_2_own<T1, T2>(t: thread_id_t, v: (T1, T2));
++    req <T1>.own(t, v.0) &*& <T2>.own(t, v.1);
++    ens <(T1, T2)>.own(t, v);
++
+ lem close_tuple_4_own<T1, T2, T3, T4>(t: thread_id_t, v: (T1, T2, T3, T4));
+     req <T1>.own(t, v.0) &*& <T2>.own(t, v.1) &*& <T3>.own(t, v.2) &*& <T4>.own(t, v.3);
+     ens <(T1, T2, T3, T4)>.own(t, v);
+--- a/bin/rust/std/lib.rsspec
++++ b/bin/rust/std/lib.rsspec
+@@ -188,6 +188,25 @@
+         //@ req true;
+         //@ ens result == (if self < other { 0 } else { self - other });
+         //@ on_unwind_ens false;
++
++        // JZAP-OVERLAY (trusted; not in the VeriFast 26.10 std specs). usize::checked_mul,
++        // checked_div and wrapping_mul are called by layout::numeric::array_bytes,
++        // layout::numeric::array_ceiling and arithmetic::bounded::wrapping_mul. The
++        // postconditions restate the documented core semantics; VeriFast does not check them.
++        fn checked_mul(self: usize, other: usize) -> std::option::Option<usize>;
++        //@ req true;
++        //@ ens if self * other > usize::MAX { result == std::option::Option::None } else { result == std::option::Option::Some(self * other) };
++        //@ on_unwind_ens false;
++
++        fn checked_div(self: usize, other: usize) -> std::option::Option<usize>;
++        //@ req true;
++        //@ ens if other == 0 { result == std::option::Option::None } else { result == std::option::Option::Some(self / other) };
++        //@ on_unwind_ens false;
++
++        fn wrapping_mul(self: usize, other: usize) -> usize;
++        //@ req true;
++        //@ ens if self * other <= usize::MAX { result == self * other } else { true };
++        //@ on_unwind_ens false;
+         
+     }
+     
+@@ -1064,6 +1083,14 @@
+         @*/
+         //@ on_unwind_ens false;
+ 
++        // JZAP-OVERLAY (trusted; not in the VeriFast 26.10 std specs). Layout::from_size_align is
++        // called by layout::array. Ok is stated to imply is_valid_layout(size, align) and the
++        // two fields, as documented for core; Err is left unconstrained. VeriFast does not check it.
++        fn from_size_align(size: usize, align: usize) -> std::result::Result<Layout, LayoutError>;
++        //@ req true;
++        //@ ens match result { Result::Ok(l) => is_valid_layout(size, align) == true &*& l == Layout::from_size_align(size, align) &*& l.size() == size &*& l.align() == align, Result::Err(e) => true };
++        //@ on_unwind_ens false;
++
+         fn repeat_packed<'a>(self: &'a Layout, n: usize) -> std::result::Result<Layout, LayoutError>;
+         //@ req [?f](*self |-> ?l);
+         /*@
+@@ -1652,7 +1679,11 @@
+         fn from_residual(residual: std::result::Result<std::convert::Infallible, E>) -> std::result::Result<T, F>;
+         //@ req residual == std::result::Result::Err(?e0) &*& <E>.own(?t, e0);
+         //@ ens result == std::result::Result::Err(?e1) &*& <F>.own(t, e1);
+-        //@ on_unwind_ens true;
++        // JZAP-OVERLAY (trusted; replaces `on_unwind_ens true`). The `?` operator on
++        // Result<_, Error> inside a function returning Result<_, Error> converts the residual
++        // with the identity `impl<T> From<T> for T`, which returns its argument and cannot
++        // unwind. Needed for the `on_unwind_ens false` of layout::array and Capacity::try_new.
++        //@ on_unwind_ens typeid(E) != typeid(F);
+ 
+     }
+ 

@@ -14,6 +14,23 @@ is established:
   `verus_spec` is verified directly (the enclosing function is checked by
   `verify_wrapping_memory.py`).
 
+Two further bases were approved by the owner on 2026-11-26 (issue #16). They
+are reported under their own names and counts, never as
+``solver-and-source-connected``, and do not block completion:
+
+- ``instantiated-kani``: the premise is the owner invariant, closed at the
+  zero-sized instantiation as decided by ``scripts/owner_closure.py`` (every
+  constructor and writer runs under an actual-Rust Kani harness that assumes
+  only the invariant; the writers are pinned by the scanner). It is not a
+  solver proof for every ``T``; the instantiations are listed with the
+  contract. ``check_instantiated`` refuses the basis when the owner is not
+  closed, when the maintained ``requires`` is not exactly the owner invariant
+  (plus ``call_requires``), or when a bound row is not in a function of the
+  owner generic in its element type.
+- ``trust-boundary``: every bound row's premise is exactly one item of the
+  fixed list ``TRUST_BOUNDARY_ITEMS`` (docs/premise-proofs.md). No contract
+  has this basis yet.
+
 Every other contract is ``stated-not-proved``: its premise is written in a
 maintained function or a harness assumption and no proof connects it to the
 product state at the call site. An unknown contract fails closed.
@@ -22,6 +39,7 @@ Evidence paths are relative to the repository root. Line numbers are those of
 the commit that introduced this table.
 """
 import re
+from pathlib import Path
 
 MIGRATION = 'docs/direct-source-migration.md'
 
@@ -110,6 +128,93 @@ ESTABLISHED = {
 }
 
 
+# The fixed trust boundary (docs/premise-proofs.md, "Trust boundary"). A reason
+# outside this list is not accepted.
+TRUST_BOUNDARY_ITEMS = {
+    'core-semantics': 'The compiler, core and alloc behave as documented, including the validity of safe '
+                      'references and slices',
+    'allocator-storage': 'A successful allocation or reallocation returns storage valid for the requested layout',
+    'public-unsafe-caller': 'The caller of a public unsafe fn meets its documented contract',
+    'std-adoption': 'Values adopted from std satisfy the std invariants',
+    'returning-callback': 'User callbacks return and satisfy the stated trait laws',
+}
+# contract -> item of TRUST_BOUNDARY_ITEMS. Considered at step 9 and left
+# stated: raw_parts_owner (its rows are the literal of Vec::from_raw_parts,
+# also reached from library callers in src/deque.rs), adopted_owner (also
+# requires the budget invariant), capacity_bytes (Capacity::from_validated_raw
+# is pub(crate), not a public unsafe contract).
+TRUST_BOUNDARY = {}
+
+# The owner invariants in the words of the maintained functions, and the
+# instantiations at which scripts/owner_closure.py closes them.
+OWNER_INVARIANT = {
+    'Buffer': dict(requires='{len}<={cap},byte_valid({cap},size)',
+                   files=('src/boxed/buffer.rs',),
+                   instantiations=['T = () for every method and lend (zero-sized element, Unmetered)',
+                                   'T = u8, u64, [u64; 200] and a 64-aligned 64-byte type for reserve and finish, '
+                                   'with storage::reallocate and storage::deallocate stubbed']),
+}
+_BUFFER_EVIDENCE = ('scripts/owner_closure.py reports Buffer closed at the zero-sized element (constructor new, the '
+                    'writes of reserve, push, append and finish, the lends of collect and collect_rest, each under '
+                    'a closure harness of the buffer group); the maintained requires is the Buffer invariant '
+                    'len <= cap with the byte bound, which the harness invariant (layout::array::<T>(cap) == layout) '
+                    'implies')
+INSTANTIATED_KANI = {
+    'buffer_reserve': dict(owner='Buffer', maintained='tools/memory-proof/owner-state.verus.rs',
+                           words=dict(len='len', cap='cap'), call_requires=()),
+    'buffer_push': dict(owner='Buffer', maintained='tools/memory-proof/operation-closure.verus.rs',
+                        words=dict(len='len', cap='cap'), call_requires=()),
+    'buffer_finish': dict(owner='Buffer', maintained='tools/memory-proof/operation-closure.verus.rs',
+                          words=dict(len='len', cap='cap'), call_requires=()),
+    'buffer_collect': dict(owner='Buffer', maintained='tools/memory-proof/operation-closure.verus.rs',
+                           words=dict(len='initial', cap='initial_cap'), call_requires=('cb', 'alloc')),
+}
+
+
+def maintained_requires(root, contract):
+    """The compacted `requires` clause of a maintained function, from its source."""
+    row = INSTANTIATED_KANI[contract]
+    text = (Path(root) / row['maintained']).read_text()
+    heads = [m for m in re.finditer(r'\bfn\s+' + contract + r'\s*[<(]', text)]
+    assert len(heads) == 1, ('maintained function missing or duplicated', contract)
+    rest = text[heads[0].end():]
+    m = re.search(r'\brequires\b(.*?)\bensures\b', rest[:rest.index('{')] if '{' in rest else rest, re.S)
+    assert m, ('maintained function without requires', contract)
+    return re.sub(r'\s+', '', m.group(1))
+
+
+def expected_requires(contract):
+    row = INSTANTIATED_KANI[contract]
+    text = OWNER_INVARIANT[row['owner']]['requires'].format(**row['words'])
+    for callback in row['call_requires']:
+        text += ',forall|i:usize|call_requires(*' + callback + ',(i,))'
+    return text + ','
+
+
+def check_instantiated(root, closure, rows=()):
+    """Refuse the basis instantiated-kani unless it is established mechanically.
+
+    `closure` is the report of scripts/owner_closure.py; `rows` are certificate
+    rows (site, contract). Returns the instantiations per contract."""
+    listed = {}
+    for contract, row in INSTANTIATED_KANI.items():
+        owner = row['owner']
+        assert closure is not None and closure.get(owner, {}).get('closed') is True, \
+            ('instantiated-kani contract whose owner is not closed', contract, owner)
+        actual = maintained_requires(root, contract)
+        assert actual == expected_requires(contract), \
+            ('maintained requires is not exactly the owner invariant', contract, actual, expected_requires(contract))
+        listed[contract] = OWNER_INVARIANT[owner]['instantiations']
+    for site, contract in rows:
+        if contract not in INSTANTIATED_KANI:
+            continue
+        owner = INSTANTIATED_KANI[contract]['owner']
+        context = re.sub(r'\s+', '', site.get('context', ''))
+        assert site.get('file') in OWNER_INVARIANT[owner]['files'] and context.startswith(owner + '<T,'), \
+            ('instantiated-kani row outside a function of the owner generic in its element', contract, site)
+    return listed
+
+
 def _stated(reason, names):
     return {name: dict(status='stated-not-proved', basis='stated-not-proved', evidence=reason) for name in names}
 
@@ -118,9 +223,9 @@ STATED = {
     **_stated(f'Vec/Buffer owner premises (len <= cap <= limit, owner_valid, byte_valid, the Drain/hole '
               f'invariants, the range validator result, the reservation result) are requires of the '
               f'maintained function; {MIGRATION}:1882-1886, 1949-1951',
-              ['adopted_owner', 'append_owner', 'boxed_to_owner', 'buffer_collect', 'buffer_finish',
+              ['adopted_owner', 'append_owner', 'boxed_to_owner',
                'exchanged_owners',
-               'buffer_push', 'buffer_reserve', 'buffer_span', 'checked_index_before_access',
+               'buffer_span', 'checked_index_before_access',
                'checked_owner_length', 'clone_within_operation', 'commit_reserved_owner',
                'compaction_before_move', 'compaction_before_element', 'complete_splice',
                'cursor_before_read', 'dedup_loop', 'drain_constructor', 'extend_operation',
@@ -269,12 +374,22 @@ STATED = {
               ['lookup_path_read']),
 }
 
-assert not set(ESTABLISHED) & set(STATED), set(ESTABLISHED) & set(STATED)
-PREMISES = {**ESTABLISHED, **STATED}
+INSTANTIATED = 'instantiated-kani'
+TRUSTED = 'trust-boundary'
+_INSTANTIATED_ROWS = {name: dict(status=INSTANTIATED, basis=INSTANTIATED, owner=row['owner'],
+                                 instantiations=OWNER_INVARIANT[row['owner']]['instantiations'],
+                                 evidence=_BUFFER_EVIDENCE) for name, row in INSTANTIATED_KANI.items()}
+_TRUSTED_ROWS = {name: dict(status=TRUSTED, basis=TRUSTED, item=item, evidence=TRUST_BOUNDARY_ITEMS[item])
+                 for name, item in TRUST_BOUNDARY.items()}
+_tables = (ESTABLISHED, STATED, _INSTANTIATED_ROWS, _TRUSTED_ROWS)
+assert sum(map(len, _tables)) == len(set().union(*_tables)), 'a contract has two premise statuses'
+PREMISES = {**ESTABLISHED, **STATED, **_INSTANTIATED_ROWS, **_TRUSTED_ROWS}
 
 PROVED = 'solver-and-source-connected'
 STATED_NOT_PROVED = 'premise-stated-not-proved'
 UNPROVED = 'unproved'
+# Every disposition, in report order. The two approved bases are separate.
+DISPOSITIONS = (PROVED, INSTANTIATED, TRUSTED, STATED_NOT_PROVED, UNPROVED)
 
 
 def premise(contract):
@@ -283,16 +398,29 @@ def premise(contract):
     return PREMISES[contract]
 
 
-def disposition(contract, verified):
+def disposition(contract, verified, closure=None):
     """One rule for every certificate row.
 
     A contract that is not in the verified set is unproved. A verified contract
     is solver-and-source-connected only when its premise is established;
-    otherwise its premise is stated and not proved.
+    instantiated-kani only while `closure` (the owner_closure.py report) has its
+    owner closed, and the call fails otherwise; trust-boundary when it is listed
+    with an item of the fixed list; otherwise its premise is stated and not
+    proved.
     """
     if contract not in verified:
         return UNPROVED
-    return PROVED if premise(contract)['status'] == 'established' else STATED_NOT_PROVED
+    status = premise(contract)['status']
+    if status == 'established':
+        return PROVED
+    if status == INSTANTIATED:
+        owner = INSTANTIATED_KANI[contract]['owner']
+        assert closure is not None and closure.get(owner, {}).get('closed') is True, \
+            ('instantiated-kani contract whose owner is not closed', contract, owner)
+        return INSTANTIATED
+    if status == TRUSTED:
+        return TRUSTED
+    return STATED_NOT_PROVED
 
 
 def row_premise(contracts):

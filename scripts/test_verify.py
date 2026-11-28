@@ -589,11 +589,60 @@ class PremiseTests(unittest.TestCase):
         self.assertEqual([r['disposition'] for r in rows],
                          [PROVED, STATED_NOT_PROVED, UNPROVED, UNPROVED, STATED_NOT_PROVED, STATED_NOT_PROVED])
         self.assertEqual(rows[-1]['contract'], 'lookup_path_read')
-        self.assertEqual(obligation_counts(rows), {PROVED: 1, STATED_NOT_PROVED: 3, UNPROVED: 2})
+        from premise_status import INSTANTIATED, TRUSTED
+        self.assertEqual(obligation_counts(rows), {PROVED: 1, INSTANTIATED: 0, TRUSTED: 0, STATED_NOT_PROVED: 3, UNPROVED: 2})
         # Without a verified lemma the B+ ancestor row is unproved, not connected.
         self.assertEqual(obligations(owner, string, (area,), verified - {'lookup_path_read'}, lookup)[-1]['disposition'], UNPROVED)
         with self.assertRaisesRegex(AssertionError, 'B\\+ ancestor read moved'):
             obligations(owner, string, (area,), verified, lookup.replace(BPLUS_ANCESTOR['expression'], 'ancestor.read()'))
+
+    def test_instantiated_kani_needs_a_closed_owner_and_the_exact_invariant(self):
+        import shutil
+        from premise_status import (INSTANTIATED, INSTANTIATED_KANI, STATED_NOT_PROVED, TRUSTED, TRUST_BOUNDARY,
+                                    check_instantiated, disposition, premise)
+        from source_certificate import BPLUS_ANCESTOR, obligation_counts, obligations
+        closed = {'Buffer': dict(closed=True), 'Vec': dict(closed=False)}
+        self.assertEqual(set(INSTANTIATED_KANI), {'buffer_reserve', 'buffer_push', 'buffer_finish', 'buffer_collect'})
+        self.assertEqual(TRUST_BOUNDARY, {})
+        verified = set(INSTANTIATED_KANI) | {'buffer_span', 'reservation_before_bulk_write', 'resized_owner'}
+        for contract in INSTANTIATED_KANI:
+            self.assertEqual(premise(contract)['status'], INSTANTIATED)
+            self.assertEqual(disposition(contract, verified, closed), INSTANTIATED)
+            for closure in (None, {'Buffer': dict(closed=False)}, {}):
+                with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
+                    disposition(contract, verified, closure)
+        # Premises that are not exactly the Buffer invariant, and every Vec
+        # contract while Vec is not closed, stay stated.
+        for contract in ('buffer_span', 'reservation_before_bulk_write', 'resized_owner'):
+            self.assertEqual(disposition(contract, verified, closed), STATED_NOT_PROVED)
+        self.assertEqual(len(check_instantiated(ROOT, closed)), 4)
+        with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
+            check_instantiated(ROOT, {'Buffer': dict(closed=False)})
+        site = dict(file='src/boxed/buffer.rs', function='push', context='Buffer < T , P >')
+        check_instantiated(ROOT, closed, [(site, 'buffer_push')])
+        for other in (dict(site, file='src/vec.rs'), dict(site, context='Buffer < u8 , P >')):
+            with self.assertRaisesRegex(AssertionError, 'outside a function of the owner'):
+                check_instantiated(ROOT, closed, [(other, 'buffer_push')])
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('tools/memory-proof/owner-state.verus.rs', 'tools/memory-proof/operation-closure.verus.rs'):
+                (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(ROOT / name, Path(tmp) / name)
+            path = Path(tmp) / 'tools/memory-proof/operation-closure.verus.rs'
+            text = path.read_text()
+            old = 'fn buffer_finish(len:usize,cap:usize,size:usize,accepted:bool)->(r:Option<OwnerState>)\n    requires len<=cap,byte_valid(cap,size),'
+            self.assertEqual(text.count(old), 1)
+            path.write_text(text.replace(old, old + 'len>0,'))
+            with self.assertRaisesRegex(AssertionError, 'not exactly the owner invariant'):
+                check_instantiated(tmp, closed)
+        owner = dict(source_bindings=dict(bindings=[
+            dict(site=site, contract='buffer_push', role='state-publication'),
+            dict(site=site, contract='buffer_span', role='state-lend')]))
+        lookup = (ROOT / BPLUS_ANCESTOR['file']).read_text()
+        rows = obligations(owner, dict(bindings=[]), (), verified | {'lookup_path_read'}, lookup, closed)
+        self.assertEqual(obligation_counts(rows)[INSTANTIATED], 1)
+        self.assertEqual(obligation_counts(rows)[TRUSTED], 0)
+        with self.assertRaisesRegex(AssertionError, 'owner is not closed'):
+            obligations(owner, dict(bindings=[]), (), verified | {'lookup_path_read'}, lookup, {'Buffer': dict(closed=False)})
 
 class OwnerWordTests(unittest.TestCase):
     @staticmethod

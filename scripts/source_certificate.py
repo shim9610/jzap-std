@@ -6,18 +6,20 @@ final-link inventory. A symbol name, hash or finite memory test alone is never
 accepted as a numeric/guard certificate. Payload/provenance remain the explicitly
 agreed compiler/Miri/unsafe-caller verification boundary.
 
-Each source obligation has one of three dispositions (premise_status.py):
+Each source obligation has one of five dispositions (premise_status.py):
 solver-and-source-connected (verified contract, premise established),
-premise-stated-not-proved (verified contract, premise only stated) and
-unproved (no verified contract). Completion requires every row to be
-solver-and-source-connected.
+instantiated-kani and trust-boundary (the two bases approved on 2026-11-26,
+reported under their own names), premise-stated-not-proved (verified
+contract, premise only stated) and unproved (no verified contract).
+Completion requires no premise-stated-not-proved and no unproved row.
 """
 import argparse,fcntl,hashlib,json,os,py_compile,re,subprocess,time
 from pathlib import Path
 
 from certificate_artifacts import collect, digest, identity, publish
 from link_call_graph import PAIR_WINDOW_PATH, is_pair_window_edge
-from premise_status import PROVED, STATED_NOT_PROVED, UNPROVED, disposition, verified_function_names
+from premise_status import (DISPOSITIONS, INSTANTIATED, STATED_NOT_PROVED, UNPROVED,
+                            check_instantiated, disposition, verified_function_names)
 
 ROOT=Path(__file__).resolve().parents[1]
 PROFILES='release,release-lto,release-checked,debug'
@@ -302,11 +304,13 @@ def commands(out,profiles):
     }
 
 
-def obligations(owner,string,areas,verified,lookup_source):
+def obligations(owner,string,areas,verified,lookup_source,closure=None,root=ROOT):
     """Every source obligation, each with the disposition of premise_status.disposition.
 
     No row has a fixed disposition. A row is solver-and-source-connected only
-    when its contract is verified and its premise is established.
+    when its contract is verified and its premise is established. A row is
+    instantiated-kani only when check_instantiated accepts its contract
+    against `closure` (the scripts/owner_closure.py report) and the row.
     """
     rows=[(b['site'],b['contract'],b['role']) for b in owner['source_bindings']['bindings']]
     rows+=[(b['site'],b['contract'],'String-typed-memory-boundary') for b in string['bindings']]
@@ -317,12 +321,15 @@ def obligations(owner,string,areas,verified,lookup_source):
     following=re.search(r'\n\s*(?:pub(?:\([^)]*\))?\s+)?fn\s',body)
     assert BPLUS_ANCESTOR['expression'] in body[:following.start() if following else len(body)],('B+ ancestor read moved',BPLUS_ANCESTOR)
     rows.append((dict(BPLUS_ANCESTOR),'lookup_path_read','initialized-ancestor-prefix'))
-    return [dict(site=site,contract=contract,role=role,disposition=disposition(contract,verified))
+    result=[dict(site=site,contract=contract,role=role,disposition=disposition(contract,verified,closure))
             for site,contract,role in rows]
+    if any(row['disposition']==INSTANTIATED for row in result):
+        check_instantiated(root,closure,[(row['site'],row['contract']) for row in result])
+    return result
 
 
 def obligation_counts(rows):
-    counts={PROVED:0,STATED_NOT_PROVED:0,UNPROVED:0}
+    counts={name:0 for name in DISPOSITIONS}
     for row in rows:counts[row['disposition']]+=1
     return counts
 
@@ -586,10 +593,16 @@ def main():
     assert inputs()==before,'certificate inputs changed during verification'
     for area in (shared,btree,hash_map,binary_heap,deque,scratch):
         assert all(b['contract'] in verified for b in area['bindings'])
-    source_obligations=obligations(owner,string,(shared,btree,hash_map,binary_heap,deque,scratch),verified,(ROOT/BPLUS_ANCESTOR['file']).read_text())
+    # The closure of the owner invariants at the zero-sized instantiation; the
+    # basis instantiated-kani is refused for an owner that is not closed.
+    from owner_closure import report as owner_closure
+    closure=owner_closure(ROOT,out/'owner-closure')
+    instantiations=check_instantiated(ROOT,closure)
+    source_obligations=obligations(owner,string,(shared,btree,hash_map,binary_heap,deque,scratch),verified,(ROOT/BPLUS_ANCESTOR['file']).read_text(),closure)
     counts=obligation_counts(source_obligations)
     # A row whose premise is only stated is open: the certificate is complete
-    # only when every row is solver-and-source-connected.
+    # only when no row is premise-stated-not-proved or unproved. Rows of the
+    # two approved bases do not block and are reported under their own names.
     open_source=counts[UNPROVED]+counts[STATED_NOT_PROVED]
     unproved_edges=sum(b['disposition'] not in ('guard-unreachable-under-verified-source-contracts','no-unproved-library-originating-edge') for b in branches+forward)
     full_profiles=set(args.profiles.split(','))=={'release','release-lto','release-checked','debug'}
@@ -598,17 +611,19 @@ def main():
     report=dict(complete=complete,status='pass' if complete else 'development-only',
         source_sha256=before,source_unchanged=True,models=owner,budget_native=budget_native,direct_foundation=foundation,direct_verus=direct_verus,string=string,shared=shared,btree=btree,btree_set=btree_set,hash_map=hash_map,hash_set=hash_set,binary_heap=binary_heap,deque=deque,scratch=scratch,link=link,
         branches=branches+forward,unproved_link_edges=unproved_edges,open_source_obligations=open_source,
-        source_obligation_counts=counts,
-        completion_rule='complete requires every source obligation to be solver-and-source-connected '
-            '(zero unproved and zero premise-stated-not-proved rows) and zero unproved link edges',
+        source_obligation_counts=counts,owner_closure=closure,instantiations=instantiations,
+        completion_rule='complete requires zero premise-stated-not-proved and zero unproved source obligations '
+            'and zero unproved link edges; instantiated-kani and trust-boundary rows are reported under their own '
+            'names and counts and do not block',
         steps=steps,reused_models=args.reuse_models,bplus=bplus,
         campaign=dict(started_ns=started,invocations=invocations,actions=context),
         scope='Numeric overflow-to-memory and internal guard unreachability for the checked Box/Vec/String/Rc/Arc/BTreeMap/BTreeSet/HashMap/HashSet/BinaryHeap/VecDeque/Scratch/checked-slice and concurrent-budget source contracts and Linux x86_64 link fixtures. Direct Rust/Verus kernels and reviewed source projections remain distinct evidence. Rust/compiler/core ABI, valid allocator, safe ownership, public unsafe and returning callback contracts remain explicit; actual alias/initialization/drop scenarios are checked by the separate Miri/ASan/compiler suites.')
     (out/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     (out/'source-obligations.json').write_text(json.dumps(source_obligations,indent=2)+'\n')
     print(f'{len(branches)} originating guard calls and {len(forward)} forwarding calls attached; '
-          f'source obligations: {counts[PROVED]} {PROVED}, {counts[STATED_NOT_PROVED]} {STATED_NOT_PROVED}, '
-          f'{counts[UNPROVED]} {UNPROVED}; complete={complete}',flush=True)
+          f'source obligations: '+', '.join(f'{counts[name]} {name}' for name in DISPOSITIONS)+f'; complete={complete}',flush=True)
+    for contract,listed in instantiations.items():
+        print(f'{INSTANTIATED} {contract}: '+'; '.join(listed),flush=True)
     return int(not complete)
 
 

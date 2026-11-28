@@ -28,8 +28,13 @@ reported under their own names and are never merged into the four above:
 | `instantiated-kani` | The premise is an invariant shown by actual-Rust Kani harnesses over every machine word for named instantiations (a zero-sized element for whole methods; sized elements for the pointer-free capacity paths), each assuming only that invariant on entry, together with an inductive closure: every constructor establishes it, every writer preserves it, and the set of writers is pinned by the scanner. It is not a solver proof for every `T`; the instantiations are listed with the row |
 | `trust-boundary` | The premise is exactly one item of the fixed list under "Trust boundary" below and nothing inside the library can establish it. A reason outside that list is not accepted |
 
-Not implemented yet: `scripts/premise_status.py` knows only the first four
-bases, and no row uses the two new ones.
+Both are implemented in `scripts/premise_status.py` (step 9 below):
+`instantiated-kani` is accepted for a contract only while
+`scripts/owner_closure.py` reports its owner closed, its maintained `requires`
+is exactly the owner invariant (plus `call_requires`) and every bound row is in
+a function of the owner generic in its element type; the certificate fails
+otherwise. The certificate reports the two bases under their own names and
+counts; their rows do not block completion.
 
 Every other row is `premise-stated-not-proved` and keeps the certificate
 incomplete. Baseline at `c9c61b7`, from the binding lists without solvers:
@@ -79,10 +84,10 @@ library invariant.
 - User callbacks return (they do not panic or abort) and satisfy the stated
   trait laws.
 
-Whether a row whose premise is only such a boundary counts as connected is
-recorded separately in `premise_status.py` (basis `trusted-boundary`) and is
-listed in every report; it is pending the user's confirmation and no row uses
-it yet.
+A contract whose every row rests only on one of these items has the basis
+`trust-boundary` (approved on 2026-11-26), recorded in `premise_status.py`
+(`TRUST_BOUNDARY_ITEMS` is this list; `TRUST_BOUNDARY` maps a contract to one
+item). No contract has it yet (step 9).
 
 ## Units
 
@@ -91,7 +96,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 
 | # | Unit | Contracts | Invariant to prove | Status |
 | --- | --- | ---: | --- | --- |
-| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); step 8 done for three loops (`try_resize_owned`, `try_extend_from_within`, `try_extend_fallible`: L16, L18, L19 and the iterator-driven extenders have closure harnesses) and not for two (the empty-tail loop of `try_finish`, the loop of `Buffer::collect_rest`); steps 9 and 10 below |
+| 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); step 8 done for three loops (`try_resize_owned`, `try_extend_from_within`, `try_extend_fallible`: L16, L18, L19 and the iterator-driven extenders have closure harnesses) and not for two (the empty-tail loop of `try_finish`, the loop of `Buffer::collect_rest`); step 9 done (the Buffer lends have closure harnesses for a source without a bound; `scripts/owner_closure.py` reports Buffer closed and Vec not closed, blocked by the two `Vec::from_raw_parts` calls in `src/deque.rs`; four Buffer contracts are `instantiated-kani`); step 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
 | 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
@@ -1153,3 +1158,214 @@ As before: every instantiation is a zero-sized element with `Unmetered`
 (one exchange fixture with `Budget::Limited`), the capacity paths also at four
 sized elements with stubbed storage; no pointer-touching writer runs at a
 sized element for every word, and no `needs_drop` path runs.
+
+### Step 9: the closure check and the two approved bases
+
+Done on 2026-11-28. No product file changed: `git diff cc45c14 -- src
+':!src/**/*proofs.rs'` is empty. Four contracts changed status, all to
+`instantiated-kani`; none to `trust-boundary`.
+
+**Task 1: the Buffer lends for a source without a bound.** The WIP commit
+`cc45c14` had two uncompiled harnesses. Kept: the open source and both
+harnesses. Changed: the `collect` harness binds the reservation as
+`let Ok(reserved_end) = owner.reserve(lower, lower) else`, so that the producer
+of the end can be pinned, and asserts the invariant after the reservation.
+
+| Harness (`boxed::buffer::proofs::`) | Lend | End | Solver time |
+| --- | --- | --- | ---: |
+| `closure_collect_lend_preserves_the_invariant_for_every_unit_owner_and_open_source` | `collect` | `reserve(lower, lower)` for any hint | 4.1 s |
+| `closure_collect_rest_lend_preserves_the_invariant_for_every_unit_owner_and_open_source` | `collect_rest` | the capacity word | 2.7 s |
+
+Each makes the lend itself on a `closure_owner` (`T = ()`), with a source
+that ends, fails or yields on every call and no bound on the count; the
+cursor loop of `init::driver::run` runs under its existing contract
+(`--cfg jzap_init_loop_contracts`; the log lists its `loop_invariant_base`
+and `loop_invariant_step` checks). Each asserts the Buffer invariant on every
+exit. A harness cannot enter `collect` at the lend, so the correspondence is
+pinned: `caller_bindings.LEND_HARNESSES` lists, per lend, the product
+statements and the harness statements (compacted, without comments); each
+occurs exactly once and in order, and the harness lend is the product lend
+with `owner.` for `self.` (checked in `caller_bindings.check` and by a unit
+test with six mutated texts). The state at the lend is any valid owner; in the
+product it is reached only through writers that keep the invariant (the
+closure below). Registration: a second `EXTRA` invocation of the `buffer`
+group with that cfg; two controls, each detected:
+`closure-buffer-collect-lend-end` (`reserve` admits one more than it
+reserved) and `closure-buffer-collect-rest-lend-publication` (the fill
+publishes `usize::MAX`).
+
+**Task 2.** `vec-element-loops` is in `FOUNDATION_GROUPS` and in the
+direct-source plans of `scripts/verify.py` (areas `vec`, `foundation`,
+`all`). The direct-foundation stage pinned 57 controls; that pin had not been
+updated since before step 1 (58 controls after step 1, 136 after step 8), so
+the stage would have failed on it. It is now `FOUNDATION_CONTROLS = 144`
+(136, the two lend controls, the six of `vec-element-loops`), and a unit test
+keeps it equal to the count in `verify_source.CONTROLS` and requires every
+group with a closure harness to be one the certificate runs.
+
+**Task 3: `scripts/owner_closure.py`.** Sites, from the scanner inventory of
+`caller_bindings.py`: every struct literal of the owner, every assignment to
+an owner word (`Vec`: `len`, `cap`, `limit`; `Buffer`: `len`, `cap`,
+`layout`), as a member place or through a local reference (`*cap` in
+`grow_for_push`), every `state-lend` row, and, from the unsafe-operation
+scanner, every call of `Vec::from_raw_parts` (another spelling of a
+`from_raw_parts` path that is not a known non-owner one fails). The owner
+fields are private and the owner modules include no non-proof file by
+`#[path]` (both checked), so only these files can write the words. The
+table `SITES` maps each site (owner, kind, file, impl, function, expression,
+occurrence) to harnesses or to `trust-boundary` (an item of the fixed list,
+only for the literal of a `pub unsafe fn`), `other-unit:<n>`,
+`not-instantiable` (checked: the impl is `Vec<u8, ..>` or `String`),
+`unobservable` (with the argument) or `uncovered`.
+
+The script fails on a site without an entry, an entry without a site, a
+harness that is not in a `verify_source.py` group of `FOUNDATION_GROUPS`, a
+changed fixture helper (the exact `kani::assume` list of `closure_owner`,
+`closure_sized_owner`, `closure_iter`, `closure_drain`, `closure_extract` and
+Buffer's `closure_owner`, and the owner and pair invariants they assume, are
+pinned) and an extra-assumption harness of `verify_source.EXTRA` that it does
+not list. Admissibility is read from the proof source: the harness and every
+proof function or macro it names (module-aware, transitively, the pinned
+helpers excluded) contains no `kani::assume` or `any_where`, builds no owner
+by a literal or `from_raw_parts`, stores to and lends no owner word (except the
+pinned lend statements above), and a writer harness takes its owner from a
+helper unless the function writes an owner it creates itself (pinned:
+`let mut result = Self::empty(policy, limit);` in `try_from_array_in`).
+Extra-assumption harnesses (the four `closure_bounded_*`, the two-value
+Buffer collect, the two whole-`try_finish`) count for no site, with one
+exception: the whole-`try_finish` harnesses cover L30
+(`self.drain.owner.len = next`), because the store is only on the
+`tail_len != 0` path (checked: the `if self.drain.tail_len == 0` branch ends
+in `return Ok(())` and writes no owner word, and `tail_len` is not written
+before the store) and their only extra assumption is exactly
+`kani::assume(tail_len != 0)`. They cover nothing on the empty-tail path,
+which has no site of its own (it calls `try_push`).
+
+Proof-only change for this check: the ExtractIf drop harness assumed its pair
+state inline; the two assumptions are now the helper `closure_extract`, as
+for `closure_drain`. `vec-extraction` was rerun.
+
+Output of `python3 scripts/owner_closure.py --controls`:
+
+| Owner | Closed at `T = ()` | Sites | Dispositions |
+| --- | --- | ---: | --- |
+| `Buffer` | **yes** | 8 | 8 harness: the constructor `new`; `reserve` (`cap`, `layout`), `push`, `append` and `finish` (`layout`); the lends of `collect` and `collect_rest` |
+| `Vec` | **no** | 54 | 47 harness, 2 unobservable, 2 not-instantiable, 1 trust-boundary, 2 other-unit:4 |
+
+| Vec site | Disposition | Reason |
+| --- | --- | --- |
+| `src/vec/ownership.rs:30`, the literal of `Vec::from_raw_parts` | trust-boundary (public unsafe caller) | the words are the arguments of the `pub unsafe fn`; each library call is a site of its own |
+| `src/vec/convenience.rs:373`, `try_into_flattened` calls `Vec::from_raw_parts` | harness | `closure_flatten_establishes_the_invariant_of_the_element_owner` at `[(); N]` |
+| `src/deque.rs:521`, `VecDeque::into_vec` calls `Vec::from_raw_parts` | **other-unit:4, blocks** | the deque's ring words |
+| `src/deque.rs:578`, `VecDeque::try_from_std_in` calls `Vec::from_raw_parts` | **other-unit:4, blocks** | words from the deque's adoption of a std value |
+| `src/string/convert.rs:218`, `String::from_raw_parts` calls `Vec::from_raw_parts` | not-instantiable | a `Vec<u8>` only; it forwards the words of the public unsafe `String::from_raw_parts` |
+| `src/vec/convenience.rs:426`, L22 `try_write_vectored` | not-instantiable | `Vec<u8>` only |
+| `src/vec/convenience.rs:248`, L20 `try_into_array` | unobservable | followed only by the read of the array and the drop of the consumed owner |
+| `src/vec/edit.rs:593`, L32 `stage_excess` (`extra.len = 0`) | unobservable | followed only by `Ok(())` and the drop of the local staging owner |
+| every other constructor, write and lend (47) | harness | the harnesses of steps 4 to 8, each admissible; L30 under the path assumption above |
+
+Sized capacity paths (`u8`, `u64`, `[u64; 200]`, a 64-aligned 64-byte type,
+storage stubbed): for Buffer `reserve` and `finish`; for Vec the six stubbed
+harnesses of `try_reserve`, `try_reserve_exact`, `grow`, `reserve_length`,
+`try_shrink_to` and the capacity constructors. The stubbed push-growth
+harness is not admissible: it makes the two stores of `try_push`
+(`owner.ptr = ptr`, `owner.cap = words`) itself and that text is not pinned.
+
+Controls, each detected: a second, unmapped `self.len` store in
+`Buffer::push` (the script fails), a `kani::assume` added to the Buffer push
+harness (Buffer not closed), the Buffer push harness removed from its group
+(the script fails), the `collect_rest` lend mapped to `other-unit:9` (Buffer
+not closed). Unit tests also refuse a stale entry, a missing entry, a
+`trust-boundary` on a write, an unknown harness, an extra-assumption harness
+used for another site and the path assumption used for another site.
+
+Not decided by the script: an early `return` on a nondeterministic value
+restricts inputs like an assumption and is not detected by the text check;
+the scanner channels that step 3 lists as not recorded remain so; the guard
+words (`tail_start`, `tail_len`, the `Extraction` and `Compaction` cursors)
+are not input sites (their constructors and writers have harnesses or are
+closed state types, but this script does not map them).
+
+**Task 4: the bases.** `premise_status.py` has the dispositions
+`instantiated-kani` and `trust-boundary` beside the three before;
+`source_certificate.py` counts all five, prints them and the instantiations,
+and is complete only with no `premise-stated-not-proved` and no `unproved`
+row. The certificate runs `owner_closure.report` and `check_instantiated`,
+which fails when a contract has `instantiated-kani` while its owner is not
+closed, when its maintained `requires` is not exactly the owner invariant
+(compared as text with `{len}<={cap},byte_valid({cap},size)` plus one
+`call_requires` per named callback), or when a bound row is outside a
+function of the owner generic in its element type.
+
+| Contract | Rows | Maintained `requires` | Old | New |
+| --- | ---: | --- | --- | --- |
+| `buffer_reserve` | 5 | `len<=cap, byte_valid(cap, size)` | stated | instantiated-kani |
+| `buffer_push` | 3 | the same | stated | instantiated-kani |
+| `buffer_finish` | 5 | the same | stated | instantiated-kani |
+| `buffer_collect` | 4 | `initial<=initial_cap, byte_valid(initial_cap, size)` and two `call_requires` | stated | instantiated-kani |
+
+Instantiations: `T = ()` for every method and lend (`Unmetered`); `T = u8`,
+`u64`, `[u64; 200]` and a 64-aligned type for `reserve` and `finish` with the
+storage functions stubbed. The harness invariant
+(`layout::array::<T>(cap) == Ok(layout)`) implies the byte bound of the
+maintained `requires`.
+
+Considered and left stated: `reservation_before_bulk_write` (Buffer::append;
+its `requires` is `len <= cap <= limit`, Buffer has no limit), `buffer_span`
+(its rows include the unsafe blocks of `init::collection`, shared with the
+Vec callers `Splice::fill` and `stage_batch`, and its `requires` adds
+`count <= cap - initial`), `empty_buffer` (already `no-premise`), every Vec
+contract (Vec is not closed). For `trust-boundary` no contract qualifies:
+`raw_parts_owner` binds the literal of `Vec::from_raw_parts`, which library
+callers in `src/deque.rs` also reach; `adopted_owner` also requires the
+budget invariant; `capacity_bytes` rests on `Capacity::from_validated_raw`,
+a `pub(crate)` unsafe fn.
+
+**Row counts.** Computed without the link stage: the certificate's own
+`obligations` and `obligation_counts` on the binding lists, with the
+verified set composed as in `source_certificate.main`; before with
+`premise_status.py` of `cb8565b`, after with this tree. Owner rows: the
+fresh `verify_owner_protocol.py --mutations` run below. Area rows: the
+local summaries of bindings-only runs of 2026-11-27 (String, shared, B-tree,
+hash, heap, deque, scratch); no area source file or binding script changed in
+git since `63dc3b7`, but those summaries were not regenerated for this step.
+The script is kept locally as `target/verification/i16/step9/counts.py`.
+
+| Disposition | Before | After |
+| --- | ---: | ---: |
+| solver-and-source-connected | 105 | 105 |
+| instantiated-kani | — | 17 |
+| trust-boundary | — | 0 |
+| premise-stated-not-proved | 1,040 | 1,023 |
+| unproved | 36 | 36 |
+| total | 1,181 | 1,181 |
+
+The 17 moved rows are exactly those of the four contracts above (accounting
+calls, state publications and unsafe blocks in `src/boxed/buffer.rs`); no
+other row changed. The 36 unproved rows are an artifact of this computation:
+their contracts are `kani:` harnesses and `direct:` targets
+(`deque::proofs::*`, `string::proofs::scalar_encoding_*`,
+`direct:shared-numeric`, `direct:budget-admit`, the heap, hash-set and
+scratch scenarios) whose names the bindings-only summaries do not list as
+verified; a certificate run fills them from its Kani stages. The certificate
+itself was not run.
+
+**Run.**
+
+- `python3 scripts/verify_source.py --group buffer --mutations`: pass, 390 s;
+  10 + 2 (stubbed) + 2 (lend) harnesses, 18 of 18 controls detected.
+- `python3 scripts/verify_source.py --group vec-extraction --mutations`:
+  pass, 61 s; 3 harnesses, 2 controls detected.
+- `python3 scripts/owner_closure.py --controls`: the output above, 4 of 4
+  controls detected.
+- `python3 scripts/verify_owner_protocol.py --mutations`: pass, 1,056 s,
+  65 results, owner composition 566 verified and 0 errors,
+  `source_closure_complete`, no reused prerequisite; bindings 480 (91 state
+  writes, 10 lends, 132 constructor fields, 181 unsafe callers), unchanged.
+- `python3 scripts/test_verify.py`: 56 OK.
+
+Not run: `scripts/source_certificate.py` (any stage), the other groups of
+`verify_source.py` (their harness texts did not change; `vec-element-loops`
+was last run in step 8), `scripts/verify_panic_paths.py`,
+`scripts/verify_wrapping_memory.py`. The certificate stays incomplete: 1,023
+rows are `premise-stated-not-proved`.

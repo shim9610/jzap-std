@@ -166,6 +166,92 @@ fn closure_collect_preserves_the_invariant_for_every_unit_owner_and_two_value_so
     kani::cover!(matches!(result, Err(InitError::Initialize(_))));
 }
 
+// The two lends of the owner length to `init::collection::fill` (issue #16,
+// unit 1 step 9), for a source without a bound. Each harness makes the lend
+// itself: its `fill` statement is the product statement of `collect` or of
+// `collect_rest` with `owner` for `self`, and `scripts/owner_closure.py`
+// compares the two texts. The cursor loop of the driver runs under its
+// contract (`--cfg jzap_init_loop_contracts`), so the count of values has no
+// bound. The `loop` of `collect_rest` itself is not run here.
+
+/// A source without a bound: every call ends, fails or yields a value, and
+/// every size hint is an arbitrary word or an error.
+#[cfg(jzap_init_loop_contracts)]
+struct ClosureOpenSource;
+#[cfg(jzap_init_loop_contracts)]
+impl TryIterator for ClosureOpenSource {
+    type Item = ();
+    type Error = u8;
+    fn try_next(&mut self) -> Result<Option<()>, u8> {
+        if kani::any() {
+            return Err(23);
+        }
+        Ok(if kani::any() { Some(()) } else { None })
+    }
+    fn try_size_hint(&self) -> Result<(usize, Option<usize>), u8> {
+        if kani::any() {
+            Err(29)
+        } else {
+            Ok((kani::any(), None))
+        }
+    }
+}
+
+// The lend of `collect`: the end is the value `reserve` returned for the lower
+// bound of the hint. A hint is any word, so `lower` is any word.
+// The unwind bound is for verifier-internal bookkeeping; the product loop runs
+// under its contract.
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(12)]
+fn closure_collect_lend_preserves_the_invariant_for_every_unit_owner_and_open_source() {
+    let mut owner = closure_owner::<()>();
+    let len = owner.len.get();
+    let mut iter = ClosureOpenSource;
+    let lower: usize = kani::any();
+    let reserved = owner.reserve(lower, lower);
+    assert!(closure_invariant(&owner));
+    let Ok(reserved_end) = reserved else {
+        assert!(owner.len.get() == len);
+        return;
+    };
+    // SAFETY: a unit element needs no storage; the span ends at the value
+    // `reserve` admitted.
+    let result = unsafe {
+        crate::init::collection::fill(owner.ptr, &mut owner.len, reserved_end, &mut iter)
+    };
+    assert!(closure_invariant(&owner));
+    assert!(len <= owner.len.get() && owner.len.get() <= reserved_end);
+    if let Ok(true) = result {
+        assert!(owner.len.get() == reserved_end);
+    }
+    kani::cover!(matches!(result, Ok(true)) && owner.len.get() > len);
+    kani::cover!(matches!(result, Ok(false)) && owner.len.get() > len);
+    kani::cover!(result.is_err());
+}
+
+// The lend of `collect_rest`: the end is the capacity word of the owner.
+#[cfg(jzap_init_loop_contracts)]
+#[kani::proof]
+#[kani::unwind(12)]
+fn closure_collect_rest_lend_preserves_the_invariant_for_every_unit_owner_and_open_source() {
+    let mut owner = closure_owner::<()>();
+    let (len, cap) = (owner.len.get(), owner.cap.get());
+    let mut iter = ClosureOpenSource;
+    // SAFETY: a unit element needs no storage; the span ends at the capacity.
+    let result = unsafe {
+        crate::init::collection::fill(owner.ptr, &mut owner.len, owner.cap.get(), &mut iter)
+    };
+    assert!(closure_invariant(&owner));
+    assert!(len <= owner.len.get() && owner.cap.get() == cap);
+    if let Ok(true) = result {
+        assert!(owner.len.get() == cap);
+    }
+    kani::cover!(matches!(result, Ok(true)) && owner.len.get() > len);
+    kani::cover!(matches!(result, Ok(false)) && owner.len.get() > len);
+    kani::cover!(result.is_err());
+}
+
 #[kani::proof]
 fn closure_finish_transfers_exactly_the_length_of_every_unit_owner() {
     let owner = closure_owner::<()>();

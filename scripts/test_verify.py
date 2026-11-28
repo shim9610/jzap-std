@@ -677,6 +677,52 @@ class OwnerWordTests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, message):
                     lend_harness_texts(tmp)
 
+    def test_owner_closure_of_the_product(self):
+        import owner_closure
+        result = owner_closure.report(ROOT, ROOT / 'target/verification/test-owner-closure')
+        self.assertTrue(result['Buffer']['closed'])
+        self.assertEqual(result['Buffer']['counts'], {'harness': 8})
+        self.assertFalse(result['Vec']['closed'])
+        self.assertEqual([(b['file'], b['function'], b['disposition']) for b in result['Vec']['blocking']],
+                         [('src/deque.rs', 'into_vec', 'other-unit:4'), ('src/deque.rs', 'try_from_std_in', 'other-unit:4')])
+        finish = [s for s in result['Vec']['sites'] if s['function'] == 'try_finish']
+        self.assertEqual(len(finish), 1)
+        self.assertEqual(finish[0]['path_assumption']['assumption'], 'tail_len != 0')
+
+    def test_owner_closure_refuses_stale_entries_and_extra_assumptions_elsewhere(self):
+        import owner_closure
+        out = ROOT / 'target/verification/test-owner-closure'
+        push = ('Buffer', 'write', 'src/boxed/buffer.rs', 'Buffer', 'push', 'self.len=Checked::new(needed)', 1)
+        pop = ('Vec', 'write', 'src/vec.rs', 'Vec', 'pop', 'self.len=next', 1)
+        table = dict(owner_closure.SITES)
+        table[push] = owner_closure.h(owner_closure.B + 'collect_preserves_the_invariant_for_every_unit_owner_and_two_value_source')
+        table[pop] = owner_closure.h(owner_closure.E + 'splice_finish_with_a_tail_preserves_the_invariant',
+                                     path_assumption='tail_len != 0')
+        result = owner_closure.report(ROOT, out, table=table)
+        rows = {(s['function'], s['expression']): s for o in result.values() for s in o['sites']}
+        # An extra-assumption harness is evidence for no other site, and a path
+        # assumption is accepted only for the store it is checked for.
+        self.assertEqual(rows[('push', 'self.len=Checked::new(needed)')]['disposition'], 'uncovered')
+        self.assertFalse(result['Buffer']['closed'])
+        self.assertEqual(rows[('pop', 'self.len=next')]['disposition'], 'uncovered')
+        sites = owner_closure.SITES
+        for change, message in [
+                ({**sites, ('Vec', 'write', 'src/vec.rs', 'Vec', 'clear', 'self.len=next', 1):
+                  owner_closure.h(owner_closure.M + 'pop_preserves_the_invariant')}, 'entry without a site'),
+                ({k: v for k, v in sites.items() if k != pop}, 'site without an entry'),
+                ({**sites, pop: owner_closure.d('trust-boundary', 'x', item='public-unsafe-caller')},
+                 'trust-boundary only for a constructor'),
+                ({**sites, pop: owner_closure.h('vec::metadata_proofs::not_a_harness')}, 'not in a group')]:
+            with self.assertRaisesRegex(AssertionError, message):
+                owner_closure.report(ROOT, out, table=change)
+
+    def test_owner_closure_defect_controls_are_detected(self):
+        import owner_closure
+        results = owner_closure.controls(ROOT, ROOT / 'target/verification/test-owner-closure')
+        self.assertEqual([r['name'] for r in results],
+                         ['unmapped-write', 'harness-assumption', 'harness-out-of-group', 'other-unit-site'])
+        self.assertTrue(all(r['detected'] for r in results), results)
+
     def test_borrows_of_other_fields_are_counted_not_bound(self):
         from caller_bindings import lend_bindings
         rows = self.product() + [self.borrow('src/vec/edit.rs', 'try_retain_mut', '&mutg.state'),

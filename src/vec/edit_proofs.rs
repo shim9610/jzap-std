@@ -434,17 +434,27 @@ fn closure_extract_constructor_establishes_the_pair_invariant() {
     closure_extract_constructor_case(Unlimited);
 }
 
-fn closure_extract_drop_case<L: LengthPolicy>(limit: L) {
-    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
-    let max = owner.max_len();
+/// An arbitrary ExtractIf over an owner: any cursor state that
+/// `Extraction::from_cursor_state` admits and that satisfies
+/// `closure_extract_invariant`, and nothing else.
+fn closure_extract<L: LengthPolicy>(
+    owner: &mut Vec<(), Unmetered, L>,
+) -> ExtractIf<'_, (), (), Unmetered, L> {
     let state = Extraction::from_cursor_state(kani::any(), kani::any(), kani::any(), kani::any());
     kani::assume(state.is_ok());
     let extract = ExtractIf {
-        owner: &mut owner,
+        owner,
         filter: (),
         state: state.unwrap(),
     };
     kani::assume(closure_extract_invariant(&extract));
+    extract
+}
+
+fn closure_extract_drop_case<L: LengthPolicy>(limit: L) {
+    let mut owner = closure_owner::<(), _, _>(Unmetered, limit);
+    let max = owner.max_len();
+    let extract = closure_extract(&mut owner);
     let restored = extract.state.restored_len();
     drop(extract);
     closure_exit(&owner, max);

@@ -2039,5 +2039,37 @@ for the group, 12 for the heap model harnesses):
 - `python3 scripts/owner_closure.py --controls`: the table above, 15 of 15.
 - `python3 scripts/test_verify.py`: 68 OK. `cargo fmt --all --check`: clean.
 
-Pending at this commit: `scripts/verify_owner_protocol.py --mutations` and the
-row counts.
+- `python3 scripts/verify_owner_protocol.py --mutations`: pass, 1,397 s,
+  65 results, owner composition 566 verified and 0 errors,
+  `source_closure_complete`, no reused prerequisite; bindings 480 (91 state
+  writes, 10 lends, 132 constructor fields, 181 unsafe callers), unchanged
+  (`unbound_field_borrows` binary-heap 9, as before: the 8 lends of `data`
+  above and `&mut guard.start`).
+
+Not run: `scripts/source_certificate.py`, `scripts/verify_panic_paths.py`,
+`scripts/verify_wrapping_memory.py`, Miri, `cargo test` and clippy (no
+non-proof Rust file changed). No machine-code comparison was made: no product
+file changed.
+
+**Row counts**, computed as in unit 4 step E (`counts.py`, local copy
+`target/verification/i16/unit7/counts/counts.py`; before with
+`premise_status.py` of `e16d0c6`, after with this tree, both with the current
+closure; owner rows from the owner-protocol run above, heap rows from the
+`verify_binary_heap.py` run above, the other areas from the summaries on disk):
+
+| Disposition | Before | After |
+| --- | ---: | ---: |
+| solver-and-source-connected | 105 | 105 |
+| instantiated-kani | 38 | 38 |
+| trust-boundary | 0 | 0 |
+| premise-stated-not-proved | 1,020 | 1,020 |
+| unproved | 18 | 18 |
+| total | 1,181 | 1,181 |
+
+No row changed disposition. All 50 heap rows are `premise-stated-not-proved`.
+Against step E of unit 4 (1,017 stated, 21 unproved), three rows moved from
+`unproved` to stated in both columns: the heap summary on disk now lists the
+six model harnesses as verified, so the three rows bound to
+`kani:collections::binary_heap::proofs::actual_owner_pop_peek_and_drain_protocols`
+(a stated bounded scenario) are no longer counted as unproved (the
+bindings-only artifact noted in step 9). The certificate itself was not run.

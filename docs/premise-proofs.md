@@ -128,7 +128,7 @@ close together. Counts are contracts in `premise_status.py` `STATED`.
 | 1 | Vec and Buffer owner | 59 | `len <= cap <= limit`, `byte_valid(cap)`; reservation and range results; Drain/hole and guard states tied to the owner | First attempt reverted (it changed the product). Under the constraint: step 1 done (contracts restated, no row closed); step 2 checked (no row closed: both candidates rest on a `requires` of the enclosing function); step 3 done (scanner pins borrows and pattern bindings, 10 rows bound, none closed); step 4 done (Buffer closure harnesses verified and registered; no contract changed status); step 5 done except L11 (Vec closure harnesses for the writers without a new loop invariant; the existing loop contract of `try_resize_with_init` does not verify here); step 6 done (sized capacity paths with stubbed storage, `[(); 1]`, a failing clone with bounded counts, `Capacity::for_slice`); step 7 done (task A: the loop contract of `try_resize_with_init` restated, L11 has its closure harness; task B: the splice leaves, the whole `try_finish` with a retained tail, IntoIter and the two whole-owner replacements); step 8 done for three loops (`try_resize_owned`, `try_extend_from_within`, `try_extend_fallible`: L16, L18, L19 and the iterator-driven extenders have closure harnesses) and not for two (the empty-tail loop of `try_finish`, the loop of `Buffer::collect_rest`); step 9 done (the Buffer lends have closure harnesses for a source without a bound; `scripts/owner_closure.py` reports Buffer closed and Vec not closed, blocked by the two `Vec::from_raw_parts` calls in `src/deque.rs`; four Buffer contracts are `instantiated-kani`); step 10 below |
 | 2 | Budget ledger | 15 | `occupied + available <= limit`, charge ownership | Not started |
 | 3 | B-tree | 53 | Node counts, cursor and parent indices, heights, node shape | Not started |
-| 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | Not started |
+| 4 | VecDeque | 27 | `ring(head, len, cap)`, reservation results | In progress (below). Step B done: closure harnesses at `T = ()` for every constructor and writer except the retain loop, the sized capacity constructors with stubbed storage, and the two `Vec::from_raw_parts` calls; no contract changed status |
 | 5 | Hash table | 19 | Table shape, credit, tag and ownership | Not started |
 | 6 | Shared ownership | 19 | Counter words of a live owner, allocation and payload extents | Not started |
 | 7 | Binary heap | 13 | Storage and length (on unit 1) | Not started |
@@ -1398,3 +1398,122 @@ Not run: `scripts/source_certificate.py` (any stage), the other groups of
 was last run in step 8), `scripts/verify_panic_paths.py`,
 `scripts/verify_wrapping_memory.py`. The certificate stays incomplete: 1,023
 rows are `premise-stated-not-proved`.
+
+## Unit 4: VecDeque
+
+The design report (`target/verification/i16/designs/unit-4-no-product-change.md`,
+local) was written from reading only. Its finding 1 (`try_shrink_to` left
+`head == cap` for an empty ring) was fixed with an owner-approved product
+change in `09e9247`; since then every head store keeps `cap > 0 => head < cap`
+by the geometry kernels (`retreat`, `allocated_physical`, `physical`,
+`grown_head` all ensure `out < cap`), and the shrink success path stores 0
+when the ring moved or is empty. The steps below follow the design's
+section 6 (B to E).
+
+**The invariant** (`closure_invariant` in `src/deque/closure_proofs.rs`, read
+from the owner's words):
+`len <= cap && cap <= limit && layout::array::<T>(cap).is_ok() &&
+(if size_of::<T>() == 0 || cap == 0 { head == 0 } else { head < cap })`.
+At `T = ()` it is `len <= cap <= limit && head == 0`. The VecDeque struct
+literals are `new`, `empty`, `from_vec` and `clone_to`; its words are
+`head`, `len`, `cap` and `limit` (`ptr` is not an invariant word; `limit` is
+never assigned).
+
+### Step B: closure harnesses without a new loop invariant
+
+Done on 2026-11-28. No product file changed: only `src/deque/proofs.rs` (one
+`#[path = "closure_proofs.rs"] mod closure;`) and the new proof file
+`src/deque/closure_proofs.rs`; no contract changed status.
+
+**Fixtures.** `closure_deque::<T, P, L>` builds an owner of zero-sized elements
+from arbitrary `cap`, `head` and `len` words under the given policy and limit
+and assumes `closure_invariant` and nothing else. `closure_vec_owner` builds a
+`Vec` of zero-sized elements with `Vec::from_raw_parts` from arbitrary length
+and capacity words and assumes only the Vec invariant
+`len() <= capacity() <= max_len()` (the reviewed one-expression getters of
+`src/vec.rs`); its owner is Vec. `closure_exit` asserts the invariant and the
+unchanged limit.
+
+| Harness (`deque::proofs::closure::`) | Sites run | Instantiation | Solver time |
+| --- | --- | --- | ---: |
+| `closure_empty_constructors_establish_the_invariant` | literals of `new`, `empty` (`new_in`, `with_limit`, `with_limit_in`, `Default`, `TryDefault`) | `()`, `u8`, `u64`, `[u64; 200]`, a 64-aligned type | 3.8 s |
+| `closure_capacity_constructors_establish_the_invariant` | `empty` through the four capacity constructors | `()` | 2.2 s |
+| `closure_reserve_preserves_the_invariant` | `grow`: `head`, `cap` (`try_reserve`, `try_reserve_exact`, every `additional`) | `()` | 11.1 s |
+| `closure_push_preserves_the_invariant` | `try_push_back`, `try_push_front` and the `_mut` forms | `()` | 31.2 s |
+| `closure_pop_preserves_the_invariant` | `pop_front`, `pop_back`, `try_pop_*_if`, `swap_remove_*` | `()` | 7.6 s |
+| `closure_truncate_preserves_the_invariant` | `truncate`, `clear` | `()` | 0.9 s |
+| `closure_make_contiguous_preserves_the_invariant` | `make_contiguous` | `()` | 1.5 s |
+| `closure_shrink_preserves_the_invariant_of_a_unit_owner` | `try_shrink_to`, `try_shrink_to_fit` (return before any write) | `()` | 0.9 s |
+| `closure_insert_preserves_the_invariant` | `try_insert`, `try_insert_mut` (and `grow`) | `()` | 13.1 s |
+| `closure_remove_preserves_the_invariant` | `remove` | `()` | 1.1 s |
+| `closure_rotate_preserves_the_invariant` | `rotate_left`, `rotate_right` | `()` | 1.0 s |
+| `closure_append_preserves_the_invariant_of_both_owners` | `try_append` (two owners, own limits) | `()` | 5.4 s |
+| `closure_split_off_preserves_the_invariant_of_both_owners` | `try_split_off` (the fresh `result` from `empty`) | `()` | 2.8 s |
+| `closure_drain_preserves_the_invariant` | `drain`, `Drain::drop` (`Finish`); any bounds; forget, `next`, `next_back` or drop | `()`, `kani::unwind(2)` | 8.6 s |
+| `closure_clone_establishes_the_invariant_of_the_copy` | literal and store of `clone_to` (bitwise path) | `()` | 2.4 s |
+| `closure_clone_from_preserves_the_invariant_of_both_owners` | bitwise path of `try_clone_from` | `()` | 8.1 s |
+| `closure_extend_copy_preserves_the_invariant` | `try_extend_copy`, a slice of every length | `()` | 5.8 s |
+| `closure_resize_preserves_the_invariant` | bitwise branch of `try_resize` | `()` | 5.7 s |
+| `closure_from_vec_establishes_the_invariant` | literal of `from_vec`, from `closure_vec_owner` | `()` | 0.6 s |
+| `closure_into_vec_establishes_the_vec_invariant` | `into_vec` calls `Vec::from_raw_parts` (V1); asserts the Vec invariant of the result | `()` | 2.9 s |
+| `closure_adopting_constructor_establishes_the_invariant_for_unit_storage` | `try_from_std_in` calls `Vec::from_raw_parts` (V2), then `from_vec` | `()` | 3.0 s |
+| `sized::closure_capacity_constructors_establish_the_invariant_of_every_sized_owner` | `grow` from an empty owner (`old == 0`, no copy) through `try_with_capacity_in`, `try_with_capacity_and_limit_in`; `storage::reallocate` and `storage::deallocate` stubbed | `u8`, `u64`, `[u64; 200]`, the aligned type | 20.8 s |
+
+`()` has a copy witness (`scalar!` in `src/clone.rs`), so `clone_to`,
+`try_clone_from`, `try_resize` and `try_extend_copy` take their bitwise paths
+at this instantiation. std's `VecDeque::from(Vec<()>)`, std's
+`make_contiguous` at a zero-sized element (it sets `head = 0`) and
+`Vec::from(VecDeque<()>)` ran without unwinding bounds. Covers satisfied:
+growth and refusal of the reserve and push harnesses, a nonempty pop and drain,
+a nonempty into_vec and from_vec, acceptance and refusal of the adopting
+constructor; the refusal cover of the adopting constructor under `Unlimited`
+is unreachable (`length > usize::MAX`).
+
+**Not run by a harness of this step.** The retain loop store (`Repair::drop`,
+W30, step C); `IntoIter::fold` (`Retire::drop`, step D: unobservable); the
+non-bitwise paths of `clone_to` and `try_clone_from`, which go through
+`into_vec`, Vec's own writers and `from_vec` (each a site of its own); the
+loops of `try_resize_with` and `try_extend` over `try_push_back` (no direct
+store); every sized ring path that touches storage; `needs_drop` paths and
+metered policies.
+
+**Registration.** `scripts/verify_source.py`: a new group `deque-closure`
+(loop contracts on, as every group), 21 harnesses in its main invocation and
+the sized harness in an `EXTRA` invocation (`-Z stubbing`,
+`--cfg jzap_closure_stubs`), and 22 controls, one per harness. Each control
+mutates one product statement in a disposable copy and must end in a solver
+counterexample of the named harness: the literal of `empty` or of `from_vec`
+stores head 1; the capacity constructor stores head 1; `grow` takes
+`needed - 1` (or, for the sized harness, `needed + 1`) as the exact capacity;
+the stores of push_back, pop_back, truncate, insert, remove, append,
+split_off, `Finish::drop` (`end + tail`), clone_to, try_clone_from,
+extend_copy and try_resize publish a wrong length; make_contiguous returns a
+slice of `cap` elements; try_shrink_to drops its zero-size return;
+rotate_left refuses `n == len`; into_vec passes `len + 1`; try_from_std_in
+drops its `source.len() > max` refusal. `scripts/source_certificate.py`:
+`deque-closure` is in `FOUNDATION_GROUPS`, `FOUNDATION_CONTROLS = 166`.
+`scripts/verify.py`: the deque area's Kani job selects the nine model
+harnesses by exact name, so `deque::proofs::closure::` does not change its
+selection or count (as `scripts/verify_deque.py`, which now passes `--exact`
+and the nine names); `deque-closure` is in the direct-source plans of the
+areas `deque`, `foundation` and `all`. Unit tests in `scripts/test_verify.py`
+keep the two harness lists equal and the group in those plans.
+
+**Run** (Kani 0.68.0, CBMC 6.11.0, CaDiCaL, `--object-bits 10`; each on a
+copy of this tree):
+
+- `python3 scripts/verify_source.py --group deque-closure --mutations`: pass,
+  864 s; 21 of 21 and 1 of 1 harnesses verified, 22 of 22 controls detected.
+- `python3 scripts/verify_deque.py --kani --mutations`: pass, 682 s;
+  9 of 9 Kani harnesses (`--exact`), 11 compiled mutations, 48 caller
+  controls, maintained callers 388 verified and 0 errors.
+- `python3 scripts/test_verify.py`: 64 OK.
+- `python3 scripts/owner_closure.py --controls`: unchanged; Buffer closed, Vec
+  not closed (the two `other-unit:4` calls), 4 of 4 controls detected. The
+  script does not know VecDeque yet (step D).
+- `cargo fmt --all --check`: clean.
+
+Peak memory was not measured. Not run in this step:
+`scripts/verify_owner_protocol.py`, `scripts/verify_wrapping_memory.py`, the
+Miri deque checks, `scripts/source_certificate.py`.
+

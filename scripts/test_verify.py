@@ -96,6 +96,23 @@ class ReplayTests(unittest.TestCase):
         self.assertTrue(set(verify_source.CLOSURE) | set(verify_source.EXTRA) <= set(FOUNDATION_GROUPS))
         for area in ('vec', 'foundation', 'all'):
             self.assertIn('vec-element-loops', plan(area, ['direct-source'], ROOT/'target/probe')[0]['command'])
+        for area in ('deque', 'foundation', 'all'):
+            self.assertIn('deque-closure', plan(area, ['direct-source'], ROOT/'target/probe')[0]['command'])
+
+    def test_deque_model_harnesses_are_selected_by_exact_name(self):
+        # The closure harnesses of deque::proofs::closure (issue #16, unit 4)
+        # must not change the selection or the count of the nine model harnesses.
+        import verify
+        import verify_deque
+        import verify_source
+        self.assertEqual(['deque::proofs::' + n for n in verify.DEQUE_MODEL_HARNESSES], verify_deque.HARNESSES)
+        [job] = plan('deque', ['kani'], ROOT/'target/probe')
+        self.assertIn('--exact', job['command'])
+        self.assertEqual([job['command'][i + 1] for i, a in enumerate(job['command']) if a == '--harness'],
+                         verify_deque.HARNESSES)
+        closure = verify_source.CLOSURE['deque-closure']
+        self.assertTrue(closure and all(n.startswith('deque::proofs::closure::') for n in closure))
+        self.assertFalse(set(closure) & set(verify_deque.HARNESSES))
 
     def test_actual_source_negative_control_requires_a_solver_result(self):
         from types import SimpleNamespace

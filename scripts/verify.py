@@ -4,6 +4,8 @@ import argparse,hashlib,json,os,py_compile,re,shlex,signal,subprocess,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 NIGHTLY='nightly-2026-10-30'
+# verify_deque.HARNESSES without the module prefix (scripts/test_verify.py keeps them equal).
+DEQUE_MODEL_HARNESSES=('geometry_all_words','actual_ring_moves_and_contiguous_growth','actual_insert_remove_and_drain','actual_retention_error_and_split_append','actual_shrink_refusal_restores_ring_and_accounting','actual_clone_limits_and_consuming_fold','actual_copy_clone_from_reuses_admitted_storage','actual_empty_copy_extension_admission_and_wrap','actual_no_drop_truncation_all_word_lengths')
 BTREE_SEEDS='''from pathlib import Path
 import sys
 out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
@@ -117,7 +119,7 @@ def plan(area,checks,out,test_targets=None):
                 add('fuzz-'+target,['cargo','+'+NIGHTLY,'fuzz','run',target,*corpus,'--','-runs=10000',
                     '-max_len='+('16384' if target=='btree' else '4096')],'fuzzing')
         elif check=='direct-source':
-            groups={'btree':['btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans'],'btree-set':['btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans'],'all':['arithmetic','slot','clone','state','budget','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','string-cursors','shared-numeric','btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging','vec-element-loops'],'foundation':['arithmetic','slot','clone','state','budget','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging','vec-element-loops'],'arithmetic':['arithmetic'],'string':['string-cursors'],'shared':['shared-numeric'],'budget':['budget'],'box':['slot','clone','layout','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth'],'vec':['clone','state','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging','vec-element-loops']}
+            groups={'btree':['btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans'],'btree-set':['btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans'],'all':['arithmetic','slot','clone','state','budget','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','string-cursors','shared-numeric','btree-search-cursors','btree-plan-counts','btree-frontiers','btree-delete-decisions','btree-packed-shape','btree-node-spans','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging','vec-element-loops','deque-closure'],'foundation':['arithmetic','slot','clone','state','budget','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging','vec-element-loops','deque-closure'],'arithmetic':['arithmetic'],'string':['string-cursors'],'shared':['shared-numeric'],'budget':['budget'],'box':['slot','clone','layout','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth'],'deque':['deque-closure'],'vec':['clone','state','vec-geometry','vec-conversion','layout','vec-queries','init-prefix','buffer','owner-metadata','vec-cursors','vec-layout-growth','vec-compaction','vec-compaction-values','vec-extraction','vec-extraction-values','vec-splice-fill','vec-staging','vec-element-loops']}
             if area not in groups:raise ValueError('No migrated direct-source group registered for '+area+'; use verus or kani for existing domain checks.')
             args=[value for group in groups[area] for value in ('--group',group)]
             script(check,'verify_source.py',*args,'--mutations','--output',str(out/'direct-source'),kind='direct-product-source-proof')
@@ -148,10 +150,17 @@ def plan(area,checks,out,test_targets=None):
                 'vec':['proofs::vec_'],'string':['string::proofs::'],'shared':['shared::proofs::','budget::concurrent::proofs::'],
                 'budget':['budget::concurrent::proofs::'],'btree':['collections::btree_map::proofs::','collections::btree_map::iter::borrowed_edge_proofs::','collections::btree_map::view::bplus::proofs::','collections::btree_map::view::bplus::fixed::proofs::','collections::btree_map::view::bplus::partial::proofs::'],
                 'hash-map':['collections::hash_map::proofs::','collections::hash_map::iter::scan_proofs::'],
-                'binary-heap':['collections::binary_heap::proofs::'],'deque':['deque::proofs::'],'scratch-slice':['scratch::proofs::','slice::proofs::'],
+                'binary-heap':['collections::binary_heap::proofs::'],
+                # The nine model harnesses by exact name: the closure harnesses of
+                # deque::proofs::closure (issue #16, unit 4) are in the deque-closure group.
+                'deque':[tuple('deque::proofs::'+n for n in DEQUE_MODEL_HARNESSES)],'scratch-slice':['scratch::proofs::','slice::proofs::'],
                 'hash-set':['collections::hash_set::proofs::','collections::hash_map::proofs::hash_set_replace_preserves_slot_class_length_and_credit'],
                 'btree-set':['collections::btree_set::proofs::','collections::btree_set::algebra::merge_proofs::','collections::btree_map::proofs::set_replacement_every_initialized_slot','collections::btree_map::iter::borrowed_edge_proofs::']}
             for index,pattern in enumerate(patterns[area]):
+                if isinstance(pattern,tuple):
+                    add('kani-'+str(index),['cargo','kani','--lib','--exact',*[a for n in pattern for a in ('--harness',n)],
+                        '-Z','unstable-options','--cbmc-args','--object-bits','12'],'actual-Rust-model-check')
+                    continue
                 loop=pattern.startswith('loop:');pattern=pattern.removeprefix('loop:')
                 cmd=['cargo','kani','--lib']+(['-Z','loop-contracts'] if loop else [])+(['--harness',pattern] if pattern else [])
                 if 'partial::' in pattern:cmd+=['--solver','kissat','-Z','stubbing']

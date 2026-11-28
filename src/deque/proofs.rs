@@ -1,5 +1,8 @@
 //! Kani executes original product kernels; direct Verus separately covers every-word geometry.
 use super::*;
+// Closure harnesses of the owner invariant (issue #16, unit 4).
+#[path = "closure_proofs.rs"]
+mod closure;
 // Avoid monomorphizing formatting of unreachable error branches in the verifier.
 // Refusal still fails the query: this is the same success assertion as unwrap.
 trait Success<T> {

@@ -122,7 +122,8 @@ def main():
  reference=Path(subprocess.check_output(['rustc','--print','sysroot'],text=True).strip())/'lib/rustlib/src/rust/library/alloc/src/collections/vec_deque/mod.rs'
  assert hashlib.sha256(reference.read_bytes()).hexdigest()=='b166418e66bb4069f2e9284dc8c02ae788517888c4980554396bcc53a13ae0f6','Pinned std adapter changed'
  if a.kani:
-  r,log=run('kani',['cargo','kani','--lib','--harness','deque::proofs::','-Z','unstable-options','--cbmc-args','--object-bits','12'])
+  # By exact name: deque::proofs::closure (issue #16, unit 4) is run by verify_source.py.
+  r,log=run('kani',['cargo','kani','--lib','--exact',*[a for n in HARNESSES for a in ('--harness',n)],'-Z','unstable-options','--cbmc-args','--object-bits','12'])
   assert r.returncode==0 and f'Complete - {len(HARNESSES)} successfully verified harnesses, 0 failures, {len(HARNESSES)} total.' in log,log[-5000:]
  if a.mutations:
   cases=[
